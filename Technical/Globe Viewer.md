@@ -28,8 +28,8 @@ The first generation step (`src/plates.h`), before sea level and hydrology. Glob
   - oceanic–oceanic: arc on the overriding plate, trench on the other;
   - divergent: mid-ocean ridge rise at sea, rift dip on land.
   Belt strength varies along the boundary so ranges have ends.
-- **Output per cell:** uplift (−1..1), crust (−1 oceanic .. 1 continental, blended over ~200 km), belt direction as (cos 2θ, sin 2θ) so it interpolates across the 180° wrap. Uploaded as a bilinear RGBA32F texture on unit 1; the CPU mirror samples it with the same bilinear rule.
-- **Into the function:** crust × 0.2 shifts the continent field, so coastlines tend to follow plate edges and the land % quantile includes it. Mountains are ridged noise whose coarse octaves are stretched 3× along the belt direction (fine octaves isotropic), scaled by uplift up to ~7000 m; negative uplift lowers the terrain for trenches and rifts. A small isotropic hills term remains.
+- **Output per cell:** uplift (−1..1), crust (−1 oceanic .. 1 continental, blended over ~200 km), and distance in km to the nearest plate boundary. Uploaded as a bilinear RGBA32F texture on unit 1; the CPU mirror samples it with the same bilinear rule.
+- **Into the function:** crust × 0.2 shifts the continent field, so coastlines tend to follow plate edges and the land % quantile includes it. Mountains are isotropic ridged noise plus ridge-and-valley bands that follow contours of the boundary distance (period ~45 km, strongly warped so spacing varies, gated by a slow noise so ridges are finite segments), scaled by uplift up to ~7000 m; negative uplift lowers the terrain for trenches and rifts. Ridges therefore run parallel to the belt without any directional frame — an earlier version stretched the noise along a per-cell belt direction, which smeared into concentric bands wherever the direction rotated. A small isotropic hills term remains.
 - **Debug overlay:** press P in game (or pass `plates` as the 7th command-line argument) to tint the globe by crust (blue → tan) and uplift (red) / trench (cyan).
 
 ## Hydrology (lakes and rivers)

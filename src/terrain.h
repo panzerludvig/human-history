@@ -127,20 +127,17 @@ inline float heightMeters(V3 p, V3 n, const ContinentParams& cp, float seaLevel,
     float continent = continentField(p, cp) + pl.crust * CRUST_WEIGHT - seaLevel;
     float detail = fbm(p * 9.0f + 5.0f, std::max(octaves - 3, 1), 0.5f);
 
-    // Mountain ranges: ridged noise stretched along the plate-boundary
-    // direction, scaled by uplift. Hills: the old isotropic term, small.
-    float ex = -n.y, ey = n.x;
-    float el = std::sqrt(ex * ex + ey * ey);
-    V3 east = el > 1e-4f ? V3{ex / el, ey / el, 0} : V3{1, 0, 0};
-    V3 north = {n.y * east.z - n.z * east.y, n.z * east.x - n.x * east.z, n.x * east.y - n.y * east.x};
-    float theta = 0.5f * std::atan2(pl.sin2t, pl.cos2t);
-    V3 dirW = east * std::cos(theta) + north * std::sin(theta);
-    V3 dirN = rotate(rot, dirW);
-    // Coarse octaves are stretched 3x along the belt (the range's shape);
-    // fine octaves stay isotropic so peaks do not smear into lines.
+    // Mountain ranges: isotropic ridged noise plus parallel ridge-and-valley
+    // bands that follow the contours of distance to the plate boundary —
+    // a smooth scalar, so no frame can rotate and smear the noise.
     V3 q = p * 7.0f + 2.0f;
-    V3 qa = q - dirN * (dot(q, dirN) * 0.67f);
-    float ranges = ridged(qa, std::min(octaves, 3)) * 0.65f + ridged(q * 4.2f + 13.0f, std::max(octaves - 4, 1)) * 0.35f;
+    float peaks = ridged(q, std::max(octaves - 2, 1));
+    // Bands are gated by a slow noise so ridges are finite segments, and
+    // warped so their spacing varies and neighbours merge.
+    float band = pl.beltDist / 45.0f + fbm(p * 6.0f + 61.0f, 3, 0.5f) * 2.5f;
+    float bands = 0.5f + 0.5f * std::cos(band * 6.2831853f);
+    float gate = smoothstep(0.0f, 0.35f, fbm(p * 5.0f + 83.0f, 2, 0.5f));
+    float ranges = peaks * 0.8f + bands * bands * gate * peaks * 0.5f;
     float hills = ridged(p * 4.0f + 2.0f, std::max(octaves - 2, 1)) *
                   smoothstep(0.02f, 0.25f, continent) *
                   smoothstep(0.3f, 0.7f, fbm(p * 2.2f + 41.0f, 3, 0.5f) * 0.5f + 0.5f);

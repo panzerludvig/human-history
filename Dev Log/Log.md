@@ -165,3 +165,7 @@ A plate overlay (P key) was essential for judging whether the boundary logic was
 
 **Second-nearest-plate artifact**
 A second cliff survived the profile fix: a perfectly straight wall inside a plate. Cause: crust and uplift were computed from the *second-nearest* plate, whose identity switches abruptly along the bisector between two neighbours. Replaced with a sum over all plates weighted by distance to each pairwise boundary, which is continuous everywhere. Worth remembering: any Voronoi-derived field that uses "the second nearest" has this seam.
+
+**Directional stretch replaced by boundary-distance bands**
+The user found concentric stripes and rectangular discontinuities at a mountain belt. Cause: stretching the noise along the belt direction subtracts a component of the *absolute* coordinate (~20 units from the origin), so wherever the direction field rotates — at every junction, and at every cell edge of the 40 km plate texture — the noise coordinates sweep across many cells and draw contours. Any anisotropy expressed in a rotating frame far from its origin has this failure. Replaced with isotropic ridged peaks plus cosine bands of the distance-to-boundary scalar, which is smooth, intrinsic and needs no frame. Belt direction is no longer stored.
+The first band version was a pure cosine of distance — perfectly periodic corrugations that ran far past the belt and moiréd from orbit. Gating by a slow noise and warping harder made them finite, irregular segments; the isotropic peaks carry most of the relief.

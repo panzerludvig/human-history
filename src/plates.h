@@ -34,8 +34,8 @@ inline V3 normalize(V3 a) {
 struct Cell {
     float uplift;    // -1 (trench/rift) .. 1 (collision belt)
     float crust;     // -1 oceanic .. 1 continental, smoothed across boundaries
-    float cos2t;     // belt direction as a line angle from east, doubled so
-    float sin2t;     //   it interpolates without a wrap at 180 degrees
+    float beltDist;  // km to the nearest plate boundary; ridges follow its contours
+    float pad;
 };
 
 struct Plate {
@@ -68,7 +68,7 @@ struct Field {
             return lerp(lerp(ca, cb, fx), lerp(cc, cd, fx), fy);
         };
         return {bil(a.uplift, b.uplift, c.uplift, d.uplift), bil(a.crust, b.crust, c.crust, d.crust),
-                bil(a.cos2t, b.cos2t, c.cos2t, d.cos2t), bil(a.sin2t, b.sin2t, c.sin2t, d.sin2t)};
+                bil(a.beltDist, b.beltDist, c.beltDist, d.beltDist), 0.0f};
     }
 };
 
@@ -161,11 +161,12 @@ inline Field build(uint32_t seed) {
                     // nearest — that identity switches abruptly inside a plate and
                     // would otherwise draw a cliff along the switch line.
                     float uplift = 0, crustSum = A.continental ? 1.0f : -1.0f, crustW = 1;
-                    float dirC = 0, dirS = 0;
+                    float beltDist = 1.0e6f;
                     for (int j = 0; j < (int)f.plates.size(); j++) {
                         if (j == a) continue;
                         const Plate& B = f.plates[j];
                         float distKm = (dist[j] - dist[a]) * 0.5f * EARTH_RADIUS_KM;
+                        beltDist = std::min(beltDist, distKm);
                         if (distKm > 1200.0f) continue;
 
                         float crustB = B.continental ? 1.0f : -1.0f;
@@ -175,7 +176,6 @@ inline Field build(uint32_t seed) {
 
                         V3 toB = B.seed - A.seed;
                         V3 normal = normalize(toB - n * dot(toB, n));
-                        V3 tangent = normalize(cross(n, normal));
                         V3 vA = cross(A.omega, n), vB = cross(B.omega, n);
                         float conv = dot(vA - vB, normal);
 
@@ -197,17 +197,8 @@ inline Field build(uint32_t seed) {
                             else u = -0.18f * c * bump(distKm, 0, 90);                  // continental rift
                         }
                         uplift += u;
-
-                        V3 east = normalize(V3{-n.y, n.x, 0});
-                        V3 north = cross(n, east);
-                        float theta = std::atan2(dot(tangent, north), dot(tangent, east));
-                        float wd = std::fabs(u) + 1e-6f;
-                        dirC += std::cos(2 * theta) * wd;
-                        dirS += std::sin(2 * theta) * wd;
                     }
-                    float dl = std::sqrt(dirC * dirC + dirS * dirS);
-                    if (dl < 1e-9f) { dirC = 1; dirS = 0; dl = 1; }
-                    f.cells[y * W + x] = {std::clamp(uplift, -1.0f, 1.0f), crustSum / crustW, dirC / dl, dirS / dl};
+                    f.cells[y * W + x] = {std::clamp(uplift, -1.0f, 1.0f), crustSum / crustW, beltDist, 0.0f};
                 }
         });
     }

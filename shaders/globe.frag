@@ -23,7 +23,7 @@ uniform float uWebness;  // 0 = blobs, 1 = ridge web
 uniform float uSeaLevel; // field value at the coastline, chosen on the CPU
 uniform sampler2D uHydro; // per-cell lake level, drainage area, flow direction, height
 uniform int uHasHydro;
-uniform sampler2D uPlates; // uplift, crust, belt direction (cos2t, sin2t)
+uniform sampler2D uPlates; // uplift, crust, km to nearest plate boundary
 uniform int uDebugPlates;  // 1 = tint the globe by plate crust and uplift
 const float CRUST_WEIGHT = 0.2;
 uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 < 0 hides it
@@ -118,18 +118,17 @@ float terrainHeight(vec3 p, vec3 n, int octaves) {
     float continent = continentField(p) + pl.g * CRUST_WEIGHT - uSeaLevel;
     float detail = fbm(p * 9.0 + 5.0, max(octaves - 3, 1), 0.5);
 
-    // Mountain ranges: ridged noise stretched along the plate-boundary
-    // direction, scaled by uplift. Hills: the old isotropic term, small.
-    vec2 e2 = vec2(-n.y, n.x);
-    vec3 east = length(e2) > 1e-4 ? vec3(normalize(e2), 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 north = cross(n, east);
-    float theta = 0.5 * atan(pl.a, pl.b);
-    vec3 dirN = uWorldRot * (east * cos(theta) + north * sin(theta));
-    // Coarse octaves are stretched 3x along the belt (the range's shape);
-    // fine octaves stay isotropic so peaks do not smear into lines.
+    // Mountain ranges: isotropic ridged noise plus parallel ridge-and-valley
+    // bands that follow the contours of distance to the plate boundary —
+    // a smooth scalar, so no frame can rotate and smear the noise.
     vec3 q = p * 7.0 + 2.0;
-    vec3 qa = q - dirN * (dot(q, dirN) * 0.67);
-    float ranges = ridged(qa, min(octaves, 3)) * 0.65 + ridged(q * 4.2 + 13.0, max(octaves - 4, 1)) * 0.35;
+    float peaks = ridged(q, max(octaves - 2, 1));
+    // Bands are gated by a slow noise so ridges are finite segments, and
+    // warped so their spacing varies and neighbours merge.
+    float band = pl.b / 45.0 + fbm(p * 6.0 + 61.0, 3, 0.5) * 2.5;
+    float bands = 0.5 + 0.5 * cos(band * 6.2831853);
+    float gate = smoothstep(0.0, 0.35, fbm(p * 5.0 + 83.0, 2, 0.5));
+    float ranges = peaks * 0.8 + bands * bands * gate * peaks * 0.5;
     float hills = ridged(p * 4.0 + 2.0, max(octaves - 2, 1)) *
                   smoothstep(0.02, 0.25, continent) *
                   smoothstep(0.3, 0.7, fbm(p * 2.2 + 41.0, 3, 0.5) * 0.5 + 0.5);
