@@ -23,6 +23,9 @@ uniform float uWebness;  // 0 = blobs, 1 = ridge web
 uniform float uSeaLevel; // field value at the coastline, chosen on the CPU
 uniform sampler2D uHydro; // per-cell lake level, drainage area, flow direction, height
 uniform int uHasHydro;
+uniform sampler2D uPlates; // uplift, crust, belt direction (cos2t, sin2t)
+uniform int uDebugPlates;  // 1 = tint the globe by plate crust and uplift
+const float CRUST_WEIGHT = 0.2;
 uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 < 0 hides it
 
 const float HEIGHT_SCALE_M = 8000.0;
@@ -102,15 +105,38 @@ float continentField(vec3 p) {
     return mix(base, web, uWebness);
 }
 
-// Height in metres above sea level. `n` is a point in noise space.
-// Mirrored in src/terrain.h (heightMeters) — keep in sync.
-float terrainHeight(vec3 n, int octaves) {
-    float continent = continentField(n) - uSeaLevel;
-    float detail = fbm(n * 9.0 + 5.0, max(octaves - 3, 1), 0.5);
-    float mountains = ridged(n * 4.0 + 2.0, max(octaves - 2, 1));
-    float mountainMask = smoothstep(0.02, 0.25, continent) *
-                         smoothstep(0.3, 0.7, fbm(n * 2.2 + 41.0, 3, 0.5) * 0.5 + 0.5);
-    return (continent + detail * 0.06 + mountains * mountainMask * 0.5) * HEIGHT_SCALE_M;
+vec4 plateAt(vec3 n) {
+    float lat = asin(clamp(n.z, -1.0, 1.0));
+    float lon = atan(n.y, n.x);
+    return texture(uPlates, vec2((lon + PI) / (2.0 * PI), (lat + PI / 2.0) / PI));
+}
+
+// Height in metres above sea level. `p` is the point in noise space, `n` the
+// unit surface normal in world space. Mirrored in src/terrain.h — keep in sync.
+float terrainHeight(vec3 p, vec3 n, int octaves) {
+    vec4 pl = plateAt(n);
+    float continent = continentField(p) + pl.g * CRUST_WEIGHT - uSeaLevel;
+    float detail = fbm(p * 9.0 + 5.0, max(octaves - 3, 1), 0.5);
+
+    // Mountain ranges: ridged noise stretched along the plate-boundary
+    // direction, scaled by uplift. Hills: the old isotropic term, small.
+    vec2 e2 = vec2(-n.y, n.x);
+    vec3 east = length(e2) > 1e-4 ? vec3(normalize(e2), 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 north = cross(n, east);
+    float theta = 0.5 * atan(pl.a, pl.b);
+    vec3 dirN = uWorldRot * (east * cos(theta) + north * sin(theta));
+    // Coarse octaves are stretched 3x along the belt (the range's shape);
+    // fine octaves stay isotropic so peaks do not smear into lines.
+    vec3 q = p * 7.0 + 2.0;
+    vec3 qa = q - dirN * (dot(q, dirN) * 0.67);
+    float ranges = ridged(qa, min(octaves, 3)) * 0.65 + ridged(q * 4.2 + 13.0, max(octaves - 4, 1)) * 0.35;
+    float hills = ridged(p * 4.0 + 2.0, max(octaves - 2, 1)) *
+                  smoothstep(0.02, 0.25, continent) *
+                  smoothstep(0.3, 0.7, fbm(p * 2.2 + 41.0, 3, 0.5) * 0.5 + 0.5);
+    float uplift = pl.r;
+    float h = continent + detail * 0.06 + ranges * max(uplift, 0.0) * 0.9 +
+              min(uplift, 0.0) * 0.12 + hills * 0.12;
+    return h * HEIGHT_SCALE_M;
 }
 
 // ------------------------------------------------------------ hydrology
@@ -199,7 +225,9 @@ vec3 terrainColor(vec3 n, float h, float slope, float lat) {
     vec3 c = mix(desert, veg, smoothstep(0.25, 0.45, moisture));
     c = mix(c, tundra, smoothstep(0.30, 0.12, temp));
     c = mix(sand, c, smoothstep(0.0, 100.0, h));
-    c = mix(c, rock, smoothstep(0.35, 0.7, slope));
+    c = mix(c, rock, smoothstep(0.25, 0.6, slope));
+    // High ground reads as rock from any distance.
+    c = mix(c, rock, smoothstep(1800.0, 3200.0, h) * 0.8);
     // Snow where it is cold: polar lowlands and high peaks everywhere.
     c = mix(c, snow, smoothstep(0.16, 0.06, temp + slope * 0.1));
     return c;
@@ -247,7 +275,7 @@ void main() {
 
     // Terrain is sampled in a per-world noise space.
     vec3 w = uWorldRot * n + uWorldOff;
-    float h = terrainHeight(w, uOctaves);
+    float h = terrainHeight(w, n, uOctaves);
 
     // Water: the sea, a lake surface from the hydrology grid, or a river.
     float waterLevel = 0.0;
@@ -263,7 +291,7 @@ void main() {
     bool isPond = false;
     if (!isWater && h > 0.0 && h < 1500.0) {
         float pondField = fbm(w * 700.0 + 91.0, 3, 0.5);
-        float flatness = 1.0 - smoothstep(0.0, 0.015, abs(terrainHeight(uWorldRot * normalize(n + vec3(0.0005)) + uWorldOff, max(uOctaves - 4, 4)) - h) / 80.0);
+        float flatness = 1.0 - smoothstep(0.0, 0.015, abs(terrainHeight(uWorldRot * normalize(n + vec3(0.0005)) + uWorldOff, normalize(n + vec3(0.0005)), max(uOctaves - 4, 4)) - h) / 80.0);
         float moist = fbm(w * 3.0 + 77.0, 4, 0.5) * 0.5 + 0.5;
         if (pondField > 0.26 + 0.22 * (1.0 - moist) && flatness > 0.3) { isWater = true; isPond = true; waterLevel = h + 3.0; }
     }
@@ -272,16 +300,28 @@ void main() {
     float eps = max(uKmPerPixel / 6371.0, 1e-6);
     vec3 tx = normalize(cross(n, abs(n.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0)));
     vec3 ty = cross(n, tx);
-    float hx = terrainHeight(uWorldRot * normalize(n + tx * eps) + uWorldOff, uOctaves);
-    float hy = terrainHeight(uWorldRot * normalize(n + ty * eps) + uWorldOff, uOctaves);
+    vec3 nx = normalize(n + tx * eps), ny = normalize(n + ty * eps);
+    float hx = terrainHeight(uWorldRot * nx + uWorldOff, nx, uOctaves);
+    float hy = terrainHeight(uWorldRot * ny + uWorldOff, ny, uOctaves);
     // Vertical exaggeration keeps relief visible at every zoom.
     float reliefScale = 0.004 / eps / HEIGHT_SCALE_M;
     vec3 gradT = (tx * (hx - h) + ty * (hy - h)) * reliefScale;
     vec3 shadeN = normalize(n - gradT);
-    float slope = clamp(length(gradT) * 0.5, 0.0, 1.0);
+    // Physical slope (rise over run) decides rock; the exaggerated normal only shades.
+    float slope = clamp(length(vec2(hx - h, hy - h)) / (eps * 6371000.0) * 2.0, 0.0, 1.0);
     if (isWater) { shadeN = n; slope = 0.0; }
 
     vec3 albedo;
+    if (uDebugPlates == 1) {
+        // Crust: oceanic blue to continental tan; uplift: red, trench/rift: cyan.
+        vec4 pl = plateAt(n);
+        vec3 base = mix(vec3(0.15, 0.25, 0.55), vec3(0.65, 0.55, 0.35), pl.g * 0.5 + 0.5);
+        if (isWater && !isRiver) base *= 0.6;
+        base = mix(base, vec3(0.9, 0.15, 0.1), clamp(pl.r, 0.0, 1.0));
+        base = mix(base, vec3(0.1, 0.9, 0.9), clamp(-pl.r, 0.0, 1.0));
+        fragColor = vec4(scaleBarOverlay(base * uDim), 1.0);
+        return;
+    }
     if (isRiver) albedo = vec3(0.10, 0.30, 0.48);
     else if (isPond) albedo = vec3(0.14, 0.36, 0.50);
     else if (isWater) albedo = waterColor(waterLevel - h, lat, w);

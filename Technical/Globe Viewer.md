@@ -17,6 +17,21 @@ There is no mesh. The fragment shader draws a full-screen triangle, casts a ray 
 - **Relief:** finite-difference height gradient at one-pixel spacing, with vertical exaggeration scaled to the zoom, perturbs the shading normal. Sun is fixed relative to the camera so the visible side is always lit.
 - **Atmosphere:** limb brightening on the sphere and a thin glow just outside it.
 
+## Tectonic plates
+
+The first generation step (`src/plates.h`), before sea level and hydrology. Global information — which plate a point is on and what its neighbour is doing — so it is a layer, not part of the function; the function samples it.
+
+- **Plates:** 10–17 Voronoi cells on the sphere, edges warped by a value noise so they are not straight. Each has an Euler pole (axis × rate, giving a velocity field `ω × p`) and is continental (45 %) or oceanic.
+- **Boundaries:** for each cell of a 1024×512 grid, the two nearest plates A and B; distance to the boundary; the relative velocity of A against B projected on the boundary normal gives convergence. Profiles are functions of signed distance so they are continuous across the boundary:
+  - continental–continental convergence: wide symmetric uplift (380 km);
+  - oceanic–continental: uplift peaking 160 km inland on the continental side, a trench 90 km out to sea (Andes);
+  - oceanic–oceanic: arc on the overriding plate, trench on the other;
+  - divergent: mid-ocean ridge rise at sea, rift dip on land.
+  Belt strength varies along the boundary so ranges have ends.
+- **Output per cell:** uplift (−1..1), crust (−1 oceanic .. 1 continental, blended over ~200 km), belt direction as (cos 2θ, sin 2θ) so it interpolates across the 180° wrap. Uploaded as a bilinear RGBA32F texture on unit 1; the CPU mirror samples it with the same bilinear rule.
+- **Into the function:** crust × 0.2 shifts the continent field, so coastlines tend to follow plate edges and the land % quantile includes it. Mountains are ridged noise whose coarse octaves are stretched 3× along the belt direction (fine octaves isotropic), scaled by uplift up to ~7000 m; negative uplift lowers the terrain for trenches and rifts. A small isotropic hills term remains.
+- **Debug overlay:** press P in game (or pass `plates` as the 7th command-line argument) to tint the globe by crust (blue → tan) and uplift (red) / trench (cyan).
+
 ## Hydrology (lakes and rivers)
 
 Lakes and rivers are non-local — a lake's level depends on its outlet, a river on everything upstream — so they cannot be read from the height function at a point. They are computed once per world (`src/hydrology.h`) and fed back into the function as a derived layer:

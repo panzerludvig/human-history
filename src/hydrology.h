@@ -49,7 +49,7 @@ inline float cellAreaKm2(int y) {
 
 // Heights in metres for every cell, computed in parallel.
 inline std::vector<float> sampleHeights(const terrain::ContinentParams& cp, float seaLevel,
-                                        const float rot[9], terrain::V3 offset) {
+                                        const float rot[9], terrain::V3 offset, const plates::Field& pf) {
     std::vector<float> h(W * H);
     const int octaves = 8; // finest detail ~ cell size
     int threads = std::max(1u, std::thread::hardware_concurrency());
@@ -62,7 +62,7 @@ inline std::vector<float> sampleHeights(const terrain::ContinentParams& cp, floa
                     terrain::V3 w = {rot[0] * n.x + rot[3] * n.y + rot[6] * n.z,
                                      rot[1] * n.x + rot[4] * n.y + rot[7] * n.z,
                                      rot[2] * n.x + rot[5] * n.y + rot[8] * n.z};
-                    h[y * W + x] = terrain::heightMeters(w + offset, cp, seaLevel, octaves);
+                    h[y * W + x] = terrain::heightMeters(w + offset, n, cp, seaLevel, octaves, pf, rot);
                 }
         });
     }
@@ -71,8 +71,8 @@ inline std::vector<float> sampleHeights(const terrain::ContinentParams& cp, floa
 }
 
 inline Result build(const terrain::ContinentParams& cp, float seaLevel, const float rot[9],
-                    terrain::V3 offset, float riverThresholdKm2) {
-    std::vector<float> h = sampleHeights(cp, seaLevel, rot, offset);
+                    terrain::V3 offset, float riverThresholdKm2, const plates::Field& pf) {
+    std::vector<float> h = sampleHeights(cp, seaLevel, rot, offset, pf);
     const int N = W * H;
     std::vector<float> filled(N);
     std::vector<int> parent(N, -1);

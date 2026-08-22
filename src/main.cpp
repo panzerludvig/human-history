@@ -29,6 +29,9 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_COMPILE_STATUS 0x8B81
 #define GL_LINK_STATUS 0x8B82
 #define GL_RGBA32F 0x8814
+#define GL_TEXTURE0 0x84C0
+#define GL_TEXTURE1 0x84C1
+#define GL_CLAMP_TO_EDGE 0x812F
 
 typedef GLuint(APIENTRY* PFNGLCREATESHADERPROC)(GLenum);
 typedef void(APIENTRY* PFNGLSHADERSOURCEPROC)(GLuint, GLsizei, const GLchar* const*, const GLint*);
@@ -48,6 +51,7 @@ typedef void(APIENTRY* PFNGLUNIFORM3FPROC)(GLint, GLfloat, GLfloat, GLfloat);
 typedef void(APIENTRY* PFNGLUNIFORM4FPROC)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
 typedef void(APIENTRY* PFNGLUNIFORM1IPROC)(GLint, GLint);
 typedef void(APIENTRY* PFNGLUNIFORMMATRIX3FVPROC)(GLint, GLsizei, GLboolean, const GLfloat*);
+typedef void(APIENTRY* PFNGLACTIVETEXTUREPROC)(GLenum);
 typedef void(APIENTRY* PFNGLGENVERTEXARRAYSPROC)(GLsizei, GLuint*);
 typedef void(APIENTRY* PFNGLBINDVERTEXARRAYPROC)(GLuint);
 typedef BOOL(APIENTRY* PFNWGLSWAPINTERVALEXTPROC)(int);
@@ -70,6 +74,7 @@ static PFNGLUNIFORM3FPROC glUniform3f;
 static PFNGLUNIFORM4FPROC glUniform4f;
 static PFNGLUNIFORM1IPROC glUniform1i;
 static PFNGLUNIFORMMATRIX3FVPROC glUniformMatrix3fv;
+static PFNGLACTIVETEXTUREPROC glActiveTexture;
 static PFNGLGENVERTEXARRAYSPROC glGenVertexArrays;
 static PFNGLBINDVERTEXARRAYPROC glBindVertexArray;
 static PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT;
@@ -101,6 +106,7 @@ static bool loadGL() {
     ok &= load(glUniform4f, "glUniform4f");
     ok &= load(glUniform1i, "glUniform1i");
     ok &= load(glUniformMatrix3fv, "glUniformMatrix3fv");
+    ok &= load(glActiveTexture, "glActiveTexture");
     ok &= load(glGenVertexArrays, "glGenVertexArrays");
     ok &= load(glBindVertexArray, "glBindVertexArray");
     load(wglSwapIntervalEXT, "wglSwapIntervalEXT"); // optional
@@ -254,6 +260,7 @@ struct World {
     terrain::ContinentParams cp{};
     float seaLevel = 0;
     hydrology::Result hydro;
+    plates::Field plateField;
 
     void derive() {
         std::mt19937 rng(seed);
@@ -270,16 +277,17 @@ struct World {
             for (int row = 0; row < 3; row++) rot[col * 3 + row] = (float)m[row][col];
         offset = {off(rng), off(rng), off(rng)};
         cp = terrain::paramsFor(concentration / 100.0f);
-        seaLevel = terrain::seaLevelFor(landPercent / 100.0f, cp, rot,
-                                        {(float)offset.x, (float)offset.y, (float)offset.z});
         if (name.empty()) name = "world-" + std::to_string(seed);
     }
 
-    // Everything derived from the seed, including the hydrology layer.
+    // Everything derived from the seed, in dependency order:
+    // plates -> sea level (land %) -> hydrology.
     void build() {
         derive();
-        hydro = hydrology::build(cp, seaLevel, rot, {(float)offset.x, (float)offset.y, (float)offset.z},
-                                 /*riverThresholdKm2=*/12000.0f);
+        terrain::V3 off = {(float)offset.x, (float)offset.y, (float)offset.z};
+        plateField = plates::build(seed);
+        seaLevel = terrain::seaLevelFor(landPercent / 100.0f, cp, rot, off, plateField);
+        hydro = hydrology::build(cp, seaLevel, rot, off, /*riverThresholdKm2=*/12000.0f, plateField);
     }
 };
 
@@ -359,7 +367,9 @@ struct App {
     int lastX = 0, lastY = 0;
     GLuint program = 0;
     GLuint hydroTex = 0;
+    GLuint plateTex = 0;
     bool running = true;
+    bool debugPlates = false;
     HWND hwnd = nullptr;
     HFONT font = nullptr, titleFont = nullptr;
     HBRUSH bgBrush = nullptr;
@@ -367,8 +377,26 @@ struct App {
 };
 static App app;
 
+// Push the plate table to texture unit 1, bilinear so belts are smooth.
+static void uploadPlates() {
+    glActiveTexture(GL_TEXTURE1);
+    if (!app.plateTex) {
+        glGenTextures(1, &app.plateTex);
+        glBindTexture(GL_TEXTURE_2D, app.plateTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindTexture(GL_TEXTURE_2D, app.plateTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, plates::W, plates::H, 0, GL_RGBA, GL_FLOAT,
+                 app.world.plateField.cells.data());
+    glActiveTexture(GL_TEXTURE0);
+}
+
 // Push the world's hydrology table to the GPU as one RGBA32F texel per cell.
 static void uploadHydrology() {
+    uploadPlates();
     if (!app.hydroTex) {
         glGenTextures(1, &app.hydroTex);
         glBindTexture(GL_TEXTURE_2D, app.hydroTex);
@@ -740,6 +768,9 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         app.cam.clampAltitude();
         return 0;
     }
+    case WM_KEYDOWN:
+        if (wp == 'P' && app.screen == Screen::InGame) app.debugPlates = !app.debugPlates;
+        return 0;
     case WM_CLOSE:
         app.running = false;
         return 0;
@@ -805,8 +836,10 @@ int main(int argc, char** argv) {
     GLint uHydro = glGetUniformLocation(app.program, "uHydro");
     GLint uHasHydro = glGetUniformLocation(app.program, "uHasHydro");
     GLint uScaleBar = glGetUniformLocation(app.program, "uScaleBar");
+    GLint uDebugPlates = glGetUniformLocation(app.program, "uDebugPlates");
     std::string lastScaleText;
     glUniform1i(uHydro, 0);
+    glUniform1i(glGetUniformLocation(app.program, "uPlates"), 1);
 
     createControls();
     app.cam.clampAltitude();
@@ -816,6 +849,7 @@ int main(int argc, char** argv) {
         app.world.seed = argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0;
         if (argc >= 6) app.world.landPercent = (float)atof(argv[5]);
         if (argc >= 7) app.world.concentration = (float)atof(argv[6]);
+        if (argc >= 8) app.debugPlates = std::string(argv[7]) == "plates";
         app.world.build();
         uploadHydrology();
         app.cam.lat = atof(argv[1]) * PI / 180;
@@ -868,6 +902,7 @@ int main(int argc, char** argv) {
             glUniform1f(uWebness, app.world.cp.webness);
             glUniform1f(uSeaLevel, app.world.seaLevel);
             glUniform1i(uHasHydro, app.world.hydro.cells.empty() ? 0 : 1);
+            glUniform1i(uDebugPlates, app.debugPlates ? 1 : 0);
             if (app.screen == Screen::InGame) {
                 ScaleBar sb = chooseScale(kmpp);
                 // Pixel coordinates with origin bottom-left, as gl_FragCoord uses.

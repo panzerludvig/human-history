@@ -138,3 +138,30 @@ The number of big rivers was never wrong — drainage area is physical. The prob
 
 **Ponds from the function, not the grid**
 Tiny lakes are below any practical grid. They are generated in the shader from a fine noise gated by flatness and moisture. This is the first "painted" water — it has no hydrology — and is acceptable because the user explicitly does not need the tiniest streams modelled.
+
+---
+
+## 2026-08-22 — Tectonic Plates
+
+### What was done
+Added tectonic plates as the first generation step. Plates drive crust (where continents tend to be) and uplift (where mountain ranges are, and their direction). The height function samples the plate layer on both CPU and GPU; hydrology runs after, so rivers and lakes adapt to the ranges automatically.
+
+### Decisions and reasoning
+
+**Plates are a layer the function samples, not a replacement for the function**
+The user wants the map to stay a function. Plates are global information, so they are computed once per world into a small texture (1024×512), and `height(p)` reads uplift, crust and belt direction at p. The noise continents remain; crust only biases them, so the land % quantile and the concentration parameter still work as before.
+
+**Physical boundary types rather than a generic "mountain belt"**
+Convergent, divergent and transform boundaries with continental/oceanic asymmetry give Andes-style coastal ranges, Himalaya-style interior belts, island arcs, trenches, mid-ocean ridges and rifts from one mechanism. The first version had a discontinuity at subduction boundaries (uplift on one side, trench on the other, meeting at zero distance) which rendered as a cliff wall along the coast; profiles were rewritten as continuous functions of signed distance.
+
+**Anisotropy only on coarse octaves**
+Stretching all octaves of the range noise along the belt produced hair-like parallel lines at close zoom. Now only the first three octaves are stretched (the range's shape); finer octaves are isotropic (the peaks).
+
+**Rock colour from physical slope and altitude**
+The relief shading uses an exaggerated per-pixel slope that is zoom-dependent, so using it for rock colouring made mountains look smooth from far away. Rock now comes from true rise-over-run plus an altitude tint above ~2000 m, so ranges read as mountains at every zoom.
+
+**Debug overlay**
+A plate overlay (P key) was essential for judging whether the boundary logic was right; kept as a permanent debug feature.
+
+**Second-nearest-plate artifact**
+A second cliff survived the profile fix: a perfectly straight wall inside a plate. Cause: crust and uplift were computed from the *second-nearest* plate, whose identity switches abruptly along the bisector between two neighbours. Replaced with a sum over all plates weighted by distance to each pairwise boundary, which is continuous everywhere. Worth remembering: any Voronoi-derived field that uses "the second nearest" has this seam.
