@@ -45,6 +45,7 @@ typedef GLint(APIENTRY* PFNGLGETUNIFORMLOCATIONPROC)(GLuint, const GLchar*);
 typedef void(APIENTRY* PFNGLUNIFORM1FPROC)(GLint, GLfloat);
 typedef void(APIENTRY* PFNGLUNIFORM2FPROC)(GLint, GLfloat, GLfloat);
 typedef void(APIENTRY* PFNGLUNIFORM3FPROC)(GLint, GLfloat, GLfloat, GLfloat);
+typedef void(APIENTRY* PFNGLUNIFORM4FPROC)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
 typedef void(APIENTRY* PFNGLUNIFORM1IPROC)(GLint, GLint);
 typedef void(APIENTRY* PFNGLUNIFORMMATRIX3FVPROC)(GLint, GLsizei, GLboolean, const GLfloat*);
 typedef void(APIENTRY* PFNGLGENVERTEXARRAYSPROC)(GLsizei, GLuint*);
@@ -66,6 +67,7 @@ static PFNGLGETUNIFORMLOCATIONPROC glGetUniformLocation;
 static PFNGLUNIFORM1FPROC glUniform1f;
 static PFNGLUNIFORM2FPROC glUniform2f;
 static PFNGLUNIFORM3FPROC glUniform3f;
+static PFNGLUNIFORM4FPROC glUniform4f;
 static PFNGLUNIFORM1IPROC glUniform1i;
 static PFNGLUNIFORMMATRIX3FVPROC glUniformMatrix3fv;
 static PFNGLGENVERTEXARRAYSPROC glGenVertexArrays;
@@ -96,6 +98,7 @@ static bool loadGL() {
     ok &= load(glUniform1f, "glUniform1f");
     ok &= load(glUniform2f, "glUniform2f");
     ok &= load(glUniform3f, "glUniform3f");
+    ok &= load(glUniform4f, "glUniform4f");
     ok &= load(glUniform1i, "glUniform1i");
     ok &= load(glUniformMatrix3fv, "glUniformMatrix3fv");
     ok &= load(glGenVertexArrays, "glGenVertexArrays");
@@ -343,6 +346,7 @@ enum : int {
     ID_TITLE, ID_STATUS,
     ID_GEN_SEED_LABEL, ID_GEN_SEED, ID_GEN_RANDOM, ID_GEN_LAND_LABEL, ID_GEN_LAND,
     ID_GEN_CONC_LABEL, ID_GEN_CONC, ID_GEN_HINT, ID_GEN_CREATE, ID_GEN_BACK,
+    ID_SCALE_LABEL,
 };
 
 struct App {
@@ -419,6 +423,29 @@ static void createControls() {
     addControl(ID_GEN_HINT, "STATIC", "Concentration: 0 = island webs and thin strips, 100 = one massive continent", SS_CENTER);
     addControl(ID_GEN_CREATE, "BUTTON", "Generate", BS_PUSHBUTTON);
     addControl(ID_GEN_BACK, "BUTTON", "Back", BS_PUSHBUTTON);
+    addControl(ID_SCALE_LABEL, "STATIC", "", SS_LEFT);
+}
+
+// Map scale bar: a 1/2/5 x 10^n distance whose bar is close to a target
+// width, placed in the bottom-left corner with its label above it.
+const int SCALE_MARGIN = 24;
+struct ScaleBar {
+    double km = 0;
+    int px = 0;
+};
+static ScaleBar chooseScale(double kmPerPixel, int targetPx = 160) {
+    double raw = kmPerPixel * targetPx;
+    double mag = std::pow(10.0, std::floor(std::log10(raw)));
+    double best = mag;
+    for (double m : {1.0, 2.0, 5.0, 10.0})
+        if (m * mag <= raw) best = m * mag;
+    return {best, (int)std::lround(best / kmPerPixel)};
+}
+static std::string scaleText(double km) {
+    char buf[32];
+    if (km >= 1.0) snprintf(buf, sizeof buf, "%g km", km);
+    else snprintf(buf, sizeof buf, "%g m", km * 1000.0);
+    return buf;
 }
 
 // Position and show the controls that belong to the current screen.
@@ -481,6 +508,7 @@ static void layoutControls() {
         break;
     }
     case Screen::InGame:
+        place(ID_SCALE_LABEL, SCALE_MARGIN, H - SCALE_MARGIN - 44, 110, 26);
         break;
     }
 }
@@ -776,6 +804,8 @@ int main(int argc, char** argv) {
     GLint uSeaLevel = glGetUniformLocation(app.program, "uSeaLevel");
     GLint uHydro = glGetUniformLocation(app.program, "uHydro");
     GLint uHasHydro = glGetUniformLocation(app.program, "uHasHydro");
+    GLint uScaleBar = glGetUniformLocation(app.program, "uScaleBar");
+    std::string lastScaleText;
     glUniform1i(uHydro, 0);
 
     createControls();
@@ -838,6 +868,19 @@ int main(int argc, char** argv) {
             glUniform1f(uWebness, app.world.cp.webness);
             glUniform1f(uSeaLevel, app.world.seaLevel);
             glUniform1i(uHasHydro, app.world.hydro.cells.empty() ? 0 : 1);
+            if (app.screen == Screen::InGame) {
+                ScaleBar sb = chooseScale(kmpp);
+                // Pixel coordinates with origin bottom-left, as gl_FragCoord uses.
+                float x0 = (float)SCALE_MARGIN, y0 = (float)SCALE_MARGIN + 6;
+                glUniform4f(uScaleBar, x0, y0, x0 + sb.px, y0);
+                std::string txt = scaleText(sb.km);
+                if (txt != lastScaleText) {
+                    lastScaleText = txt;
+                    SetWindowTextA(control(ID_SCALE_LABEL), txt.c_str());
+                }
+            } else {
+                glUniform4f(uScaleBar, -1, -1, -1, -1);
+            }
             glBindTexture(GL_TEXTURE_2D, app.hydroTex);
             glDrawArrays(GL_TRIANGLES, 0, 3);
         } else {

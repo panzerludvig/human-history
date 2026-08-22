@@ -23,6 +23,7 @@ uniform float uWebness;  // 0 = blobs, 1 = ridge web
 uniform float uSeaLevel; // field value at the coastline, chosen on the CPU
 uniform sampler2D uHydro; // per-cell lake level, drainage area, flow direction, height
 uniform int uHasHydro;
+uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 < 0 hides it
 
 const float HEIGHT_SCALE_M = 8000.0;
 const int HW = 2048, HH = 1024;     // hydrology grid size, must match hydrology.h
@@ -213,6 +214,18 @@ vec3 waterColor(float depthM, float lat, vec3 n) {
     return c;
 }
 
+// Scale bar overlay: a white line with end ticks and a dark outline.
+vec3 scaleBarOverlay(vec3 col) {
+    if (uScaleBar.x < 0.0) return col;
+    vec2 f = gl_FragCoord.xy;
+    float onLine = (f.x >= uScaleBar.x && f.x <= uScaleBar.z && abs(f.y - uScaleBar.y) <= 1.5) ? 1.0 : 0.0;
+    float tick = ((abs(f.x - uScaleBar.x) <= 1.5 || abs(f.x - uScaleBar.z) <= 1.5) && abs(f.y - uScaleBar.y) <= 6.0) ? 1.0 : 0.0;
+    float outline = (f.x >= uScaleBar.x - 1.5 && f.x <= uScaleBar.z + 1.5 && abs(f.y - uScaleBar.y) <= 3.0) ||
+                    ((abs(f.x - uScaleBar.x) <= 3.0 || abs(f.x - uScaleBar.z) <= 3.0) && abs(f.y - uScaleBar.y) <= 7.5) ? 1.0 : 0.0;
+    col = mix(col, vec3(0.05), outline * 0.85);
+    return mix(col, vec3(0.95), max(onLine, tick));
+}
+
 void main() {
     vec3 dir = normalize(uForward + uRight * vNdc.x * uTanHalf * uAspect + uUp * vNdc.y * uTanHalf);
     float b = dot(uCamPos, dir);
@@ -224,7 +237,7 @@ void main() {
         // Thin atmospheric halo just outside the limb.
         float miss = sqrt(-disc);
         float glow = exp(-miss * 60.0 / max(length(uCamPos) - 1.0, 0.02));
-        fragColor = vec4((bg + vec3(0.25, 0.45, 0.8) * glow * 0.6) * uDim, 1.0);
+        fragColor = vec4(scaleBarOverlay((bg + vec3(0.25, 0.45, 0.8) * glow * 0.6) * uDim), 1.0);
         return;
     }
     float t = -b - sqrt(disc);
@@ -281,5 +294,6 @@ void main() {
     vec3 col = albedo * (0.25 + 0.8 * diff);
     col += vec3(0.3, 0.5, 0.9) * limb * 0.35 * smoothstep(0.0, 0.6, length(uCamPos) - 1.0);
 
-    fragColor = vec4(pow(col, vec3(1.0 / 1.6)) * uDim, 1.0);
+    col = pow(col, vec3(1.0 / 1.6)) * uDim;
+    fragColor = vec4(scaleBarOverlay(col), 1.0);
 }

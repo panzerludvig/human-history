@@ -33,6 +33,10 @@ In the shader, a pixel is water if its height is below sea level, below the lake
 
 Generation takes well under a second. Nothing is saved; the layer is rebuilt from the seed on load.
 
+## Scale bar
+
+Bottom-left, in game only. The distance is a 1/2/5 × 10ⁿ value chosen so the bar is close to 160 px at the current km-per-pixel (measured at the screen centre, so it is exact there and slightly off toward the limb at full-globe zoom). The bar is drawn by the fragment shader as a screen-space overlay; the label is a static control like the menu text.
+
 ## Camera
 
 Sits at (lat, lon, altitude) above the surface and always looks at the globe's centre, so at deep zoom it is looking straight down. Vertical field of view 45°.
