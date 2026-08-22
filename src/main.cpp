@@ -16,6 +16,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <random>
 
 // ---------------------------------------------------------------- GL loading
 
@@ -42,6 +43,7 @@ typedef void(APIENTRY* PFNGLUNIFORM1FPROC)(GLint, GLfloat);
 typedef void(APIENTRY* PFNGLUNIFORM2FPROC)(GLint, GLfloat, GLfloat);
 typedef void(APIENTRY* PFNGLUNIFORM3FPROC)(GLint, GLfloat, GLfloat, GLfloat);
 typedef void(APIENTRY* PFNGLUNIFORM1IPROC)(GLint, GLint);
+typedef void(APIENTRY* PFNGLUNIFORMMATRIX3FVPROC)(GLint, GLsizei, GLboolean, const GLfloat*);
 typedef void(APIENTRY* PFNGLGENVERTEXARRAYSPROC)(GLsizei, GLuint*);
 typedef void(APIENTRY* PFNGLBINDVERTEXARRAYPROC)(GLuint);
 typedef BOOL(APIENTRY* PFNWGLSWAPINTERVALEXTPROC)(int);
@@ -62,6 +64,7 @@ static PFNGLUNIFORM1FPROC glUniform1f;
 static PFNGLUNIFORM2FPROC glUniform2f;
 static PFNGLUNIFORM3FPROC glUniform3f;
 static PFNGLUNIFORM1IPROC glUniform1i;
+static PFNGLUNIFORMMATRIX3FVPROC glUniformMatrix3fv;
 static PFNGLGENVERTEXARRAYSPROC glGenVertexArrays;
 static PFNGLBINDVERTEXARRAYPROC glBindVertexArray;
 static PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT;
@@ -91,6 +94,7 @@ static bool loadGL() {
     ok &= load(glUniform2f, "glUniform2f");
     ok &= load(glUniform3f, "glUniform3f");
     ok &= load(glUniform1i, "glUniform1i");
+    ok &= load(glUniformMatrix3fv, "glUniformMatrix3fv");
     ok &= load(glGenVertexArrays, "glGenVertexArrays");
     ok &= load(glBindVertexArray, "glBindVertexArray");
     load(wglSwapIntervalEXT, "wglSwapIntervalEXT"); // optional
@@ -230,18 +234,244 @@ static GLuint buildProgram() {
     return prog;
 }
 
+// ---------------------------------------------------------------- world
+
+// A world is a seed plus where the camera was left. The seed rotates and
+// offsets the terrain noise so every seed is a different globe.
+struct World {
+    uint32_t seed = 0;
+    std::string name;
+    float rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}; // column-major mat3 for GL
+    Vec3 offset{};
+
+    void derive() {
+        std::mt19937 rng(seed);
+        std::uniform_real_distribution<double> ang(0.0, 2 * PI), off(-2.0, 2.0);
+        double a = ang(rng), b = ang(rng), c = ang(rng);
+        // Rotation = Rz(a) * Ry(b) * Rx(c), stored column-major.
+        double ca = cos(a), sa = sin(a), cb = cos(b), sb = sin(b), cc = cos(c), sc = sin(c);
+        double m[3][3] = {
+            {ca * cb, ca * sb * sc - sa * cc, ca * sb * cc + sa * sc},
+            {sa * cb, sa * sb * sc + ca * cc, sa * sb * cc - ca * sc},
+            {-sb, cb * sc, cb * cc},
+        };
+        for (int col = 0; col < 3; col++)
+            for (int row = 0; row < 3; row++) rot[col * 3 + row] = (float)m[row][col];
+        offset = {off(rng), off(rng), off(rng)};
+        if (name.empty()) name = "world-" + std::to_string(seed);
+    }
+};
+
+static std::string worldsDir() { return exeDir() + "\\worlds"; }
+
+static bool saveWorld(const World& w, const Camera& c) {
+    CreateDirectoryA(worldsDir().c_str(), nullptr);
+    std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
+    if (!f) return false;
+    f.precision(17);
+    f << "seed " << w.seed << "\n";
+    f << "lat " << c.lat << "\n";
+    f << "lon " << c.lon << "\n";
+    f << "altitude " << c.altitude << "\n";
+    return (bool)f;
+}
+
+static bool loadWorld(const std::string& name, World& w, Camera& c) {
+    std::ifstream f(worldsDir() + "\\" + name + ".ibw");
+    if (!f) return false;
+    w = World{};
+    w.name = name;
+    std::string key;
+    while (f >> key) {
+        if (key == "seed") f >> w.seed;
+        else if (key == "lat") f >> c.lat;
+        else if (key == "lon") f >> c.lon;
+        else if (key == "altitude") f >> c.altitude;
+        else { std::string skip; f >> skip; }
+    }
+    w.derive();
+    c.clampAltitude();
+    return true;
+}
+
+static std::vector<std::string> listWorlds() {
+    std::vector<std::string> names;
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA((worldsDir() + "\\*.ibw").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return names;
+    do {
+        std::string n = fd.cFileName;
+        names.push_back(n.substr(0, n.size() - 4));
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
 // ---------------------------------------------------------------- app state
+
+enum class Screen { MainMenu, LoadMenu, InGame, PauseMenu };
+
+// Control IDs for the Win32 controls that make up the menus.
+enum : int {
+    ID_NEW_WORLD = 100, ID_LOAD_WORLD, ID_QUIT,
+    ID_LOAD_LIST, ID_LOAD_CONFIRM, ID_LOAD_BACK,
+    ID_SAVE_WORLD, ID_MAIN_MENU, ID_PAUSE_QUIT,
+    ID_TITLE, ID_STATUS,
+};
 
 struct App {
     Camera cam;
+    World world;
+    Screen screen = Screen::MainMenu;
     bool dragging = false;
     bool anchorValid = false;
     Vec3 anchor{}; // surface point grabbed at mouse-down
     int lastX = 0, lastY = 0;
     GLuint program = 0;
     bool running = true;
+    HWND hwnd = nullptr;
+    HFONT font = nullptr, titleFont = nullptr;
+    HBRUSH bgBrush = nullptr;
+    std::vector<std::pair<int, HWND>> controls;
 };
 static App app;
+
+static HWND control(int id) {
+    for (auto& c : app.controls)
+        if (c.first == id) return c.second;
+    return nullptr;
+}
+
+static void setStatus(const std::string& s) { SetWindowTextA(control(ID_STATUS), s.c_str()); }
+
+static void addControl(int id, const char* cls, const char* text, DWORD style) {
+    HWND h = CreateWindowA(cls, text, WS_CHILD | style, 0, 0, 10, 10, app.hwnd, (HMENU)(INT_PTR)id,
+                           GetModuleHandleA(nullptr), nullptr);
+    SendMessageA(h, WM_SETFONT, (WPARAM)(id == ID_TITLE ? app.titleFont : app.font), TRUE);
+    app.controls.push_back({id, h});
+}
+
+static void createControls() {
+    app.font = CreateFontA(24, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
+    app.titleFont = CreateFontA(56, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
+    app.bgBrush = CreateSolidBrush(RGB(8, 8, 16));
+    addControl(ID_TITLE, "STATIC", "Iron and Blood", SS_CENTER);
+    addControl(ID_STATUS, "STATIC", "", SS_CENTER);
+    addControl(ID_NEW_WORLD, "BUTTON", "New World", BS_PUSHBUTTON);
+    addControl(ID_LOAD_WORLD, "BUTTON", "Load World", BS_PUSHBUTTON);
+    addControl(ID_QUIT, "BUTTON", "Quit", BS_PUSHBUTTON);
+    addControl(ID_LOAD_LIST, "LISTBOX", "", WS_BORDER | WS_VSCROLL | LBS_NOTIFY);
+    addControl(ID_LOAD_CONFIRM, "BUTTON", "Load", BS_PUSHBUTTON);
+    addControl(ID_LOAD_BACK, "BUTTON", "Back", BS_PUSHBUTTON);
+    addControl(ID_SAVE_WORLD, "BUTTON", "Save World", BS_PUSHBUTTON);
+    addControl(ID_MAIN_MENU, "BUTTON", "Main Menu", BS_PUSHBUTTON);
+    addControl(ID_PAUSE_QUIT, "BUTTON", "Quit Game", BS_PUSHBUTTON);
+}
+
+// Position and show the controls that belong to the current screen.
+static void layoutControls() {
+    int W = app.cam.width, H = app.cam.height;
+    const int bw = 280, bh = 48, gap = 14;
+    int cx = W / 2 - bw / 2;
+    for (auto& c : app.controls) ShowWindow(c.second, SW_HIDE);
+
+    auto place = [&](int id, int x, int y, int w, int h) {
+        SetWindowPos(control(id), HWND_TOP, x, y, w, h, SWP_SHOWWINDOW);
+    };
+    auto stack = [&](std::initializer_list<int> ids, int top) {
+        int y = top;
+        for (int id : ids) {
+            place(id, cx, y, bw, bh);
+            y += bh + gap;
+        }
+        return y;
+    };
+
+    switch (app.screen) {
+    case Screen::MainMenu:
+        place(ID_TITLE, 0, H / 4 - 40, W, 70);
+        stack({ID_NEW_WORLD, ID_LOAD_WORLD, ID_QUIT}, H / 2 - bh);
+        place(ID_STATUS, 0, H - 60, W, 30);
+        break;
+    case Screen::LoadMenu: {
+        place(ID_TITLE, 0, H / 8, W, 70);
+        int listTop = H / 4 + 40, listH = H / 3;
+        place(ID_LOAD_LIST, cx, listTop, bw, listH);
+        stack({ID_LOAD_CONFIRM, ID_LOAD_BACK}, listTop + listH + gap);
+        place(ID_STATUS, 0, H - 60, W, 30);
+        break;
+    }
+    case Screen::PauseMenu: {
+        int bottom = stack({ID_SAVE_WORLD, ID_MAIN_MENU, ID_PAUSE_QUIT}, H / 2 - bh - gap);
+        place(ID_STATUS, cx - 60, bottom, bw + 120, 30);
+        break;
+    }
+    case Screen::InGame:
+        break;
+    }
+}
+
+static void setScreen(Screen s) {
+    app.screen = s;
+    app.dragging = false;
+    if (s == Screen::LoadMenu) {
+        HWND list = control(ID_LOAD_LIST);
+        SendMessageA(list, LB_RESETCONTENT, 0, 0);
+        for (auto& n : listWorlds()) SendMessageA(list, LB_ADDSTRING, 0, (LPARAM)n.c_str());
+        SendMessageA(list, LB_SETCURSEL, 0, 0);
+    }
+    layoutControls();
+    if (s == Screen::InGame) SetFocus(app.hwnd);
+}
+
+static void newWorld() {
+    app.world = World{};
+    app.world.seed = (uint32_t)std::random_device{}();
+    app.world.derive();
+    app.cam.lat = 0.35;
+    app.cam.lon = 0.0;
+    app.cam.altitude = app.cam.maxAltitude();
+    setStatus("");
+    setScreen(Screen::InGame);
+}
+
+static void onCommand(int id) {
+    switch (id) {
+    case ID_NEW_WORLD: newWorld(); break;
+    case ID_LOAD_WORLD:
+        setStatus("");
+        setScreen(Screen::LoadMenu);
+        break;
+    case ID_QUIT:
+    case ID_PAUSE_QUIT: app.running = false; break;
+    case ID_LOAD_BACK: setScreen(Screen::MainMenu); break;
+    case ID_LOAD_CONFIRM: {
+        HWND list = control(ID_LOAD_LIST);
+        int sel = (int)SendMessageA(list, LB_GETCURSEL, 0, 0);
+        if (sel < 0) {
+            setStatus("No saved worlds");
+            break;
+        }
+        char name[MAX_PATH];
+        SendMessageA(list, LB_GETTEXT, sel, (LPARAM)name);
+        if (loadWorld(name, app.world, app.cam)) {
+            setStatus("");
+            setScreen(Screen::InGame);
+        } else {
+            setStatus(std::string("Could not load ") + name);
+        }
+        break;
+    }
+    case ID_SAVE_WORLD:
+        setStatus(saveWorld(app.world, app.cam) ? "Saved as " + app.world.name : "Save failed");
+        break;
+    case ID_MAIN_MENU:
+        setStatus("");
+        setScreen(Screen::MainMenu);
+        break;
+    }
+}
 
 static void applyDrag(int x, int y) {
     Camera& c = app.cam;
@@ -268,6 +498,15 @@ static void applyDrag(int x, int y) {
     while (c.lon < -PI) c.lon += 2 * PI;
 }
 
+static void onEscape() {
+    switch (app.screen) {
+    case Screen::InGame: setScreen(Screen::PauseMenu); break;
+    case Screen::PauseMenu: setScreen(Screen::InGame); break;
+    case Screen::LoadMenu: setScreen(Screen::MainMenu); break;
+    case Screen::MainMenu: break;
+    }
+}
+
 static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_SIZE:
@@ -275,9 +514,20 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         app.cam.height = std::max(1, (int)HIWORD(lp));
         app.cam.clampAltitude();
         glViewport(0, 0, app.cam.width, app.cam.height);
+        if (!app.controls.empty()) layoutControls();
         return 0;
+    case WM_COMMAND:
+        if (HIWORD(wp) == BN_CLICKED) onCommand(LOWORD(wp));
+        else if (HIWORD(wp) == LBN_DBLCLK) onCommand(ID_LOAD_CONFIRM);
+        return 0;
+    case WM_CTLCOLORSTATIC:
+        SetTextColor((HDC)wp, RGB(230, 230, 235));
+        SetBkColor((HDC)wp, RGB(8, 8, 16));
+        return (LRESULT)app.bgBrush;
     case WM_LBUTTONDOWN:
+        if (app.screen != Screen::InGame) return 0;
         SetCapture(hwnd);
+        SetFocus(hwnd);
         app.dragging = true;
         app.lastX = GET_X_LPARAM(lp);
         app.lastY = GET_Y_LPARAM(lp);
@@ -296,15 +546,13 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_MOUSEWHEEL: {
+        if (app.screen != Screen::InGame) return 0;
         int delta = GET_WHEEL_DELTA_WPARAM(wp);
         double factor = std::pow(0.8, delta / (double)WHEEL_DELTA);
         app.cam.altitude *= factor;
         app.cam.clampAltitude();
         return 0;
     }
-    case WM_KEYDOWN:
-        if (wp == VK_ESCAPE) app.running = false;
-        return 0;
     case WM_CLOSE:
         app.running = false;
         return 0;
@@ -315,12 +563,6 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 // ---------------------------------------------------------------- main
 
 int main(int argc, char** argv) {
-    // Optional start view for testing: ironblood <latDeg> <lonDeg> [altitudeKm]
-    if (argc >= 3) {
-        app.cam.lat = atof(argv[1]) * PI / 180;
-        app.cam.lon = atof(argv[2]) * PI / 180;
-    }
-    if (argc >= 4) app.cam.altitude = atof(argv[3]) / EARTH_RADIUS_KM;
     HINSTANCE inst = GetModuleHandleA(nullptr);
     WNDCLASSA wc = {};
     wc.style = CS_OWNDC;
@@ -332,9 +574,11 @@ int main(int argc, char** argv) {
 
     RECT r = {0, 0, app.cam.width, app.cam.height};
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-    HWND hwnd = CreateWindowA("IronAndBlood", "Iron and Blood", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                              CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
-                              nullptr, nullptr, inst, nullptr);
+    app.hwnd = CreateWindowA("IronAndBlood", "Iron and Blood",
+                             WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
+                             CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
+                             nullptr, nullptr, inst, nullptr);
+    HWND hwnd = app.hwnd;
     HDC dc = GetDC(hwnd);
 
     PIXELFORMATDESCRIPTOR pfd = {};
@@ -346,7 +590,6 @@ int main(int argc, char** argv) {
     SetPixelFormat(dc, ChoosePixelFormat(dc, &pfd), &pfd);
     HGLRC rc = wglCreateContext(dc);
     wglMakeCurrent(dc, rc);
-    printf("OpenGL %s\n", (const char*)glGetString(GL_VERSION));
     if (!loadGL()) return 1;
     if (wglSwapIntervalEXT) wglSwapIntervalEXT(1);
 
@@ -365,31 +608,63 @@ int main(int argc, char** argv) {
     GLint uAspect = glGetUniformLocation(app.program, "uAspect");
     GLint uOctaves = glGetUniformLocation(app.program, "uOctaves");
     GLint uKmPerPixel = glGetUniformLocation(app.program, "uKmPerPixel");
+    GLint uWorldRot = glGetUniformLocation(app.program, "uWorldRot");
+    GLint uWorldOff = glGetUniformLocation(app.program, "uWorldOff");
+    GLint uDim = glGetUniformLocation(app.program, "uDim");
 
+    createControls();
     app.cam.clampAltitude();
+
+    // Testing shortcut: ironblood <latDeg> <lonDeg> [altitudeKm] [seed] skips the menu.
+    if (argc >= 3) {
+        app.world.seed = argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0;
+        app.world.derive();
+        app.cam.lat = atof(argv[1]) * PI / 180;
+        app.cam.lon = atof(argv[2]) * PI / 180;
+        if (argc >= 4) app.cam.altitude = atof(argv[3]) / EARTH_RADIUS_KM;
+        app.cam.clampAltitude();
+        setScreen(Screen::InGame);
+    } else {
+        setScreen(Screen::MainMenu);
+    }
 
     while (app.running) {
         MSG m;
         while (PeekMessageA(&m, nullptr, 0, 0, PM_REMOVE)) {
+            // Buttons take keyboard focus, so catch Escape before it reaches them.
+            if (m.message == WM_KEYDOWN && m.wParam == VK_ESCAPE) {
+                onEscape();
+                continue;
+            }
             TranslateMessage(&m);
             DispatchMessageA(&m);
         }
-        Camera& c = app.cam;
-        Vec3 p = c.position(), f = c.forward(), rt = c.right(), u = c.up();
-        // Finest noise octave should be around two pixels wide on screen.
-        double kmpp = c.kmPerPixel();
-        int octaves = (int)std::ceil(std::log2(EARTH_RADIUS_KM / (2.0 * kmpp)));
-        octaves = std::clamp(octaves, 4, 20);
+        bool showGlobe = app.screen == Screen::InGame || app.screen == Screen::PauseMenu;
+        if (showGlobe) {
+            Camera& c = app.cam;
+            Vec3 p = c.position(), f = c.forward(), rt = c.right(), u = c.up();
+            // Finest noise octave should be around two pixels wide on screen.
+            double kmpp = c.kmPerPixel();
+            int octaves = (int)std::ceil(std::log2(EARTH_RADIUS_KM / (2.0 * kmpp)));
+            octaves = std::clamp(octaves, 4, 20);
 
-        glUniform3f(uCamPos, (float)p.x, (float)p.y, (float)p.z);
-        glUniform3f(uForward, (float)f.x, (float)f.y, (float)f.z);
-        glUniform3f(uRight, (float)rt.x, (float)rt.y, (float)rt.z);
-        glUniform3f(uUp, (float)u.x, (float)u.y, (float)u.z);
-        glUniform1f(uTanHalf, (float)c.tanHalfV());
-        glUniform1f(uAspect, (float)c.aspect());
-        glUniform1i(uOctaves, octaves);
-        glUniform1f(uKmPerPixel, (float)kmpp);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+            glUniform3f(uCamPos, (float)p.x, (float)p.y, (float)p.z);
+            glUniform3f(uForward, (float)f.x, (float)f.y, (float)f.z);
+            glUniform3f(uRight, (float)rt.x, (float)rt.y, (float)rt.z);
+            glUniform3f(uUp, (float)u.x, (float)u.y, (float)u.z);
+            glUniform1f(uTanHalf, (float)c.tanHalfV());
+            glUniform1f(uAspect, (float)c.aspect());
+            glUniform1i(uOctaves, octaves);
+            glUniform1f(uKmPerPixel, (float)kmpp);
+            glUniformMatrix3fv(uWorldRot, 1, GL_FALSE, app.world.rot);
+            glUniform3f(uWorldOff, (float)app.world.offset.x, (float)app.world.offset.y,
+                        (float)app.world.offset.z);
+            glUniform1f(uDim, app.screen == Screen::PauseMenu ? 0.35f : 1.0f);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        } else {
+            glClearColor(8 / 255.f, 8 / 255.f, 16 / 255.f, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
         SwapBuffers(dc);
     }
 

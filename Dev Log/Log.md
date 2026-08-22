@@ -60,3 +60,21 @@ A world-fixed sun leaves half the globe dark at the zoomed-out view, which is us
 
 **Tuning done by screenshot**
 Land fraction, snow extent, and relief visibility were each judged from captured views at several positions and zooms rather than guessed. The starting bias put almost a whole hemisphere underwater; snow originally covered mid-latitude lowlands; relief was invisible until the sun was moved off the camera axis.
+
+---
+
+## 2026-08-22 — Menus, Worlds, Save/Load
+
+### What was done
+Added a main menu (New World / Load World / Quit) and an Esc pause menu (Save World / Main Menu / Quit Game). Introduced the notion of a world as a seed plus camera state, saved as a text file.
+
+### Decisions and reasoning
+
+**Native Win32 controls for menus**
+Text rendering in OpenGL without libraries means building a font atlas; not worth it for six buttons. Win32 child controls over the GL surface give working, accessible menus now. They will look out of place once the game has a style, and the map-centric principle says menus should be rare anyway — so this is scaffolding, not UI direction.
+
+**World = seed**
+Because terrain is a pure function, a world needs no stored data beyond its seed; the seed rotates and offsets the noise field. The rotation is the important part: an offset alone must stay small for float precision and would give only mildly different worlds. This keeps save files trivial now, but note that as soon as the world has mutable state (anything the simulation changes), saves become real serialization — see [[Technical/Architecture]].
+
+**Plain-text save format**
+Key-value lines, no versioning yet. Readable and diffable; will need a version field the moment a second kind of data is added.

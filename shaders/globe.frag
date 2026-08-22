@@ -14,6 +14,9 @@ uniform float uTanHalf;
 uniform float uAspect;
 uniform int uOctaves;
 uniform float uKmPerPixel;
+uniform mat3 uWorldRot;  // per-world rotation of the noise field
+uniform vec3 uWorldOff;  // per-world offset (kept small for float precision)
+uniform float uDim;      // 1 = normal, lower when a menu is over the globe
 
 const float PI = 3.14159265;
 const float SEA_LEVEL = 0.0;
@@ -144,7 +147,7 @@ void main() {
         // Thin atmospheric halo just outside the limb.
         float miss = sqrt(-disc);
         float glow = exp(-miss * 60.0 / max(length(uCamPos) - 1.0, 0.02));
-        fragColor = vec4(bg + vec3(0.25, 0.45, 0.8) * glow * 0.6, 1.0);
+        fragColor = vec4((bg + vec3(0.25, 0.45, 0.8) * glow * 0.6) * uDim, 1.0);
         return;
     }
     float t = -b - sqrt(disc);
@@ -152,14 +155,16 @@ void main() {
     vec3 n = normalize(p);
     float lat = asin(clamp(n.z, -1.0, 1.0));
 
-    float h = terrainHeight(n, uOctaves);
+    // Terrain is sampled in a per-world noise space.
+    vec3 w = uWorldRot * n + uWorldOff;
+    float h = terrainHeight(w, uOctaves);
 
     // Relief: finite-difference gradient in the tangent plane, step ~ one pixel.
     float eps = max(uKmPerPixel / 6371.0, 1e-6);
     vec3 tx = normalize(cross(n, abs(n.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0)));
     vec3 ty = cross(n, tx);
-    float hx = terrainHeight(normalize(n + tx * eps), uOctaves);
-    float hy = terrainHeight(normalize(n + ty * eps), uOctaves);
+    float hx = terrainHeight(uWorldRot * normalize(n + tx * eps) + uWorldOff, uOctaves);
+    float hy = terrainHeight(uWorldRot * normalize(n + ty * eps) + uWorldOff, uOctaves);
     // Vertical exaggeration keeps relief visible at every zoom.
     float reliefScale = 0.004 / eps;
     vec3 gradT = (tx * (hx - h) + ty * (hy - h)) * reliefScale;
@@ -167,7 +172,7 @@ void main() {
     float slope = clamp(length(gradT) * 0.5, 0.0, 1.0);
     if (h < SEA_LEVEL) { shadeN = n; slope = 0.0; }
 
-    vec3 albedo = terrainColor(n, h, slope, lat);
+    vec3 albedo = terrainColor(w, h, slope, lat);
 
     // Sun fixed relative to the camera so the visible side is always lit.
     vec3 sun = normalize(-uForward * 0.45 + uRight * -0.6 + uUp * 0.65);
@@ -176,5 +181,5 @@ void main() {
     vec3 col = albedo * (0.25 + 0.8 * diff);
     col += vec3(0.3, 0.5, 0.9) * limb * 0.35 * smoothstep(0.0, 0.6, length(uCamPos) - 1.0);
 
-    fragColor = vec4(pow(col, vec3(1.0 / 1.6)), 1.0);
+    fragColor = vec4(pow(col, vec3(1.0 / 1.6)) * uDim, 1.0);
 }

@@ -25,9 +25,19 @@ Sits at (lat, lon, altitude) above the surface and always looks at the globe's c
 - **Max zoom out:** altitude chosen so the full disc fits with a small margin — one side of the globe, not much more.
 - **Pan:** on mouse-down, the surface point under the cursor is recorded; on drag, the camera rotates so that point stays under the cursor. Off-globe drags fall back to a pixel-proportional rotation. Latitude is clamped to ±89° so the poles can't flip the camera.
 
+## Menus and worlds
+
+Menus are native Win32 controls (buttons, a list box, static text) laid over the GL window and shown/hidden per screen. Zero dependencies, text rendering for free; they look like Windows, which is fine until the game has a visual identity.
+
+- **Main menu:** New World, Load World (list of saves, double-click or Load), Quit.
+- **In game:** Esc opens the pause menu over the dimmed globe: Save World, Main Menu, Quit Game. Esc again returns to the game.
+- **A world** is a 32-bit seed plus the camera position. The seed derives a rotation matrix and a small offset applied to the surface normal before noise lookup, so each seed is a different globe from the same terrain code. The offset is kept within ±2 because large offsets cost float precision at deep zoom.
+- **Save files** are plain text in `build\worlds\<name>.ibw` (`seed`, `lat`, `lon`, `altitude`). A new world is named `world-<seed>`; saving overwrites that file. There is no rename or save-as yet.
+
 ## Known limitations
 
 - Terrain at 10 km is low-contrast: the noise amplitude at fine octaves is small, so close-up land is mostly flat colour with faint relief. Tuning item, not a structural problem.
 - Float precision on the GPU is adequate at max zoom but with little margin; zooming further would need camera-relative coordinates or double-precision uniforms.
 - No terrain exists on the CPU — see the open question in [[Technical/Architecture]].
 - Panning near the poles uses lat/lon deltas and gets distorted; acceptable for now.
+- Saves have no name entry and no delete; one save per generated world.
