@@ -78,3 +78,21 @@ Because terrain is a pure function, a world needs no stored data beyond its seed
 
 **Plain-text save format**
 Key-value lines, no versioning yet. Readable and diffable; will need a version field the moment a second kind of data is added.
+
+---
+
+## 2026-08-22 — World Generation Options
+
+### What was done
+New World now opens a generation screen: editable seed (with Random), land %, and concentration %. Saves gained a `version` line and the two new parameters.
+
+### Decisions and reasoning
+
+**Land % enforced by quantile, not by bias**
+A fixed bias on the noise gives a land fraction that drifts with every shape change. Instead the continent field was ported to C++ (`src/terrain.h`, bit-for-bit the same hash and constants), the sphere is sampled at world creation, and the sea level is the quantile that yields the requested fraction. Cost: ~40k field evaluations once per world; benefit: the number in the box is the number on the globe, for any concentration.
+
+**Concentration as one parameter driving three knobs**
+Frequency, domain-warp strength, and a blend toward a "ridge web" field (land along the zero set of a second noise). High concentration = low frequency and little warp, so the quantile picks one big blob. Low concentration = high frequency, heavy warp, and the web, which thresholds to thin strips and chains. One slider that reads as "how clumped is the land" rather than three that need explaining.
+
+**First CPU terrain**
+This is the first piece of terrain the simulation could query. It was done for the land-% feature, not as the terrain-architecture decision — that question stays open in [[Technical/Architecture]], but the mirrored-function approach now has a working example to judge.

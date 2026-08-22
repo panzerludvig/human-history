@@ -17,6 +17,7 @@
 #include <sstream>
 #include <algorithm>
 #include <random>
+#include "terrain.h"
 
 // ---------------------------------------------------------------- GL loading
 
@@ -240,9 +241,13 @@ static GLuint buildProgram() {
 // offsets the terrain noise so every seed is a different globe.
 struct World {
     uint32_t seed = 0;
+    float landPercent = 30.0f;
+    float concentration = 60.0f; // 0..100: island webs .. one continent
     std::string name;
     float rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}; // column-major mat3 for GL
     Vec3 offset{};
+    terrain::ContinentParams cp{};
+    float seaLevel = 0;
 
     void derive() {
         std::mt19937 rng(seed);
@@ -258,6 +263,9 @@ struct World {
         for (int col = 0; col < 3; col++)
             for (int row = 0; row < 3; row++) rot[col * 3 + row] = (float)m[row][col];
         offset = {off(rng), off(rng), off(rng)};
+        cp = terrain::paramsFor(concentration / 100.0f);
+        seaLevel = terrain::seaLevelFor(landPercent / 100.0f, cp, rot,
+                                        {(float)offset.x, (float)offset.y, (float)offset.z});
         if (name.empty()) name = "world-" + std::to_string(seed);
     }
 };
@@ -269,7 +277,10 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
+    f << "version 1\n";
     f << "seed " << w.seed << "\n";
+    f << "land " << w.landPercent << "\n";
+    f << "concentration " << w.concentration << "\n";
     f << "lat " << c.lat << "\n";
     f << "lon " << c.lon << "\n";
     f << "altitude " << c.altitude << "\n";
@@ -284,6 +295,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     std::string key;
     while (f >> key) {
         if (key == "seed") f >> w.seed;
+        else if (key == "land") f >> w.landPercent;
+        else if (key == "concentration") f >> w.concentration;
         else if (key == "lat") f >> c.lat;
         else if (key == "lon") f >> c.lon;
         else if (key == "altitude") f >> c.altitude;
@@ -310,7 +323,7 @@ static std::vector<std::string> listWorlds() {
 
 // ---------------------------------------------------------------- app state
 
-enum class Screen { MainMenu, LoadMenu, InGame, PauseMenu };
+enum class Screen { MainMenu, NewWorldMenu, LoadMenu, InGame, PauseMenu };
 
 // Control IDs for the Win32 controls that make up the menus.
 enum : int {
@@ -318,6 +331,8 @@ enum : int {
     ID_LOAD_LIST, ID_LOAD_CONFIRM, ID_LOAD_DELETE, ID_LOAD_BACK,
     ID_SAVE_NAME, ID_SAVE_WORLD, ID_MAIN_MENU, ID_PAUSE_QUIT,
     ID_TITLE, ID_STATUS,
+    ID_GEN_SEED_LABEL, ID_GEN_SEED, ID_GEN_RANDOM, ID_GEN_LAND_LABEL, ID_GEN_LAND,
+    ID_GEN_CONC_LABEL, ID_GEN_CONC, ID_GEN_HINT, ID_GEN_CREATE, ID_GEN_BACK,
 };
 
 struct App {
@@ -370,6 +385,16 @@ static void createControls() {
     addControl(ID_SAVE_WORLD, "BUTTON", "Save World", BS_PUSHBUTTON);
     addControl(ID_MAIN_MENU, "BUTTON", "Main Menu", BS_PUSHBUTTON);
     addControl(ID_PAUSE_QUIT, "BUTTON", "Quit Game", BS_PUSHBUTTON);
+    addControl(ID_GEN_SEED_LABEL, "STATIC", "Seed", SS_RIGHT);
+    addControl(ID_GEN_SEED, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER);
+    addControl(ID_GEN_RANDOM, "BUTTON", "Random", BS_PUSHBUTTON);
+    addControl(ID_GEN_LAND_LABEL, "STATIC", "Land %", SS_RIGHT);
+    addControl(ID_GEN_LAND, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER);
+    addControl(ID_GEN_CONC_LABEL, "STATIC", "Concentration %", SS_RIGHT);
+    addControl(ID_GEN_CONC, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER);
+    addControl(ID_GEN_HINT, "STATIC", "Concentration: 0 = island webs and thin strips, 100 = one massive continent", SS_CENTER);
+    addControl(ID_GEN_CREATE, "BUTTON", "Generate", BS_PUSHBUTTON);
+    addControl(ID_GEN_BACK, "BUTTON", "Back", BS_PUSHBUTTON);
 }
 
 // Position and show the controls that belong to the current screen.
@@ -397,6 +422,25 @@ static void layoutControls() {
         stack({ID_NEW_WORLD, ID_LOAD_WORLD, ID_QUIT}, H / 2 - bh);
         place(ID_STATUS, 0, H - 60, W, 30);
         break;
+    case Screen::NewWorldMenu: {
+        place(ID_TITLE, 0, H / 8, W, 70);
+        const int lw = 200, ew = 200, rh = 34, rgap = 16;
+        int x0 = W / 2 - (lw + 12 + ew) / 2;
+        int y = H / 4 + 50;
+        auto row = [&](int label, int edit, int extra) {
+            place(label, x0, y + 4, lw, rh);
+            place(edit, x0 + lw + 12, y, ew, rh);
+            if (extra) place(extra, x0 + lw + 12 + ew + 12, y - 2, 110, rh + 4);
+            y += rh + rgap;
+        };
+        row(ID_GEN_SEED_LABEL, ID_GEN_SEED, ID_GEN_RANDOM);
+        row(ID_GEN_LAND_LABEL, ID_GEN_LAND, 0);
+        row(ID_GEN_CONC_LABEL, ID_GEN_CONC, 0);
+        place(ID_GEN_HINT, 0, y, W, 30);
+        stack({ID_GEN_CREATE, ID_GEN_BACK}, y + 44);
+        place(ID_STATUS, 0, H - 60, W, 30);
+        break;
+    }
     case Screen::LoadMenu: {
         place(ID_TITLE, 0, H / 8, W, 70);
         int listTop = H / 4 + 40, listH = H / 3;
@@ -444,10 +488,29 @@ static std::string sanitizeName(std::string n) {
     return n.substr(a, b - a + 1);
 }
 
+static void setEditNumber(int id, double v, int decimals = 0) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "%.*f", decimals, v);
+    SetWindowTextA(control(id), buf);
+}
+
+static double getEditNumber(int id) {
+    char buf[64];
+    GetWindowTextA(control(id), buf, sizeof buf);
+    return atof(buf);
+}
+
+static void fillNewWorldFields(const World& w) {
+    setEditNumber(ID_GEN_SEED, (double)w.seed);
+    setEditNumber(ID_GEN_LAND, w.landPercent);
+    setEditNumber(ID_GEN_CONC, w.concentration);
+}
+
 static void setScreen(Screen s) {
     app.screen = s;
     app.dragging = false;
     if (s == Screen::LoadMenu) refreshWorldList();
+    if (s == Screen::NewWorldMenu) fillNewWorldFields(app.world);
     if (s == Screen::PauseMenu) SetWindowTextA(control(ID_SAVE_NAME), app.world.name.c_str());
     layoutControls();
     if (s == Screen::InGame) SetFocus(app.hwnd);
@@ -458,9 +521,21 @@ static void setScreen(Screen s) {
     }
 }
 
-static void newWorld() {
+static uint32_t randomSeed() { return (uint32_t)std::random_device{}(); }
+
+static void openNewWorldMenu() {
     app.world = World{};
-    app.world.seed = (uint32_t)std::random_device{}();
+    app.world.seed = randomSeed();
+    setStatus("");
+    setScreen(Screen::NewWorldMenu);
+}
+
+static void generateWorld() {
+    World w;
+    w.seed = (uint32_t)std::clamp(getEditNumber(ID_GEN_SEED), 0.0, 4294967295.0);
+    w.landPercent = (float)std::clamp(getEditNumber(ID_GEN_LAND), 0.0, 100.0);
+    w.concentration = (float)std::clamp(getEditNumber(ID_GEN_CONC), 0.0, 100.0);
+    app.world = w;
     app.world.derive();
     app.cam.lat = 0.35;
     app.cam.lon = 0.0;
@@ -471,7 +546,10 @@ static void newWorld() {
 
 static void onCommand(int id) {
     switch (id) {
-    case ID_NEW_WORLD: newWorld(); break;
+    case ID_NEW_WORLD: openNewWorldMenu(); break;
+    case ID_GEN_CREATE: generateWorld(); break;
+    case ID_GEN_BACK: setScreen(Screen::MainMenu); break;
+    case ID_GEN_RANDOM: setEditNumber(ID_GEN_SEED, (double)randomSeed()); break;
     case ID_LOAD_WORLD:
         setStatus("");
         setScreen(Screen::LoadMenu);
@@ -556,7 +634,8 @@ static void onEscape() {
     switch (app.screen) {
     case Screen::InGame: setScreen(Screen::PauseMenu); break;
     case Screen::PauseMenu: setScreen(Screen::InGame); break;
-    case Screen::LoadMenu: setScreen(Screen::MainMenu); break;
+    case Screen::LoadMenu:
+    case Screen::NewWorldMenu: setScreen(Screen::MainMenu); break;
     case Screen::MainMenu: break;
     }
 }
@@ -665,13 +744,19 @@ int main(int argc, char** argv) {
     GLint uWorldRot = glGetUniformLocation(app.program, "uWorldRot");
     GLint uWorldOff = glGetUniformLocation(app.program, "uWorldOff");
     GLint uDim = glGetUniformLocation(app.program, "uDim");
+    GLint uFreq = glGetUniformLocation(app.program, "uFreq");
+    GLint uWarp = glGetUniformLocation(app.program, "uWarp");
+    GLint uWebness = glGetUniformLocation(app.program, "uWebness");
+    GLint uSeaLevel = glGetUniformLocation(app.program, "uSeaLevel");
 
     createControls();
     app.cam.clampAltitude();
 
-    // Testing shortcut: ironblood <latDeg> <lonDeg> [altitudeKm] [seed] skips the menu.
+    // Testing shortcut: ironblood <latDeg> <lonDeg> [altitudeKm] [seed] [land%] [concentration%]
     if (argc >= 3) {
         app.world.seed = argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0;
+        if (argc >= 6) app.world.landPercent = (float)atof(argv[5]);
+        if (argc >= 7) app.world.concentration = (float)atof(argv[6]);
         app.world.derive();
         app.cam.lat = atof(argv[1]) * PI / 180;
         app.cam.lon = atof(argv[2]) * PI / 180;
@@ -690,9 +775,9 @@ int main(int argc, char** argv) {
                 onEscape();
                 continue;
             }
-            if (m.message == WM_KEYDOWN && m.wParam == VK_RETURN && app.screen == Screen::PauseMenu) {
-                onCommand(ID_SAVE_WORLD);
-                continue;
+            if (m.message == WM_KEYDOWN && m.wParam == VK_RETURN) {
+                if (app.screen == Screen::PauseMenu) { onCommand(ID_SAVE_WORLD); continue; }
+                if (app.screen == Screen::NewWorldMenu) { onCommand(ID_GEN_CREATE); continue; }
             }
             TranslateMessage(&m);
             DispatchMessageA(&m);
@@ -718,6 +803,10 @@ int main(int argc, char** argv) {
             glUniform3f(uWorldOff, (float)app.world.offset.x, (float)app.world.offset.y,
                         (float)app.world.offset.z);
             glUniform1f(uDim, app.screen == Screen::PauseMenu ? 0.35f : 1.0f);
+            glUniform1f(uFreq, app.world.cp.freq);
+            glUniform1f(uWarp, app.world.cp.warp);
+            glUniform1f(uWebness, app.world.cp.webness);
+            glUniform1f(uSeaLevel, app.world.seaLevel);
             glDrawArrays(GL_TRIANGLES, 0, 3);
         } else {
             glClearColor(8 / 255.f, 8 / 255.f, 16 / 255.f, 1);

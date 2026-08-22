@@ -17,6 +17,10 @@ uniform float uKmPerPixel;
 uniform mat3 uWorldRot;  // per-world rotation of the noise field
 uniform vec3 uWorldOff;  // per-world offset (kept small for float precision)
 uniform float uDim;      // 1 = normal, lower when a menu is over the globe
+uniform float uFreq;     // continent field frequency
+uniform float uWarp;     // domain-warp strength
+uniform float uWebness;  // 0 = blobs, 1 = ridge web
+uniform float uSeaLevel; // field value at the coastline, chosen on the CPU
 
 const float PI = 3.14159265;
 const float SEA_LEVEL = 0.0;
@@ -80,13 +84,21 @@ float ridged(vec3 p, int octaves) {
 
 // ------------------------------------------------------------ terrain
 
-// Height in [-1, 1]-ish; positive is land. `n` is the unit surface normal.
+// The raw continent field. Mirrored exactly in src/terrain.h — keep in sync.
+float continentField(vec3 p) {
+    vec3 warp = vec3(fbm(p * 1.3 + 11.0, 3, 0.5),
+                     fbm(p * 1.3 + 23.0, 3, 0.5),
+                     fbm(p * 1.3 + 37.0, 3, 0.5));
+    vec3 q = p * uFreq + warp * uWarp;
+    float base = fbm(q, 6, 0.5);
+    // Ridges along the zero set of a second field: thin strips and chains.
+    float web = 0.35 - abs(fbm(q + 53.0, 6, 0.5)) * 2.0;
+    return mix(base, web, uWebness);
+}
+
+// Height in [-1, 1]-ish; positive is land. `n` is a point in noise space.
 float terrainHeight(vec3 n, int octaves) {
-    // Continents: domain-warped low-frequency noise, biased so ~30% is land.
-    vec3 warp = vec3(fbm(n * 1.3 + 11.0, 3, 0.5),
-                     fbm(n * 1.3 + 23.0, 3, 0.5),
-                     fbm(n * 1.3 + 37.0, 3, 0.5));
-    float continent = fbm(n * 1.1 + warp * 0.45, min(octaves, 7), 0.52) - 0.03;
+    float continent = continentField(n) - uSeaLevel;
 
     // Finer detail only where it matters; fades out in deep ocean.
     float detail = fbm(n * 9.0 + 5.0, max(octaves - 3, 1), 0.5);

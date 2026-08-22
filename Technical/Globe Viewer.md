@@ -29,14 +29,14 @@ Sits at (lat, lon, altitude) above the surface and always looks at the globe's c
 
 Menus are native Win32 controls (buttons, a list box, static text) laid over the GL window and shown/hidden per screen. Zero dependencies, text rendering for free; they look like Windows, which is fine until the game has a visual identity.
 
-- **Main menu:** New World, Load World (list of saves: Load or double-click, Delete with confirmation, Back), Quit.
+- **Main menu:** New World (opens the generation screen: seed with Random button, land %, concentration %; Generate or Enter), Load World (list of saves: Load or double-click, Delete with confirmation, Back), Quit.
 - **In game:** Esc opens the pause menu over the dimmed globe: a name box (pre-filled, Enter saves), Save World, Main Menu, Quit Game. Esc again returns to the game.
 - **A world** is a 32-bit seed plus the camera position. The seed derives a rotation matrix and a small offset applied to the surface normal before noise lookup, so each seed is a different globe from the same terrain code. The offset is kept within ±2 because large offsets cost float precision at deep zoom.
-- **Save files** are plain text in `build\worlds\<name>.ibw` (`seed`, `lat`, `lon`, `altitude`). A new world starts named `world-<seed>`; the name box lets you change it before saving, and the name becomes the file name (characters illegal in file names are replaced with `_`). Saving under a new name writes a new file and leaves the old one in place.
+- **Save files** are plain text in `build\worlds\<name>.ibw` (`version`, `seed`, `land`, `concentration`, `lat`, `lon`, `altitude`; missing keys take defaults). A new world starts named `world-<seed>`; the name box lets you change it before saving, and the name becomes the file name (characters illegal in file names are replaced with `_`). Saving under a new name writes a new file and leaves the old one in place.
 
 ## Known limitations
 
 - Terrain at 10 km is low-contrast: the noise amplitude at fine octaves is small, so close-up land is mostly flat colour with faint relief. Tuning item, not a structural problem.
 - Float precision on the GPU is adequate at max zoom but with little margin; zooming further would need camera-relative coordinates or double-precision uniforms.
-- No terrain exists on the CPU — see the open question in [[Technical/Architecture]].
+- Only the continent field exists on the CPU; detail and mountains are GPU-only — see the open question in [[Technical/Architecture]].
 - Panning near the poles uses lat/lon deltas and gets distorted; acceptable for now.
