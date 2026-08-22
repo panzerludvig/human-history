@@ -315,8 +315,8 @@ enum class Screen { MainMenu, LoadMenu, InGame, PauseMenu };
 // Control IDs for the Win32 controls that make up the menus.
 enum : int {
     ID_NEW_WORLD = 100, ID_LOAD_WORLD, ID_QUIT,
-    ID_LOAD_LIST, ID_LOAD_CONFIRM, ID_LOAD_BACK,
-    ID_SAVE_WORLD, ID_MAIN_MENU, ID_PAUSE_QUIT,
+    ID_LOAD_LIST, ID_LOAD_CONFIRM, ID_LOAD_DELETE, ID_LOAD_BACK,
+    ID_SAVE_NAME, ID_SAVE_WORLD, ID_MAIN_MENU, ID_PAUSE_QUIT,
     ID_TITLE, ID_STATUS,
 };
 
@@ -363,7 +363,10 @@ static void createControls() {
     addControl(ID_QUIT, "BUTTON", "Quit", BS_PUSHBUTTON);
     addControl(ID_LOAD_LIST, "LISTBOX", "", WS_BORDER | WS_VSCROLL | LBS_NOTIFY);
     addControl(ID_LOAD_CONFIRM, "BUTTON", "Load", BS_PUSHBUTTON);
+    addControl(ID_LOAD_DELETE, "BUTTON", "Delete", BS_PUSHBUTTON);
     addControl(ID_LOAD_BACK, "BUTTON", "Back", BS_PUSHBUTTON);
+    addControl(ID_SAVE_NAME, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_CENTER);
+    SendMessageA(control(ID_SAVE_NAME), EM_SETLIMITTEXT, 64, 0);
     addControl(ID_SAVE_WORLD, "BUTTON", "Save World", BS_PUSHBUTTON);
     addControl(ID_MAIN_MENU, "BUTTON", "Main Menu", BS_PUSHBUTTON);
     addControl(ID_PAUSE_QUIT, "BUTTON", "Quit Game", BS_PUSHBUTTON);
@@ -398,12 +401,14 @@ static void layoutControls() {
         place(ID_TITLE, 0, H / 8, W, 70);
         int listTop = H / 4 + 40, listH = H / 3;
         place(ID_LOAD_LIST, cx, listTop, bw, listH);
-        stack({ID_LOAD_CONFIRM, ID_LOAD_BACK}, listTop + listH + gap);
+        stack({ID_LOAD_CONFIRM, ID_LOAD_DELETE, ID_LOAD_BACK}, listTop + listH + gap);
         place(ID_STATUS, 0, H - 60, W, 30);
         break;
     }
     case Screen::PauseMenu: {
-        int bottom = stack({ID_SAVE_WORLD, ID_MAIN_MENU, ID_PAUSE_QUIT}, H / 2 - bh - gap);
+        int top = H / 2 - 2 * (bh + gap);
+        place(ID_SAVE_NAME, cx, top, bw, 34);
+        int bottom = stack({ID_SAVE_WORLD, ID_MAIN_MENU, ID_PAUSE_QUIT}, top + 34 + gap);
         place(ID_STATUS, cx - 60, bottom, bw + 120, 30);
         break;
     }
@@ -412,17 +417,45 @@ static void layoutControls() {
     }
 }
 
+static void refreshWorldList() {
+    HWND list = control(ID_LOAD_LIST);
+    SendMessageA(list, LB_RESETCONTENT, 0, 0);
+    for (auto& n : listWorlds()) SendMessageA(list, LB_ADDSTRING, 0, (LPARAM)n.c_str());
+    SendMessageA(list, LB_SETCURSEL, 0, 0);
+}
+
+// Name of the world currently selected in the load list, or empty.
+static std::string selectedWorld() {
+    HWND list = control(ID_LOAD_LIST);
+    int sel = (int)SendMessageA(list, LB_GETCURSEL, 0, 0);
+    if (sel < 0) return "";
+    char name[MAX_PATH];
+    SendMessageA(list, LB_GETTEXT, sel, (LPARAM)name);
+    return name;
+}
+
+// Turn whatever was typed into something that is safe as a file name.
+static std::string sanitizeName(std::string n) {
+    const std::string bad = "\\/:*?\"<>|";
+    for (char& ch : n)
+        if (bad.find(ch) != std::string::npos || (unsigned char)ch < 32) ch = '_';
+    size_t a = n.find_first_not_of(" ."), b = n.find_last_not_of(" .");
+    if (a == std::string::npos) return "";
+    return n.substr(a, b - a + 1);
+}
+
 static void setScreen(Screen s) {
     app.screen = s;
     app.dragging = false;
-    if (s == Screen::LoadMenu) {
-        HWND list = control(ID_LOAD_LIST);
-        SendMessageA(list, LB_RESETCONTENT, 0, 0);
-        for (auto& n : listWorlds()) SendMessageA(list, LB_ADDSTRING, 0, (LPARAM)n.c_str());
-        SendMessageA(list, LB_SETCURSEL, 0, 0);
-    }
+    if (s == Screen::LoadMenu) refreshWorldList();
+    if (s == Screen::PauseMenu) SetWindowTextA(control(ID_SAVE_NAME), app.world.name.c_str());
     layoutControls();
     if (s == Screen::InGame) SetFocus(app.hwnd);
+    if (s == Screen::PauseMenu) {
+        HWND edit = control(ID_SAVE_NAME);
+        SetFocus(edit);
+        SendMessageA(edit, EM_SETSEL, 0, -1);
+    }
 }
 
 static void newWorld() {
@@ -447,25 +480,46 @@ static void onCommand(int id) {
     case ID_PAUSE_QUIT: app.running = false; break;
     case ID_LOAD_BACK: setScreen(Screen::MainMenu); break;
     case ID_LOAD_CONFIRM: {
-        HWND list = control(ID_LOAD_LIST);
-        int sel = (int)SendMessageA(list, LB_GETCURSEL, 0, 0);
-        if (sel < 0) {
+        std::string name = selectedWorld();
+        if (name.empty()) {
             setStatus("No saved worlds");
             break;
         }
-        char name[MAX_PATH];
-        SendMessageA(list, LB_GETTEXT, sel, (LPARAM)name);
         if (loadWorld(name, app.world, app.cam)) {
             setStatus("");
             setScreen(Screen::InGame);
         } else {
-            setStatus(std::string("Could not load ") + name);
+            setStatus("Could not load " + name);
         }
         break;
     }
-    case ID_SAVE_WORLD:
-        setStatus(saveWorld(app.world, app.cam) ? "Saved as " + app.world.name : "Save failed");
+    case ID_LOAD_DELETE: {
+        std::string name = selectedWorld();
+        if (name.empty()) {
+            setStatus("No saved worlds");
+            break;
+        }
+        std::string q = "Delete world \"" + name + "\"? This cannot be undone.";
+        if (MessageBoxA(app.hwnd, q.c_str(), "Delete World", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+            break;
+        std::string path = worldsDir() + "\\" + name + ".ibw";
+        setStatus(DeleteFileA(path.c_str()) ? "Deleted " + name : "Could not delete " + name);
+        refreshWorldList();
         break;
+    }
+    case ID_SAVE_WORLD: {
+        char buf[128];
+        GetWindowTextA(control(ID_SAVE_NAME), buf, sizeof buf);
+        std::string name = sanitizeName(buf);
+        if (name.empty()) {
+            setStatus("Enter a name for the world");
+            break;
+        }
+        app.world.name = name;
+        SetWindowTextA(control(ID_SAVE_NAME), name.c_str());
+        setStatus(saveWorld(app.world, app.cam) ? "Saved as " + name : "Save failed");
+        break;
+    }
     case ID_MAIN_MENU:
         setStatus("");
         setScreen(Screen::MainMenu);
@@ -634,6 +688,10 @@ int main(int argc, char** argv) {
             // Buttons take keyboard focus, so catch Escape before it reaches them.
             if (m.message == WM_KEYDOWN && m.wParam == VK_ESCAPE) {
                 onEscape();
+                continue;
+            }
+            if (m.message == WM_KEYDOWN && m.wParam == VK_RETURN && app.screen == Screen::PauseMenu) {
+                onCommand(ID_SAVE_WORLD);
                 continue;
             }
             TranslateMessage(&m);
