@@ -1,0 +1,1 @@
+Before doing anything else, read `Codex.md` in this directory. It is the authoritative reference for working on this project — workflow, standards, and links to all design and technical documentation.
