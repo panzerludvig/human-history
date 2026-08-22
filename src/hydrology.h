@@ -122,14 +122,59 @@ inline Result build(const terrain::ContinentParams& cp, float seaLevel, const fl
         if (parent[c] >= 0) acc[parent[c]] += acc[c];
     }
 
+    // Full filling makes every broad basin a sea. Real basins are mostly
+    // breached by erosion, so cap each lake's depth above its floor; a few
+    // basins keep their full fill and become great lakes.
+    std::vector<float> level(filled);
+    {
+        std::vector<int> comp(N, -1);
+        std::vector<int> stack;
+        int ncomp = 0;
+        for (int i = 0; i < N; i++) {
+            bool lake = h[i] > 0 && filled[i] > h[i] + 0.5f;
+            if (!lake || comp[i] >= 0) continue;
+            float floorH = h[i];
+            std::vector<int> members;
+            stack.push_back(i);
+            comp[i] = ncomp;
+            while (!stack.empty()) {
+                int c = stack.back();
+                stack.pop_back();
+                members.push_back(c);
+                floorH = std::min(floorH, h[c]);
+                int cx = c % W, cy = c / W;
+                for (int d = 0; d < 8; d++) {
+                    int nx = wrapX(cx + DX[d]), ny = cy + DY[d];
+                    if (ny < 0 || ny >= H) continue;
+                    int n = ny * W + nx;
+                    bool nlake = h[n] > 0 && filled[n] > h[n] + 0.5f;
+                    if (!nlake || comp[n] >= 0 || filled[n] != filled[i]) continue;
+                    comp[n] = ncomp;
+                    stack.push_back(n);
+                }
+            }
+            uint32_t hx = (uint32_t)i * 2654435761u;
+            hx ^= hx >> 15;
+            // Most basins are breached and hold no lake at all; of the rest,
+            // a few keep their full fill and become great lakes.
+            int roll = (int)(hx % 100);
+            bool great = roll < 3;
+            bool kept = roll < 30;
+            float cap = great ? 1.0e9f : 60.0f;
+            float lvl = kept ? std::min(filled[i], floorH + cap) : floorH;
+            for (int c : members) level[c] = lvl;
+            ncomp++;
+        }
+    }
+
     Result r;
     r.cells.resize(N);
     for (int i = 0; i < N; i++) {
         Cell& cell = r.cells[i];
         bool ocean = h[i] <= 0;
-        bool lake = !ocean && filled[i] > h[i] + 0.5f;
+        bool lake = !ocean && level[i] > h[i] + 0.5f;
         cell.height = h[i];
-        cell.lakeLevel = lake ? filled[i] : NO_LAKE;
+        cell.lakeLevel = lake ? level[i] : NO_LAKE;
         // Rivers are drawn from land cells only; lakes and the sea absorb them.
         cell.flow = (!ocean && !lake && acc[i] >= riverThresholdKm2) ? acc[i] : 0.0f;
         cell.dir = -1;

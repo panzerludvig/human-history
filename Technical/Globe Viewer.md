@@ -23,10 +23,13 @@ Lakes and rivers are non-local — a lake's level depends on its outlet, a river
 
 1. The height function is sampled on a 2048×1024 equirectangular grid (~20 km cells) using all CPU cores.
 2. **Priority flood** from the ocean cells fills every depression; where the filled surface is above the ground, that cell is a lake at that level. The flood also records each cell's downstream neighbour, which routes flow correctly across flats and lake surfaces to the spill point.
-3. **Flow accumulation** sums cell areas (km²) downstream in reverse flood order. Cells above a drainage threshold (12 000 km²) are river cells.
-4. The table (lake level, drainage area, direction, height) is uploaded as one RGBA32F texel per cell.
+3. **Basin breaching.** Full filling would make every broad basin an inland sea, but on Earth most basins have been breached by erosion. Each lake basin (connected component at one fill level) rolls a seeded number: 70% drain completely, 27% keep a lake capped at 60 m above the basin floor, 3% keep their full fill and become great lakes. This gives few very large lakes, more mid-sized ones.
+4. **Flow accumulation** sums cell areas (km²) downstream in reverse flood order. Cells above a drainage threshold (12 000 km²) are river cells.
+5. The table (lake level, drainage area, direction, height) is uploaded as one RGBA32F texel per cell.
 
-In the shader, a pixel is water if its height is below sea level, below the lake level of its cell (lake levels spill one cell outward so the GPU's own height decides the shoreline, not the grid), or within a river. Rivers are drawn as lines between cell centres: each pixel checks the 5×5 cells around it for a river segment within half-width, with width from drainage area and a floor of ~1 pixel so rivers stay visible from orbit. Two noise displacements on the lookup point — a ~25 km bend and a ~7 km wiggle — hide the 8-direction grid.
+In the shader, a pixel is water if its height is below sea level, below the lake level of its cell (lake levels spill one cell outward so the GPU's own height decides the shoreline, not the grid), or within a river. Rivers are drawn as lines between cell centres: each pixel checks the 5×5 cells around it for a river segment within half-width, with width from drainage area and a floor of ~1 pixel. Which rivers are drawn depends on zoom: from orbit only continental-scale rivers (≈10⁶ km² drainage) show, and the threshold falls as you zoom in until every river above 12 000 km² is visible.
+
+**Ponds** — lakes far below the grid's 20 km resolution — come from the function itself: where a fine noise (~9 km wavelength) peaks on flat, low, moist land, the pixel is water a few metres above the ground. They are painted rather than routed; nothing flows into or out of them. Two noise displacements on the lookup point — a ~25 km bend and a ~7 km wiggle — hide the 8-direction grid.
 
 Generation takes well under a second. Nothing is saved; the layer is rebuilt from the seed on load.
 

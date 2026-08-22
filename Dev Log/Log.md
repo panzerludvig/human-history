@@ -120,3 +120,21 @@ Rasterising rivers into a texture at sub-cell resolution would need a far larger
 
 **Nothing saved**
 The layer rebuilds from the seed in well under a second, so the save format is unchanged.
+
+---
+
+## 2026-08-22 — Lake and River Distribution
+
+### What was done
+Tuned hydrology toward an Earth-like distribution: few very large lakes and rivers, more mid-sized, many tiny ones.
+
+### Decisions and reasoning
+
+**Basin breaching by seeded roll rather than erosion simulation**
+Priority flood fills every basin to its spill point, which on unweathered noise terrain produces inland seas and hundreds of 400 km² mountain lakes. Real basins are mostly breached. Simulating that erosion is a large project; a per-basin seeded roll (70% drain, 27% shallow lake capped at 60 m, 3% full great lake) gives the right *distribution* immediately and is deterministic from the seed. If erosion is ever simulated, it replaces this roll.
+
+**River visibility scales with zoom**
+The number of big rivers was never wrong — drainage area is physical. The problem was a 1 px width floor that made every river above threshold look the same from orbit. Now the drainage threshold for drawing rises with km-per-pixel, so the orbit view shows only continental rivers and mid-sized ones appear as you zoom. This is a rendering rule, not a data change.
+
+**Ponds from the function, not the grid**
+Tiny lakes are below any practical grid. They are generated in the shader from a fine noise gated by flatness and moisture. This is the first "painted" water — it has no hydrology — and is acceptable because the user explicitly does not need the tiniest streams modelled.

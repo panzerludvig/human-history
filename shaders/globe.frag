@@ -160,12 +160,14 @@ float riverAt(vec3 n, vec3 w) {
     vec3 wiggle = vec3(noise(w * 900.0 + 3.0), noise(w * 900.0 + 17.0), noise(w * 900.0 + 29.0));
     vec3 nj = normalize(n + bend * 0.0035 + wiggle * 0.0006);
     ivec2 c0 = hydroCell(nj);
+    // Zoomed out, only continental rivers are drawn; more appear as you zoom in.
+    float minFlow = 12000.0 * pow(max(uKmPerPixel / 0.5, 1.0), 1.5);
     float best = 0.0;
     for (int dy = -2; dy <= 2; dy++)
         for (int dx = -2; dx <= 2; dx++) {
             ivec2 c = c0 + ivec2(dx, dy);
             vec4 t = hydroFetch(c);
-            if (t.g <= 0.0 || t.b < 0.0) continue;
+            if (t.g < minFlow || t.b < 0.0) continue;
             ivec2 d = c + DIRS[int(t.b + 0.5)];
             float dist = segmentDistance(nj, cellCentre(c), cellCentre(d)) * 6371.0;
             if (dist < riverHalfWidthKm(t.g)) best = max(best, t.g);
@@ -243,6 +245,15 @@ void main() {
         if (cell.r > NO_LAKE + 1.0 && h < cell.r) { isWater = true; waterLevel = cell.r; }
         if (!isWater && h > 0.0 && riverAt(n, w) > 0.0) { isWater = true; isRiver = true; waterLevel = h; }
     }
+    // Ponds: tiny lakes below the grid's resolution, where a fine noise
+    // peaks on flat, moist, low ground. Painted by the function, not routed.
+    bool isPond = false;
+    if (!isWater && h > 0.0 && h < 1500.0) {
+        float pondField = fbm(w * 700.0 + 91.0, 3, 0.5);
+        float flatness = 1.0 - smoothstep(0.0, 0.015, abs(terrainHeight(uWorldRot * normalize(n + vec3(0.0005)) + uWorldOff, max(uOctaves - 4, 4)) - h) / 80.0);
+        float moist = fbm(w * 3.0 + 77.0, 4, 0.5) * 0.5 + 0.5;
+        if (pondField > 0.26 + 0.22 * (1.0 - moist) && flatness > 0.3) { isWater = true; isPond = true; waterLevel = h + 3.0; }
+    }
 
     // Relief: finite-difference gradient in the tangent plane, step ~ one pixel.
     float eps = max(uKmPerPixel / 6371.0, 1e-6);
@@ -259,6 +270,7 @@ void main() {
 
     vec3 albedo;
     if (isRiver) albedo = vec3(0.10, 0.30, 0.48);
+    else if (isPond) albedo = vec3(0.14, 0.36, 0.50);
     else if (isWater) albedo = waterColor(waterLevel - h, lat, w);
     else albedo = terrainColor(w, h, slope, lat);
 
