@@ -17,6 +17,19 @@ There is no mesh. The fragment shader draws a full-screen triangle, casts a ray 
 - **Relief:** finite-difference height gradient at one-pixel spacing, with vertical exaggeration scaled to the zoom, perturbs the shading normal. Sun is fixed relative to the camera so the visible side is always lit.
 - **Atmosphere:** limb brightening on the sphere and a thin glow just outside it.
 
+## Hydrology (lakes and rivers)
+
+Lakes and rivers are non-local — a lake's level depends on its outlet, a river on everything upstream — so they cannot be read from the height function at a point. They are computed once per world (`src/hydrology.h`) and fed back into the function as a derived layer:
+
+1. The height function is sampled on a 2048×1024 equirectangular grid (~20 km cells) using all CPU cores.
+2. **Priority flood** from the ocean cells fills every depression; where the filled surface is above the ground, that cell is a lake at that level. The flood also records each cell's downstream neighbour, which routes flow correctly across flats and lake surfaces to the spill point.
+3. **Flow accumulation** sums cell areas (km²) downstream in reverse flood order. Cells above a drainage threshold (12 000 km²) are river cells.
+4. The table (lake level, drainage area, direction, height) is uploaded as one RGBA32F texel per cell.
+
+In the shader, a pixel is water if its height is below sea level, below the lake level of its cell (lake levels spill one cell outward so the GPU's own height decides the shoreline, not the grid), or within a river. Rivers are drawn as lines between cell centres: each pixel checks the 5×5 cells around it for a river segment within half-width, with width from drainage area and a floor of ~1 pixel so rivers stay visible from orbit. Two noise displacements on the lookup point — a ~25 km bend and a ~7 km wiggle — hide the 8-direction grid.
+
+Generation takes well under a second. Nothing is saved; the layer is rebuilt from the seed on load.
+
 ## Camera
 
 Sits at (lat, lon, altitude) above the surface and always looks at the globe's centre, so at deep zoom it is looking straight down. Vertical field of view 45°.
@@ -38,5 +51,7 @@ Menus are native Win32 controls (buttons, a list box, static text) laid over the
 
 - Terrain at 10 km is low-contrast: the noise amplitude at fine octaves is small, so close-up land is mostly flat colour with faint relief. Tuning item, not a structural problem.
 - Float precision on the GPU is adequate at max zoom but with little margin; zooming further would need camera-relative coordinates or double-precision uniforms.
-- Only the continent field exists on the CPU; detail and mountains are GPU-only — see the open question in [[Technical/Architecture]].
+- The full height function exists on the CPU (`terrain.h`) but there is no mechanism to enforce that it matches the shader; divergence would show as rivers running slightly off their valleys.
+- Rivers are not carved into the terrain; they are painted on it. Banks and valleys will need the overlay mechanism in [[Meta/Open Threads]].
+- Lakes are numerous in mountainous noise terrain because nothing has eroded the basins away. A future erosion or basin-merging pass would thin them.
 - Panning near the poles uses lat/lon deltas and gets distorted; acceptable for now.

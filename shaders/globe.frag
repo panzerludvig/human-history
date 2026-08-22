@@ -21,9 +21,14 @@ uniform float uFreq;     // continent field frequency
 uniform float uWarp;     // domain-warp strength
 uniform float uWebness;  // 0 = blobs, 1 = ridge web
 uniform float uSeaLevel; // field value at the coastline, chosen on the CPU
+uniform sampler2D uHydro; // per-cell lake level, drainage area, flow direction, height
+uniform int uHasHydro;
+
+const float HEIGHT_SCALE_M = 8000.0;
+const int HW = 2048, HH = 1024;     // hydrology grid size, must match hydrology.h
+const float NO_LAKE = -1.0e6;
 
 const float PI = 3.14159265;
-const float SEA_LEVEL = 0.0;
 
 // ------------------------------------------------------------ noise
 
@@ -96,18 +101,76 @@ float continentField(vec3 p) {
     return mix(base, web, uWebness);
 }
 
-// Height in [-1, 1]-ish; positive is land. `n` is a point in noise space.
+// Height in metres above sea level. `n` is a point in noise space.
+// Mirrored in src/terrain.h (heightMeters) — keep in sync.
 float terrainHeight(vec3 n, int octaves) {
     float continent = continentField(n) - uSeaLevel;
-
-    // Finer detail only where it matters; fades out in deep ocean.
     float detail = fbm(n * 9.0 + 5.0, max(octaves - 3, 1), 0.5);
     float mountains = ridged(n * 4.0 + 2.0, max(octaves - 2, 1));
     float mountainMask = smoothstep(0.02, 0.25, continent) *
                          smoothstep(0.3, 0.7, fbm(n * 2.2 + 41.0, 3, 0.5) * 0.5 + 0.5);
+    return (continent + detail * 0.06 + mountains * mountainMask * 0.5) * HEIGHT_SCALE_M;
+}
 
-    float h = continent + detail * 0.06 + mountains * mountainMask * 0.5;
-    return h;
+// ------------------------------------------------------------ hydrology
+
+ivec2 hydroCell(vec3 n) {
+    float lat = asin(clamp(n.z, -1.0, 1.0));
+    float lon = atan(n.y, n.x);
+    int x = int(floor((lon + PI) / (2.0 * PI) * float(HW)));
+    int y = int(floor((lat + PI / 2.0) / PI * float(HH)));
+    return ivec2((x + HW) % HW, clamp(y, 0, HH - 1));
+}
+
+vec4 hydroFetch(ivec2 c) {
+    c.x = (c.x + HW) % HW;
+    if (c.y < 0 || c.y >= HH) return vec4(NO_LAKE, 0.0, -1.0, 0.0);
+    return texelFetch(uHydro, c, 0);
+}
+
+vec3 cellCentre(ivec2 c) {
+    float lat = (float(c.y) + 0.5) / float(HH) * PI - PI / 2.0;
+    float lon = (float(c.x) + 0.5) / float(HW) * 2.0 * PI - PI;
+    return vec3(cos(lat) * cos(lon), cos(lat) * sin(lon), sin(lat));
+}
+
+const ivec2 DIRS[8] = ivec2[8](ivec2(1, 0), ivec2(1, 1), ivec2(0, 1), ivec2(-1, 1),
+                               ivec2(-1, 0), ivec2(-1, -1), ivec2(0, -1), ivec2(1, -1));
+
+// Distance (in units of the sphere radius) from n to the segment a-b.
+float segmentDistance(vec3 n, vec3 a, vec3 b) {
+    vec3 ab = b - a;
+    float t = clamp(dot(n - a, ab) / max(dot(ab, ab), 1e-12), 0.0, 1.0);
+    return length(n - (a + ab * t));
+}
+
+// River half-width in km for a drainage area in km^2, with a floor so rivers
+// stay visible as lines when zoomed out.
+float riverHalfWidthKm(float flowKm2) {
+    float w = 0.0009 * sqrt(flowKm2);
+    return max(w * 0.5, uKmPerPixel * 0.6);
+}
+
+// Returns the drainage area of the river under n (0 if none).
+float riverAt(vec3 n, vec3 w) {
+    // Wiggle the lookup point so rivers do not follow the grid exactly.
+    // Two scales: a ~25 km bend that breaks up straight grid runs, and a
+    // ~7 km wiggle for local meander.
+    vec3 bend = vec3(noise(w * 140.0 + 3.0), noise(w * 140.0 + 17.0), noise(w * 140.0 + 29.0));
+    vec3 wiggle = vec3(noise(w * 900.0 + 3.0), noise(w * 900.0 + 17.0), noise(w * 900.0 + 29.0));
+    vec3 nj = normalize(n + bend * 0.0035 + wiggle * 0.0006);
+    ivec2 c0 = hydroCell(nj);
+    float best = 0.0;
+    for (int dy = -2; dy <= 2; dy++)
+        for (int dx = -2; dx <= 2; dx++) {
+            ivec2 c = c0 + ivec2(dx, dy);
+            vec4 t = hydroFetch(c);
+            if (t.g <= 0.0 || t.b < 0.0) continue;
+            ivec2 d = c + DIRS[int(t.b + 0.5)];
+            float dist = segmentDistance(nj, cellCentre(c), cellCentre(d)) * 6371.0;
+            if (dist < riverHalfWidthKm(t.g)) best = max(best, t.g);
+        }
+    return best;
 }
 
 // ------------------------------------------------------------ shading
@@ -115,20 +178,11 @@ float terrainHeight(vec3 n, int octaves) {
 vec3 terrainColor(vec3 n, float h, float slope, float lat) {
     float absLat = abs(lat);
     // Climate: temperature falls with latitude and altitude; moisture from noise.
-    float temp = 1.0 - pow(absLat / (PI / 2.0), 1.3) - max(h, 0.0) * 0.9;
+    float temp = 1.0 - pow(absLat / (PI / 2.0), 1.3) - max(h, 0.0) / HEIGHT_SCALE_M * 0.9;
     float moisture = fbm(n * 3.0 + 77.0, 4, 0.5) * 0.5 + 0.5;
     // Subtropical dry bands around +-25 degrees.
     float dryBand = exp(-pow((absLat - 0.42) / 0.16, 2.0));
     moisture = moisture - dryBand * 0.45;
-
-    if (h < SEA_LEVEL) {
-        float depth = clamp(-h * 6.0, 0.0, 1.0);
-        vec3 shallow = vec3(0.18, 0.52, 0.68);
-        vec3 deep = vec3(0.02, 0.10, 0.30);
-        vec3 c = mix(shallow, deep, sqrt(depth));
-        if (absLat > 1.28 + 0.06 * noise(n * 6.0)) c = vec3(0.85, 0.9, 0.95); // sea ice
-        return c;
-    }
 
     vec3 sand = vec3(0.80, 0.72, 0.50);
     vec3 grass = vec3(0.30, 0.48, 0.20);
@@ -141,10 +195,19 @@ vec3 terrainColor(vec3 n, float h, float slope, float lat) {
     vec3 veg = mix(grass, forest, smoothstep(0.45, 0.75, moisture));
     vec3 c = mix(desert, veg, smoothstep(0.25, 0.45, moisture));
     c = mix(c, tundra, smoothstep(0.30, 0.12, temp));
-    c = mix(sand, c, smoothstep(0.0, 0.012, h));
+    c = mix(sand, c, smoothstep(0.0, 100.0, h));
     c = mix(c, rock, smoothstep(0.35, 0.7, slope));
     // Snow where it is cold: polar lowlands and high peaks everywhere.
     c = mix(c, snow, smoothstep(0.16, 0.06, temp + slope * 0.1));
+    return c;
+}
+
+vec3 waterColor(float depthM, float lat, vec3 n) {
+    float depth = clamp(depthM / 1300.0, 0.0, 1.0);
+    vec3 shallow = vec3(0.18, 0.52, 0.68);
+    vec3 deep = vec3(0.02, 0.10, 0.30);
+    vec3 c = mix(shallow, deep, sqrt(depth));
+    if (abs(lat) > 1.28 + 0.06 * noise(n * 6.0)) c = vec3(0.85, 0.9, 0.95); // sea ice
     return c;
 }
 
@@ -171,6 +234,16 @@ void main() {
     vec3 w = uWorldRot * n + uWorldOff;
     float h = terrainHeight(w, uOctaves);
 
+    // Water: the sea, a lake surface from the hydrology grid, or a river.
+    float waterLevel = 0.0;
+    bool isWater = h < 0.0;
+    bool isRiver = false;
+    if (uHasHydro == 1) {
+        vec4 cell = hydroFetch(hydroCell(n));
+        if (cell.r > NO_LAKE + 1.0 && h < cell.r) { isWater = true; waterLevel = cell.r; }
+        if (!isWater && h > 0.0 && riverAt(n, w) > 0.0) { isWater = true; isRiver = true; waterLevel = h; }
+    }
+
     // Relief: finite-difference gradient in the tangent plane, step ~ one pixel.
     float eps = max(uKmPerPixel / 6371.0, 1e-6);
     vec3 tx = normalize(cross(n, abs(n.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0)));
@@ -178,13 +251,16 @@ void main() {
     float hx = terrainHeight(uWorldRot * normalize(n + tx * eps) + uWorldOff, uOctaves);
     float hy = terrainHeight(uWorldRot * normalize(n + ty * eps) + uWorldOff, uOctaves);
     // Vertical exaggeration keeps relief visible at every zoom.
-    float reliefScale = 0.004 / eps;
+    float reliefScale = 0.004 / eps / HEIGHT_SCALE_M;
     vec3 gradT = (tx * (hx - h) + ty * (hy - h)) * reliefScale;
     vec3 shadeN = normalize(n - gradT);
     float slope = clamp(length(gradT) * 0.5, 0.0, 1.0);
-    if (h < SEA_LEVEL) { shadeN = n; slope = 0.0; }
+    if (isWater) { shadeN = n; slope = 0.0; }
 
-    vec3 albedo = terrainColor(w, h, slope, lat);
+    vec3 albedo;
+    if (isRiver) albedo = vec3(0.10, 0.30, 0.48);
+    else if (isWater) albedo = waterColor(waterLevel - h, lat, w);
+    else albedo = terrainColor(w, h, slope, lat);
 
     // Sun fixed relative to the camera so the visible side is always lit.
     vec3 sun = normalize(-uForward * 0.45 + uRight * -0.6 + uUp * 0.65);

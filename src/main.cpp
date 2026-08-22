@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <random>
 #include "terrain.h"
+#include "hydrology.h"
 
 // ---------------------------------------------------------------- GL loading
 
@@ -27,6 +28,7 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_COMPILE_STATUS 0x8B81
 #define GL_LINK_STATUS 0x8B82
+#define GL_RGBA32F 0x8814
 
 typedef GLuint(APIENTRY* PFNGLCREATESHADERPROC)(GLenum);
 typedef void(APIENTRY* PFNGLSHADERSOURCEPROC)(GLuint, GLsizei, const GLchar* const*, const GLint*);
@@ -248,6 +250,7 @@ struct World {
     Vec3 offset{};
     terrain::ContinentParams cp{};
     float seaLevel = 0;
+    hydrology::Result hydro;
 
     void derive() {
         std::mt19937 rng(seed);
@@ -267,6 +270,13 @@ struct World {
         seaLevel = terrain::seaLevelFor(landPercent / 100.0f, cp, rot,
                                         {(float)offset.x, (float)offset.y, (float)offset.z});
         if (name.empty()) name = "world-" + std::to_string(seed);
+    }
+
+    // Everything derived from the seed, including the hydrology layer.
+    void build() {
+        derive();
+        hydro = hydrology::build(cp, seaLevel, rot, {(float)offset.x, (float)offset.y, (float)offset.z},
+                                 /*riverThresholdKm2=*/12000.0f);
     }
 };
 
@@ -302,7 +312,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         else if (key == "altitude") f >> c.altitude;
         else { std::string skip; f >> skip; }
     }
-    w.derive();
+    w.build();
     c.clampAltitude();
     return true;
 }
@@ -344,6 +354,7 @@ struct App {
     Vec3 anchor{}; // surface point grabbed at mouse-down
     int lastX = 0, lastY = 0;
     GLuint program = 0;
+    GLuint hydroTex = 0;
     bool running = true;
     HWND hwnd = nullptr;
     HFONT font = nullptr, titleFont = nullptr;
@@ -351,6 +362,19 @@ struct App {
     std::vector<std::pair<int, HWND>> controls;
 };
 static App app;
+
+// Push the world's hydrology table to the GPU as one RGBA32F texel per cell.
+static void uploadHydrology() {
+    if (!app.hydroTex) {
+        glGenTextures(1, &app.hydroTex);
+        glBindTexture(GL_TEXTURE_2D, app.hydroTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+    glBindTexture(GL_TEXTURE_2D, app.hydroTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, hydrology::W, hydrology::H, 0, GL_RGBA, GL_FLOAT,
+                 app.world.hydro.cells.data());
+}
 
 static HWND control(int id) {
     for (auto& c : app.controls)
@@ -536,7 +560,8 @@ static void generateWorld() {
     w.landPercent = (float)std::clamp(getEditNumber(ID_GEN_LAND), 0.0, 100.0);
     w.concentration = (float)std::clamp(getEditNumber(ID_GEN_CONC), 0.0, 100.0);
     app.world = w;
-    app.world.derive();
+    app.world.build();
+    uploadHydrology();
     app.cam.lat = 0.35;
     app.cam.lon = 0.0;
     app.cam.altitude = app.cam.maxAltitude();
@@ -564,6 +589,7 @@ static void onCommand(int id) {
             break;
         }
         if (loadWorld(name, app.world, app.cam)) {
+            uploadHydrology();
             setStatus("");
             setScreen(Screen::InGame);
         } else {
@@ -748,6 +774,9 @@ int main(int argc, char** argv) {
     GLint uWarp = glGetUniformLocation(app.program, "uWarp");
     GLint uWebness = glGetUniformLocation(app.program, "uWebness");
     GLint uSeaLevel = glGetUniformLocation(app.program, "uSeaLevel");
+    GLint uHydro = glGetUniformLocation(app.program, "uHydro");
+    GLint uHasHydro = glGetUniformLocation(app.program, "uHasHydro");
+    glUniform1i(uHydro, 0);
 
     createControls();
     app.cam.clampAltitude();
@@ -757,7 +786,8 @@ int main(int argc, char** argv) {
         app.world.seed = argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0;
         if (argc >= 6) app.world.landPercent = (float)atof(argv[5]);
         if (argc >= 7) app.world.concentration = (float)atof(argv[6]);
-        app.world.derive();
+        app.world.build();
+        uploadHydrology();
         app.cam.lat = atof(argv[1]) * PI / 180;
         app.cam.lon = atof(argv[2]) * PI / 180;
         if (argc >= 4) app.cam.altitude = atof(argv[3]) / EARTH_RADIUS_KM;
@@ -807,6 +837,8 @@ int main(int argc, char** argv) {
             glUniform1f(uWarp, app.world.cp.warp);
             glUniform1f(uWebness, app.world.cp.webness);
             glUniform1f(uSeaLevel, app.world.seaLevel);
+            glUniform1i(uHasHydro, app.world.hydro.cells.empty() ? 0 : 1);
+            glBindTexture(GL_TEXTURE_2D, app.hydroTex);
             glDrawArrays(GL_TRIANGLES, 0, 3);
         } else {
             glClearColor(8 / 255.f, 8 / 255.f, 16 / 255.f, 1);

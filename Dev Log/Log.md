@@ -96,3 +96,27 @@ Frequency, domain-warp strength, and a blend toward a "ridge web" field (land al
 
 **First CPU terrain**
 This is the first piece of terrain the simulation could query. It was done for the land-% feature, not as the terrain-architecture decision — that question stays open in [[Technical/Architecture]], but the mirrored-function approach now has a working example to judge.
+
+---
+
+## 2026-08-22 — Heights in Metres, Lakes and Rivers
+
+### What was done
+Terrain height is now in metres, fully mirrored on the CPU. A hydrology pass at world creation finds lakes (priority flood) and rivers (flow accumulation) on a 2048×1024 grid and hands them to the shader as a texture. Lakes render as flat surfaces whose shoreline the GPU decides; rivers render as lines between cell centres with noise displacement.
+
+### Decisions and reasoning
+
+**Keep the function as the source of truth; hydrology is a derived layer**
+The user wants the map to stay a function. Lakes and rivers are non-local and cannot come from a point function, so they are computed from it and fed back in — the function plus sparse data. This is the pattern that terrain modification will also use, so hydrology doubles as the prototype of the overlay mechanism.
+
+**Metres before hydrology**
+Lake levels, river widths and (later) tides all need real units. The unitless noise was scaled by a single constant so nothing else changed.
+
+**Equirectangular grid, not geodesic**
+Simplest possible neighbourhood (8 neighbours, longitude wraps) and trivial GPU lookup. Polar cells are tiny and distorted, but the poles are ice. A geodesic grid can replace it if the simulation grid needs uniform cells; the shader only depends on a cell lookup and a centre function.
+
+**Rivers drawn by the GPU from segments, not rasterised**
+Rasterising rivers into a texture at sub-cell resolution would need a far larger texture. Instead each pixel tests nearby cell-centre segments, which gives exact sub-pixel lines at any zoom and lets noise displacement bend them. Straight 8-direction runs were visible at continental scale until a second, ~25 km displacement was added.
+
+**Nothing saved**
+The layer rebuilds from the seed in well under a second, so the save format is unchanged.

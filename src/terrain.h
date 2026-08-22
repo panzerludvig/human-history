@@ -1,6 +1,7 @@
-// CPU mirror of the continent field in shaders/globe.frag.
-// Same hash, same noise, same constants, float arithmetic — so a threshold
-// chosen here lands on the same coastlines the GPU draws. Keep the two in sync.
+// CPU mirror of the terrain functions in shaders/globe.frag.
+// Same hash, same noise, same constants, float arithmetic — so heights
+// computed here match what the GPU draws (up to the octave count). Keep the
+// two in sync: any change to a constant here must be made in the shader too.
 #pragma once
 #include <cmath>
 #include <cstdint>
@@ -8,6 +9,9 @@
 #include <vector>
 
 namespace terrain {
+
+// Unitless noise height to metres. Mountains top out around +8000 m.
+constexpr float HEIGHT_SCALE_M = 8000.0f;
 
 struct V3 {
     float x, y, z;
@@ -78,6 +82,23 @@ inline float fbm(V3 p, int octaves, float gain) {
     return sum / norm;
 }
 
+inline float ridged(V3 p, int octaves) {
+    float sum = 0, amp = 0.5f, norm = 0;
+    for (int i = 0; i < octaves; i++) {
+        float n = 1.0f - std::fabs(noise(p));
+        sum += amp * n * n;
+        norm += amp;
+        amp *= 0.55f;
+        p = p * 2.07f + V3{3.3f, 9.1f, 21.7f};
+    }
+    return sum / norm;
+}
+
+inline float smoothstep(float a, float b, float x) {
+    float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f);
+    return t * t * (3 - 2 * t);
+}
+
 // The raw continent field before the sea level is subtracted.
 inline float continentField(V3 p, const ContinentParams& cp) {
     V3 warp = {fbm(p * 1.3f + 11.0f, 3, 0.5f), fbm(p * 1.3f + 23.0f, 3, 0.5f), fbm(p * 1.3f + 37.0f, 3, 0.5f)};
@@ -85,6 +106,18 @@ inline float continentField(V3 p, const ContinentParams& cp) {
     float base = fbm(q, 6, 0.5f);
     float web = 0.35f - std::fabs(fbm(q + 53.0f, 6, 0.5f)) * 2.0f;
     return base + (web - base) * cp.webness;
+}
+
+// Height in metres above sea level at a point in noise space. `octaves` is
+// the shader's level-of-detail value; the hydrology grid uses a fixed count
+// matched to its cell size.
+inline float heightMeters(V3 p, const ContinentParams& cp, float seaLevel, int octaves) {
+    float continent = continentField(p, cp) - seaLevel;
+    float detail = fbm(p * 9.0f + 5.0f, std::max(octaves - 3, 1), 0.5f);
+    float mountains = ridged(p * 4.0f + 2.0f, std::max(octaves - 2, 1));
+    float mountainMask = smoothstep(0.02f, 0.25f, continent) *
+                         smoothstep(0.3f, 0.7f, fbm(p * 2.2f + 41.0f, 3, 0.5f) * 0.5f + 0.5f);
+    return (continent + detail * 0.06f + mountains * mountainMask * 0.5f) * HEIGHT_SCALE_M;
 }
 
 // Sea level such that `landFraction` of the sphere is above it, found by
