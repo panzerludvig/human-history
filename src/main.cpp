@@ -314,7 +314,13 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 // ---------------------------------------------------------------- main
 
-int main() {
+int main(int argc, char** argv) {
+    // Optional start view for testing: ironblood <latDeg> <lonDeg> [altitudeKm]
+    if (argc >= 3) {
+        app.cam.lat = atof(argv[1]) * PI / 180;
+        app.cam.lon = atof(argv[2]) * PI / 180;
+    }
+    if (argc >= 4) app.cam.altitude = atof(argv[3]) / EARTH_RADIUS_KM;
     HINSTANCE inst = GetModuleHandleA(nullptr);
     WNDCLASSA wc = {};
     wc.style = CS_OWNDC;

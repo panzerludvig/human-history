@@ -36,3 +36,27 @@ Compute-the-moment (schedule an event at a calculated time, invalidate on state 
 
 **Spherical and Earth-like**
 Earth-like is a default for scale and intuition, not a requirement to model Earth. Coordinate representation deliberately left open.
+
+---
+
+## 2026-08-22 — Version 1: Globe Viewer
+
+### What was done
+Built and ran the first executable: a Win32/OpenGL window showing a procedural Earth-like globe with wheel zoom (10 km across the screen up to one full side of the globe) and left-drag pan. Documented in [[Technical/Globe Viewer]]; stack recorded in [[Technical/Architecture]].
+
+### Decisions and reasoning
+
+**C++ with no dependencies**
+The machine had MSVC but no CMake or package manager, and the VS C++ workload had to be installed during the session. Raw Win32 + hand-loaded OpenGL avoids a dependency decision before there is anything to depend on. Revisit when input/UI needs grow.
+
+**Raycast sphere, procedural terrain in the fragment shader**
+A mesh-and-texture globe needs a tiling/LOD system to reach 10 km; a raycast sphere with a noise function of the surface normal reaches any zoom with one code path. The cost is that terrain has no CPU representation yet — flagged as an open question rather than solved now, per [[Meta/Incremental Design]].
+
+**Integer hash for noise**
+A sin-based hash visibly breaks at the coordinate magnitudes reached at max zoom. pcg3d on integer lattice coordinates is stable everywhere.
+
+**Sun fixed to the camera**
+A world-fixed sun leaves half the globe dark at the zoomed-out view, which is useless for a map. Lighting is for legibility, not realism.
+
+**Tuning done by screenshot**
+Land fraction, snow extent, and relief visibility were each judged from captured views at several positions and zooms rather than guessed. The starting bias put almost a whole hemisphere underwater; snow originally covered mid-latitude lowlands; relief was invisible until the sun was moved off the camera axis.

@@ -10,4 +10,5 @@ A list of concrete, actionable tasks — as distinct from [[Meta/Suggestions]], 
 
 - [ ] Write the one-paragraph concept and pillars in [[Design/Overview]] (added 2026-08-22)
 - [ ] Pick the first playable increment and check it against the three core concepts (added 2026-08-22)
-- [ ] Decide the tech stack in [[Technical/Architecture]] once the first increment is defined (added 2026-08-22)
+- [ ] Decide how the simulation will read terrain (port shader noise to C++ vs CPU-generated data) — see [[Technical/Architecture]] (added 2026-08-22)
+- [ ] Tune close-zoom terrain contrast in [[Technical/Globe Viewer]] (added 2026-08-22)

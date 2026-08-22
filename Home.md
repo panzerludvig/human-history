@@ -15,5 +15,5 @@
 - **Local vault:** C:\Users\axell\Documents\code\ludvig\ib
 
 ## Status
-- **Stage:** Concept
+- **Stage:** Prototype — globe viewer (v1)
 - **Started:** 2026-08-22

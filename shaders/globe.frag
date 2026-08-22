@@ -83,7 +83,7 @@ float terrainHeight(vec3 n, int octaves) {
     vec3 warp = vec3(fbm(n * 1.3 + 11.0, 3, 0.5),
                      fbm(n * 1.3 + 23.0, 3, 0.5),
                      fbm(n * 1.3 + 37.0, 3, 0.5));
-    float continent = fbm(n * 1.1 + warp * 0.45, min(octaves, 7), 0.52) - 0.13;
+    float continent = fbm(n * 1.1 + warp * 0.45, min(octaves, 7), 0.52) - 0.03;
 
     // Finer detail only where it matters; fades out in deep ocean.
     float detail = fbm(n * 9.0 + 5.0, max(octaves - 3, 1), 0.5);
@@ -100,7 +100,7 @@ float terrainHeight(vec3 n, int octaves) {
 vec3 terrainColor(vec3 n, float h, float slope, float lat) {
     float absLat = abs(lat);
     // Climate: temperature falls with latitude and altitude; moisture from noise.
-    float temp = 1.0 - absLat / (PI / 2.0) - max(h, 0.0) * 1.8;
+    float temp = 1.0 - pow(absLat / (PI / 2.0), 1.3) - max(h, 0.0) * 0.9;
     float moisture = fbm(n * 3.0 + 77.0, 4, 0.5) * 0.5 + 0.5;
     // Subtropical dry bands around +-25 degrees.
     float dryBand = exp(-pow((absLat - 0.42) / 0.16, 2.0));
@@ -128,9 +128,8 @@ vec3 terrainColor(vec3 n, float h, float slope, float lat) {
     c = mix(c, tundra, smoothstep(0.30, 0.12, temp));
     c = mix(sand, c, smoothstep(0.0, 0.012, h));
     c = mix(c, rock, smoothstep(0.35, 0.7, slope));
-    float snowLine = 0.25 + temp * 0.5;
-    c = mix(c, snow, smoothstep(snowLine, snowLine + 0.08, h + (1.0 - temp) * 0.6 - slope * 0.2));
-    c = mix(c, snow, smoothstep(0.08, -0.05, temp));
+    // Snow where it is cold: polar lowlands and high peaks everywhere.
+    c = mix(c, snow, smoothstep(0.16, 0.06, temp + slope * 0.1));
     return c;
 }
 
@@ -162,7 +161,7 @@ void main() {
     float hx = terrainHeight(normalize(n + tx * eps), uOctaves);
     float hy = terrainHeight(normalize(n + ty * eps), uOctaves);
     // Vertical exaggeration keeps relief visible at every zoom.
-    float reliefScale = 0.0025 / eps;
+    float reliefScale = 0.004 / eps;
     vec3 gradT = (tx * (hx - h) + ty * (hy - h)) * reliefScale;
     vec3 shadeN = normalize(n - gradT);
     float slope = clamp(length(gradT) * 0.5, 0.0, 1.0);
@@ -171,7 +170,7 @@ void main() {
     vec3 albedo = terrainColor(n, h, slope, lat);
 
     // Sun fixed relative to the camera so the visible side is always lit.
-    vec3 sun = normalize(-uForward * 0.9 + uRight * -0.5 + uUp * 0.6);
+    vec3 sun = normalize(-uForward * 0.45 + uRight * -0.6 + uUp * 0.65);
     float diff = max(dot(shadeN, sun), 0.0);
     float limb = pow(1.0 - max(dot(n, -dir), 0.0), 3.0);
     vec3 col = albedo * (0.25 + 0.8 * diff);

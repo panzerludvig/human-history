@@ -1,18 +1,21 @@
 # Architecture
 
-**Status:** Stub — see [[Meta/Status Vocabulary]]
+**Status:** Concept — see [[Meta/Status Vocabulary]]
 
 ## Tech Stack
-- **Engine / Language:** _undecided — chosen after the first increment is defined_
-- **Platform(s):** _undecided_
+- **Language:** C++17
+- **Platform:** Windows (Win32 + OpenGL 3.3-level shaders on a compatibility context). No external libraries; the handful of GL functions needed are loaded by hand.
+- **Build:** `build.bat` at the repo root — calls `vcvars64.bat` and `cl`, outputs `build\ironblood.exe` and copies `shaders\` next to it. Requires the VS 2022 "Desktop development with C++" workload.
+- **Run:** `build\ironblood.exe [latDeg lonDeg [altitudeKm]]` — the optional start view exists for testing.
 
 ## Key Systems
-_Implied by the core concepts, not yet designed:_
-- Event scheduler — priority queue of timed events with dependency-based invalidation ([[Design/Event-Driven]])
-- Spherical spatial index — positions, distances, and trajectory intersection on a sphere ([[Design/Spherical World]])
+- [[Technical/Globe Viewer]] — version 1: raycast sphere with procedural terrain; zoom and pan (Implemented)
+- Event scheduler — priority queue of timed events with dependency-based invalidation ([[Design/Event-Driven]]) (not started)
+- Spherical spatial index — positions, distances, and trajectory intersection on a sphere ([[Design/Spherical World]]) (not started)
 
 ## External Tools & Libraries
-_None yet._
+_None._
 
 ## Open Questions
-- What does the first increment need technically — does it even need rendering, or is a text/console prototype enough to judge the loop?
+- Terrain is currently a pure shader function with no CPU-side representation. The simulation will need to query height/biome at a point; either port the noise to C++ (same hash, same result) or move terrain to CPU-generated data and have the GPU sample it. Decide before any mechanic depends on terrain.
+- Keep rolling our own windowing/GL loading, or adopt a small library once input and UI needs grow?
