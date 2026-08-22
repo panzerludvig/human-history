@@ -1,6 +1,6 @@
 # Core Concepts
 
-**Status:** Stub — see [[Meta/Status Vocabulary]]
+**Status:** Concept — see [[Meta/Status Vocabulary]]
 
 The concepts the game is built from. Per [[Meta/Incremental Design]], a concept is listed as **Core** only if the current playable increment is incomplete without it. Everything else is a **Candidate** — named so it isn't forgotten, but not designed.
 
@@ -10,7 +10,11 @@ The concepts the game is built from. Per [[Meta/Incremental Design]], a concept 
 
 | Concept | Description | Status |
 |---------|-------------|--------|
-| _none yet_ | | |
+| [[Design/Map-Centric]] | Everything exists on the map; every physical object has a position | Concept |
+| [[Design/Event-Driven]] | No polling; moments are computed and scheduled, or triggers fire on manipulation | Concept |
+| [[Design/Spherical World]] | The map is a sphere, Earth-like; no edges | Concept |
+
+These three are foundational rather than feature-level: they constrain what every later mechanic must look like, so they are decided before the first increment is chosen rather than derived from it.
 
 ---
 
@@ -22,8 +26,6 @@ Carried over from Delegate as ideas, not decisions. Each becomes a design note o
 |-----------|---------------|--------|
 | Autonomy | Subjects act on their own; the player guides rather than controls | Delegate |
 | Delegation | The player acts through intermediaries who task others | Delegate (Administrators) |
-| Map-centric | Everything exists on the map; the map is the interface | Delegate |
-| Event-driven time | No fixed tick; time advances via events | Delegate |
 | Agents | One general entity type for anything that holds goals and acts | Delegate |
 | Objects by property | Things defined by properties rather than fixed types | Delegate |
 | Emergence | Few simple rules, complex outcomes | Delegate |

@@ -18,3 +18,21 @@ Delegate left this as a todo. Defining it before any design note exists means ev
 
 **Git conventions filled in**
 Kept minimal — direct to `main`, imperative subjects — since the repository is notes-only. Branching deferred until there is code.
+
+---
+
+## 2026-08-22 — First Core Concepts
+
+### What was done
+Promoted three concepts to Core: [[Design/Map-Centric]], [[Design/Event-Driven]], [[Design/Spherical World]]. Each got a fresh note written from scratch rather than copied from Delegate.
+
+### Decisions and reasoning
+
+**Foundational concepts decided before the first increment**
+The promotion procedure in [[Design/Core Concepts]] says a concept enters Core only if a desired end state needs it. These three were admitted without that step because they are constraints on the *shape* of every mechanic, not mechanics themselves — choosing them later would mean rewriting whatever came first. The procedure still applies to everything else.
+
+**Event-driven stated as a prohibition on polling, with two sanctioned alternatives**
+Compute-the-moment (schedule an event at a calculated time, invalidate on state change) is preferred; trigger-on-manipulation (check a condition only when a dependency is touched) is the fallback. Collision is the worked example. Writing it as "never poll" rather than "prefer events" makes violations obvious.
+
+**Spherical and Earth-like**
+Earth-like is a default for scale and intuition, not a requirement to model Earth. Coordinate representation deliberately left open.

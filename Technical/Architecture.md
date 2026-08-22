@@ -7,7 +7,9 @@
 - **Platform(s):** _undecided_
 
 ## Key Systems
-_None yet. Each system gets its own note under Technical/ when it is designed._
+_Implied by the core concepts, not yet designed:_
+- Event scheduler — priority queue of timed events with dependency-based invalidation ([[Design/Event-Driven]])
+- Spherical spatial index — positions, distances, and trajectory intersection on a sphere ([[Design/Spherical World]])
 
 ## External Tools & Libraries
 _None yet._
