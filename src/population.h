@@ -20,6 +20,11 @@ constexpr float GROWTH_MAX = 0.02f;           // per year at full surplus
 constexpr float DECLINE_MAX = 0.06f;          // per year in famine
 constexpr float R_REGEN_YEARS = 12.0f;        // land recovery
 constexpr float R_DEPLETE_YEARS = 8.0f;       // land depletion at P = K
+// Land condition settles where regeneration balances depletion:
+// (1-R)/T_regen = R^2/T_deplete, giving R* = 0.549 for 12 and 8 years.
+// The yield table is measured *sustained* density, so the pristine ceiling
+// stored in K is table / R*; displayed capacity is K * R*.
+constexpr float SUSTAIN_R = 0.5486f;
 constexpr float MIN_SETTLEMENT_K = 150.0f;
 constexpr int MAX_SETTLEMENTS = 400;
 
@@ -81,7 +86,9 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
             float runoffMmYr = 20.0f + 580.0f * moist * moist;
             float litresPerDay = hy.accKm2[i] * runoffMmYr * 1.0e6f / 365.0f;
             float kWater = litresPerDay * USABLE_WATER / WATER_L_PER_PERSON;
-            f.K[i] = std::min(kFood, kWater);
+            // kFood is sustained yield; the pristine ceiling is higher. Water
+            // is a physical daily supply and is not scaled (it never binds yet).
+            f.K[i] = std::min(kFood / SUSTAIN_R, kWater);
         }
 
     // Settlements at local maxima of K, best first, spaced at least ~80 km.
@@ -113,7 +120,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         }
         if (!clear) continue;
         f.settlementAt[c.cell] = (int)f.settlements.size();
-        f.settlements.push_back({c.cell, c.k * 0.5f, 1.0f, 0.0, 0.0});
+        f.settlements.push_back({c.cell, c.k * SUSTAIN_R * 0.5f, 1.0f, 0.0, 0.0});
     }
     // Startup listing for testing: where the first settlements are.
     for (int i = 0; i < (int)f.settlements.size() && i < 5; i++) {

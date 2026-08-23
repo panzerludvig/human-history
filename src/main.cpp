@@ -838,13 +838,13 @@ static std::string describePoint(Vec3 n) {
                     const population::Settlement& st = wd.pop.settlements[si];
                     char b[80];
                     snprintf(b, sizeof b, "  |  settlement: %d people (capacity %d)", (int)st.P,
-                             (int)wd.pop.K[st.cell]);
+                             (int)(wd.pop.K[st.cell] * population::SUSTAIN_R));
                     extra = b;
                 }
             }
         if (extra.empty() && wd.pop.K[ci] > 0) {
             char b[48];
-            snprintf(b, sizeof b, "  |  capacity %d", (int)wd.pop.K[ci]);
+            snprintf(b, sizeof b, "  |  capacity %d", (int)(wd.pop.K[ci] * population::SUSTAIN_R));
             extra = b;
         }
     }

@@ -29,7 +29,9 @@ Dynamics (the overshoot the real world has — a stock between people and starva
 - Growth: up to +2%/yr when food per head is ample, down to −6%/yr in famine, proportional to the surplus/deficit.
 - Land: regenerates toward 1 over ~12 years; is depleted in proportion to use (~8-year timescale at P = K).
 
-P can overshoot K·R because R gives way slowly, then falls back as R runs down; depending on how hard the overshoot ran, it settles or oscillates. Depleted land that outlives its people is the beginning of "the world remembers". Equilibrium sits near P ≈ 0.55·K.
+P can overshoot because R gives way slowly, then falls back as R runs down; depending on how hard the overshoot ran, it settles or oscillates. Depleted land that outlives its people is the beginning of "the world remembers".
+
+**Calibration**: the yield table is *observed sustained* density, so it is what settlements settle at, not a ceiling they never reach. Internally the pristine ceiling is table ÷ R*, where R* = 0.549 is the land condition at which regeneration balances depletion; the displayed capacity is the sustained figure.
 
 ---
 

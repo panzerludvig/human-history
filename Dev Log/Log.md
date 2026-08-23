@@ -277,3 +277,6 @@ Built the population system designed in conversation: a carrying-capacity field 
 
 **Paused clock with step buttons**
 Replaced the free-running clock (60 days/s) with a paused-by-default clock and +1 day / +1 month / +1 year buttons, at the user's request, to make the population system evaluable: step a year, inspect the tooltips, step again. A step advances simTime and drains due settlement wake-ups in order until none remain, so a year's click is identical to a year of running time. Marked as temporary tooling in the docs.
+
+**Capacity recalibrated to sustained yield**
+The user observed forest settlements settling near 190 against a stated capacity of 350. That was the overshoot equilibrium working as designed (P* = 0.549·K), but the calibration was wrong: the yield table comes from observed hunter-gatherer densities, which are already equilibrium figures. K now stores the pristine ceiling (table ÷ 0.549) and the displayed capacity is the sustained value, so settlements settle at the number the tooltip states — verified at year 80: 365 people, capacity 365. Water is a daily physical supply and is deliberately not scaled.
