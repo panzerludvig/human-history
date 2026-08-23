@@ -692,8 +692,25 @@ static void onCommand(int id) {
 
 // What is under the cursor, from the CPU mirror of the terrain function.
 static const char* SUBSTRATE_NAMES[] = {"soil", "sand", "rock", "scree", "silt", "mud", "ice"};
-static const char* VEGETATION_NAMES[] = {"bare", "tundra", "taiga", "forest", "rainforest", "grassland",
-                                         "steppe", "savanna", "shrubland", "marsh", "desert"};
+static const char* COVER_NAMES[] = {"bare", "tundra", "taiga", "forest", "rainforest", "grassland",
+                                    "steppe", "savanna", "shrubland", "marsh", "desert"};
+
+// "forest 68%, grassland 22%, rock 10%": cover fractions, with bare ground
+// named by its substrate, largest first, down to 5%.
+static std::string describeMixture(const terrain::Mixture& m) {
+    std::vector<std::pair<float, std::string>> parts;
+    for (int i = 1; i < terrain::NCOV; i++) parts.push_back({m.cov[i], COVER_NAMES[i]});
+    for (int i = 0; i < terrain::NSUB; i++) parts.push_back({m.cov[0] * m.sub[i], SUBSTRATE_NAMES[i]});
+    std::sort(parts.begin(), parts.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    std::string out;
+    for (auto& p : parts) {
+        if (p.first < 0.05f || out.size() > 60) break;
+        char b[48];
+        snprintf(b, sizeof b, "%s%s %d%%", out.empty() ? "" : ", ", p.second.c_str(), (int)std::lround(p.first * 100));
+        out += b;
+    }
+    return out;
+}
 
 static std::string describePoint(Vec3 n) {
     const World& wd = app.world;
@@ -738,13 +755,8 @@ static std::string describePoint(Vec3 n) {
     float moist = terrain::moistureAt(w, lat);
     float slope = terrain::slopeAt(nf, wd.cp, wd.seaLevel, std::min(app.octaves, 12), wd.plateField, wd.rot, off);
     float uplift = wd.plateField.sample({nf.x, nf.y, nf.z}).uplift;
-    terrain::Substrate sub = terrain::substrateAt(h, slope, temp, moist, uplift, nearRiver);
-    terrain::Vegetation veg = terrain::vegetationAt(sub, temp, moist);
-    if (veg == terrain::VEG_NONE)
-        snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s", fmtM(h).c_str(), temp, SUBSTRATE_NAMES[sub]);
-    else
-        snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s on %s", fmtM(h).c_str(), temp, VEGETATION_NAMES[veg],
-                 SUBSTRATE_NAMES[sub]);
+    terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift, nearRiver, terrain::patchNoise(w));
+    snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s", fmtM(h).c_str(), temp, describeMixture(m).c_str());
     return buf;
 }
 
@@ -757,7 +769,7 @@ static void updateTooltip(int x, int y) {
     }
     std::string txt = describePoint(hit);
     SetWindowTextA(tip, txt.c_str());
-    int wdt = 12 + (int)txt.size() * 11;
+    int wdt = 12 + (int)txt.size() * 9;
     int tx = std::min(x + 18, app.cam.width - wdt - 4), ty = y + 22;
     if (ty + 26 > app.cam.height) ty = y - 30;
     SetWindowPos(tip, HWND_TOP, tx, ty, wdt, 26, SWP_SHOWWINDOW | SWP_NOACTIVATE);

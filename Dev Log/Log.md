@@ -239,3 +239,21 @@ A cursor tooltip showing elevation, temperature and terrain class, computed from
 
 ### Decisions and reasoning
 Computed on the CPU rather than read back from the GPU: a readback would stall the frame, and the CPU mirror exists precisely so the simulation can ask these questions. Any disagreement between the tooltip and the pixel under it is now a visible CPU/GPU drift — the check the todo list asked for, in a form that gets exercised every time the mouse moves.
+
+---
+
+## 2026-08-23 — Terrain as Mixtures
+
+### What was done
+Replaced the hard substrate/vegetation classes with per-point mixtures: fractions over the substrate types and over the cover types, each summing to 1, with a patchiness noise so forest density varies within a climate zone. Tooltip lists the mixture.
+
+### Decisions and reasoning
+
+**Mixtures are the model, not a rendering trick**
+The user wants "20% grassland, 70% forest, 10% rock" and varying forest density. Rendering was already blending; the hard enum was the only discrete thing, and it was there for the simulation. Fractions serve the simulation better: forest density, clearing a fraction of a wood, and partial regrowth all become arithmetic on one number instead of type flips.
+
+**Sum-preserving construction**
+Each mixture starts at one member and is pulled toward others (`v = v·(1−t); v[k] += t`). Sums stay exactly 1 without a normalisation step, and the order of pulls encodes precedence (marsh over open ground, tundra over marsh, bare over everything).
+
+**Same code on both sides**
+`mixtureAt` in `terrain.h` and `coverMix`/`substrateMix` in the shader are line-for-line the same arithmetic; the tooltip is the running check.

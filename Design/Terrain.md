@@ -11,11 +11,13 @@ Core concept: terrain is a stack of layers, each a function of the layers below 
 | Layer | What it is | Changes | Stored |
 |-------|-----------|---------|--------|
 | Height | Metres above sea level — plates, continents, mountains | Never (until the overlay exists) | Nothing; seed |
-| Substrate | What the ground is made of: soil, sand, rock, scree, silt, mud, ice | Geologically; never in play | Nothing; function of height, slope, climate, rivers |
+| Substrate | What the ground is made of — a mixture of soil, sand, rock, scree, silt, mud, ice | Geologically; never in play | Nothing; function of height, slope, climate, rivers |
 | Climate | Temperature and moisture | Slowly, not by the player | Nothing; function of latitude, altitude, noise (rain shadow later) |
-| Vegetation | What grows: tundra, taiga, forest, rainforest, grassland, steppe, savanna, shrub, marsh, desert | By the player and by time | Deviations only |
+| Cover | What grows — a mixture of bare ground, tundra, taiga, forest, rainforest, grassland, steppe, savanna, shrub, marsh, desert | By the player and by time | Deviations only |
 
-The potential vegetation at a point is `vegetation(substrate, climate)`. The actual vegetation is the potential unless a **deviation** covers the point — a clearing, a field, a planted wood — in which case it is the deviation's state at the current time.
+Nothing at a point is a single type. Every point is a **mixture**: substrate fractions and cover fractions, each summing to 1 — "70% forest, 20% grassland, 10% bare rock". Forest density is just the forest fraction, and it varies within a climate zone by a km-scale patchiness noise, so woods have thick and thin parts without any new data.
+
+The potential cover at a point is `cover(substrate, climate, patchiness)`. The actual cover is the potential unless a **deviation** covers the point — a clearing, a field, a planted wood — in which case it is the deviation's state at the current time: a clearing lowers the forest fraction and raises grassland, rather than flipping a type.
 
 ---
 
@@ -31,7 +33,7 @@ The potential vegetation at a point is `vegetation(substrate, climate)`. The act
 ## Decided
 
 - Substrate type is static. Any *quality* of it that gameplay needs (fertility, drainage) is a deviation, same mechanism as vegetation.
-- Classes are hard for the simulation (an enum at a point) and blended for rendering; both are cut from the same continuous variables so they agree.
+- Mixtures, not classes. The simulation reads fractions (`terrain::mixtureAt`), rendering blends the same fractions, and the tooltip lists them. A hard class is never stored; if a mechanic needs one it takes the dominant member.
 
 ---
 

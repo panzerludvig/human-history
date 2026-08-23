@@ -14,7 +14,7 @@ There is no mesh. The fragment shader draws a full-screen triangle, casts a ray 
 - **Noise:** 3D gradient noise with an integer hash (pcg3d). Integer hashing matters: a sin-based hash breaks at the large coordinates reached when zoomed to 10 km.
 - **Level of detail:** the CPU computes km-per-pixel from the camera altitude and sets the octave count so the finest octave is about two pixels wide. 8 octaves at full-globe view, ~18 at max zoom.
 - **Climate:** mean temperature in °C from latitude (28 °C at the equator, −17 °C at the poles) with a 6.5 °C/km lapse rate; moisture 0–1 from a coarse noise minus a subtropical dry band around ±25°. Sea ice past ~73°.
-- **Substrate and vegetation** ([[Design/Terrain]]): hard classes for the simulation — substrate ∈ {soil, sand, rock, scree, silt, mud, ice} from height, slope, temperature, moisture, uplift and river proximity; vegetation ∈ {none, tundra, taiga, forest, rainforest, grassland, steppe, savanna, shrub, marsh, desert} from substrate and climate. Both are mirrored in `src/terrain.h`. Rendering blends the same variables smoothly: a substrate colour underneath, a vegetation colour on top weighted by cover (moisture × warmth × not-rock). **B** and **V** in game show the hard classes as flat colours.
+- **Substrate and cover mixtures** ([[Design/Terrain]]): at every point, substrate fractions over {soil, sand, rock, scree, silt, mud, ice} and cover fractions over {bare, tundra, taiga, forest, rainforest, grassland, steppe, savanna, shrub, marsh, desert}, each summing to 1, from soft memberships of height, slope, temperature, moisture, uplift, river proximity and a km-scale patchiness noise (tree density). Built by successive *pulls* toward one member (`v = v·(1−t); v[k] += t`) so sums stay 1 by construction. Mirrored in `src/terrain.h` (`mixtureAt`). Rendering is the fraction-weighted colour sum; bare cover shows the substrate colour. **B** and **V** show the dominant member as a flat colour.
 - **Relief:** the shading normal comes from screen-space derivatives (`dFdx`/`dFdy`) of the surface point with height exaggerated 3×, so the height function is evaluated once per pixel. Rock colour uses the physical slope from the same derivatives plus an altitude tint. Sun is fixed relative to the camera so the visible side is always lit.
 - **Atmosphere:** limb brightening on the sphere and a thin glow just outside it.
 
@@ -55,7 +55,7 @@ Bottom-left, in game only. The distance is a 1/2/5 × 10ⁿ value chosen so the 
 
 ## Tooltip
 
-In game, a label follows the cursor with what is under it: elevation, mean temperature, and terrain ("forest on soil", "rock", "Sea, 354 m deep", "Lake, 20 m deep"). It is computed on the CPU from the terrain mirror (`terrain.h`) at the current level of detail, using the same lake rule as the shader, so it doubles as a live check that the CPU and GPU terrain agree.
+In game, a label follows the cursor with what is under it: elevation, mean temperature, and the terrain mixture ("forest 68%, grassland 22%, rock 10%"; "Sea, 354 m deep"; "Lake, 20 m deep"). It is computed on the CPU from the terrain mirror (`terrain.h`) at the current level of detail, using the same lake rule as the shader, so it doubles as a live check that the CPU and GPU terrain agree.
 
 ## Camera
 

@@ -244,33 +244,62 @@ inline float moistureAt(V3 w, float lat) {
     return std::clamp(m - dryBand * 0.45f + 0.08f, 0.0f, 1.0f);
 }
 
+// Every point is a mixture: substrate fractions and cover fractions, each
+// summing to 1. Mirrors the shader (globe.frag) — keep in sync.
+constexpr int NSUB = 7;   // soil, sand, rock, scree, silt, mud, ice
+constexpr int NCOV = 11;  // bare, tundra, taiga, forest, rainforest, grass, steppe, savanna, shrub, marsh, desert
 enum Substrate { SUB_SOIL = 0, SUB_SAND, SUB_ROCK, SUB_SCREE, SUB_SILT, SUB_MUD, SUB_ICE };
-enum Vegetation {
-    VEG_NONE = 0, VEG_TUNDRA, VEG_TAIGA, VEG_FOREST, VEG_RAINFOREST, VEG_GRASS,
-    VEG_STEPPE, VEG_SAVANNA, VEG_SHRUB, VEG_MARSH, VEG_DESERT
+enum Cover { COV_BARE = 0, COV_TUNDRA, COV_TAIGA, COV_FOREST, COV_RAINFOREST, COV_GRASS, COV_STEPPE,
+             COV_SAVANNA, COV_SHRUB, COV_MARSH, COV_DESERT };
+
+struct Mixture {
+    float sub[NSUB];
+    float cov[NCOV];
 };
 
-inline Substrate substrateAt(float h, float slope, float temp, float moist, float uplift, bool nearRiver) {
-    if (temp < -15.0f) return SUB_ICE;
-    if (slope > 0.35f || h > 3800.0f) return SUB_ROCK;
-    if (slope > 0.18f && uplift > 0.3f) return SUB_SCREE;
-    if (nearRiver && slope < 0.02f && h < 800.0f) return SUB_SILT;
-    if (moist > 0.8f && slope < 0.015f && h < 300.0f) return SUB_MUD;
-    if (moist < 0.22f && temp > 5.0f) return SUB_SAND;
-    return SUB_SOIL;
+inline void pullTo(float* v, int n, int k, float t) {
+    for (int i = 0; i < n; i++) v[i] *= 1.0f - t;
+    v[k] += t;
 }
 
-inline Vegetation vegetationAt(Substrate sub, float temp, float moist) {
-    if (sub == SUB_ICE || sub == SUB_ROCK) return VEG_NONE;
-    if (sub == SUB_MUD) return VEG_MARSH;
-    if (sub == SUB_SAND) return moist < 0.15f ? VEG_DESERT : VEG_SHRUB;
-    if (sub == SUB_SCREE) return (moist > 0.3f && temp > 0.0f) ? VEG_SHRUB : VEG_NONE;
-    if (temp < -1.0f) return VEG_TUNDRA;
-    if (moist < 0.3f) return VEG_STEPPE;
-    if (moist < 0.5f) return temp > 18.0f ? VEG_SAVANNA : VEG_GRASS;
-    if (temp < 6.0f) return VEG_TAIGA;
-    if (temp > 20.0f && moist > 0.65f) return VEG_RAINFOREST;
-    return VEG_FOREST;
+inline float patchNoise(V3 w) { return fbm(w * 90.0f + 7.0f, 3, 0.5f) * 0.5f + 0.5f; }
+
+inline Mixture mixtureAt(float h, float slope, float temp, float moist, float uplift, bool nearRiver, float patch) {
+    Mixture m{};
+    float* s = m.sub;
+    s[0] = 1.0f;
+    pullTo(s, NSUB, 1, smoothstep(0.3f, 0.18f, moist) * smoothstep(2.0f, 8.0f, temp));
+    pullTo(s, NSUB, 4, nearRiver ? smoothstep(0.03f, 0.01f, slope) * smoothstep(900.0f, 600.0f, h) * 0.7f : 0.0f);
+    pullTo(s, NSUB, 5, smoothstep(0.7f, 0.85f, moist) * smoothstep(0.025f, 0.01f, slope) * smoothstep(400.0f, 200.0f, h));
+    pullTo(s, NSUB, 3, smoothstep(0.12f, 0.22f, slope) * smoothstep(0.2f, 0.4f, uplift));
+    pullTo(s, NSUB, 2, std::max(smoothstep(0.28f, 0.4f, slope), smoothstep(3200.0f, 3900.0f, h)));
+    pullTo(s, NSUB, 6, smoothstep(-11.0f, -16.0f, temp + slope * 4.0f));
+
+    float* v = m.cov;
+    float tree = smoothstep(0.36f, 0.62f, moist) * smoothstep(-3.0f, 4.0f, temp) * (0.45f + 0.55f * patch);
+    float wT = smoothstep(9.0f, 3.0f, temp);
+    float wR = smoothstep(18.0f, 23.0f, temp) * smoothstep(0.6f, 0.72f, moist);
+    float wF = std::max(1.0f - wT - wR, 0.0f);
+    float tn = wT + wR + wF;
+    v[2] = tree * wT / tn; v[3] = tree * wF / tn; v[4] = tree * wR / tn;
+
+    float open = 1.0f - tree;
+    float oDesert = smoothstep(0.18f, 0.06f, moist);
+    float oSteppe = smoothstep(0.1f, 0.22f, moist) * smoothstep(0.4f, 0.26f, moist);
+    float oGrassy = smoothstep(0.26f, 0.38f, moist);
+    float oSav = oGrassy * smoothstep(16.0f, 20.0f, temp) * smoothstep(0.6f, 0.45f, moist);
+    float oGrass = oGrassy - oSav;
+    float oShrub = smoothstep(0.1f, 0.2f, moist) * smoothstep(0.32f, 0.2f, moist) * (s[1] + 0.3f);
+    float on = oDesert + oSteppe + oGrass + oSav + oShrub + 1e-5f;
+    v[10] += open * oDesert / on; v[6] += open * oSteppe / on; v[5] += open * oGrass / on;
+    v[7] += open * oSav / on; v[8] += open * oShrub / on;
+
+    pullTo(v, NCOV, 9, s[5]);
+    pullTo(v, NCOV, 1, smoothstep(1.0f, -5.0f, temp));
+    float bare = std::max(std::max(s[2] + s[3] * 0.6f, s[6]), smoothstep(-8.0f, -15.0f, temp));
+    bare = std::max(bare, smoothstep(0.1f, 0.03f, moist) * 0.5f);
+    pullTo(v, NCOV, 0, std::clamp(bare, 0.0f, 1.0f));
+    return m;
 }
 
 // Physical slope (rise over run) from two height samples ~500 m apart.
