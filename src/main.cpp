@@ -873,10 +873,20 @@ static void updateTooltip(int x, int y) {
 // Step the paused clock forward and let every settlement catch up. Wakes
 // repeat until nothing is due, so a year's jump replays each settlement's
 // scheduled re-evaluations in order.
+// Calendar: 365-day years (no leap days), Gregorian month lengths,
+// day 0 = 0001-01-01.
+static std::string simDate() {
+    static const int ML[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    int total = (int)app.world.simTime;
+    int year = total / 365 + 1, doy = total % 365, month = 0;
+    while (doy >= ML[month]) { doy -= ML[month]; month++; }
+    char b[32];
+    snprintf(b, sizeof b, "%04d-%02d-%02d", year, month + 1, doy + 1);
+    return b;
+}
+
 static void updateDateLabel() {
-    char b[48];
-    snprintf(b, sizeof b, "Year %d, day %d", (int)(app.world.simTime / 365), (int)app.world.simTime % 365);
-    SetWindowTextA(control(ID_DATE_LABEL), b);
+    SetWindowTextA(control(ID_DATE_LABEL), simDate().c_str());
 }
 
 static void advanceDays(double days) {
@@ -1163,8 +1173,7 @@ int main(int argc, char** argv) {
         double dt = (double)(now.QuadPart - fpsT0.QuadPart) / qpf.QuadPart;
         if (dt >= 0.5) {
             char title[96];
-            snprintf(title, sizeof title, "Iron and Blood - year %d, day %d - %.0f fps",
-                     (int)(app.world.simTime / 365), (int)app.world.simTime % 365, fpsFrames / dt);
+            snprintf(title, sizeof title, "Iron and Blood - %s - %.0f fps", simDate().c_str(), fpsFrames / dt);
             SetWindowTextA(hwnd, title);
             fpsFrames = 0;
             fpsT0 = now;
