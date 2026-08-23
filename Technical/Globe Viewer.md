@@ -55,7 +55,7 @@ Bottom-left, in game only. The distance is a 1/2/5 × 10ⁿ value chosen so the 
 
 ## Population
 
-`src/population.h`, rules in [[Design/Population]]. The carrying-capacity field K is computed per hydrology cell at world creation (cover yields × foraging area, min'd with usable river water); settlements sit at local maxima of K, at least 80 km apart. Each settlement holds P (people) and R (land condition) and integrates itself forward at scheduled re-evaluations — the next wake-up is "when will my state drift ~5%" — with no per-tick work. The sim clock runs at 60 days per real second in game (paused in menus) and shows in the title bar.
+`src/population.h`, rules in [[Design/Population]]. The carrying-capacity field K is computed per hydrology cell at world creation (cover yields × foraging area, min'd with usable river water); settlements sit at local maxima of K, at least 80 km apart. Each settlement holds P (people) and R (land condition) and integrates itself forward at scheduled re-evaluations — the next wake-up is "when will my state drift ~5%" — with no per-tick work. The sim clock is paused by default; three buttons in the top-right (+1 day, +1 month, +1 year) step it, replaying each settlement's scheduled re-evaluations in order. The current date shows in the title bar. (Stepping buttons are temporary evaluation tooling; a running clock returns when watching is more useful than stepping.)
 
 Rendering: texture unit 2 carries K and settlement population per cell; settlements draw as dark-red dots scaled with zoom; **K** toggles a capacity heat overlay with settlements in white. Saves are version 2: sim time plus each settlement's cell, P and R (the K field rebuilds from the seed).
 

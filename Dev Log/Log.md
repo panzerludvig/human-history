@@ -274,3 +274,6 @@ Built the population system designed in conversation: a carrying-capacity field 
 **First bug worth recording**: the settlement threshold (K ≥ 800) was above the maximum K the yield table can produce (1.2/km² × 314 km² = 377), so zero settlements existed and — because the clock was gated on settlements — time stood still. Two lessons: derive thresholds from the tables they gate, and never make the clock depend on there being anything to clock.
 
 **Placement clusters**: top-K placement with spacing puts most settlements in the single best biome belt. Acceptable for v1; founding-over-time (new settlements where K is unclaimed) is the recorded fix.
+
+**Paused clock with step buttons**
+Replaced the free-running clock (60 days/s) with a paused-by-default clock and +1 day / +1 month / +1 year buttons, at the user's request, to make the population system evaluable: step a year, inspect the tooltips, step again. A step advances simTime and drains due settlement wake-ups in order until none remain, so a year's click is identical to a year of running time. Marked as temporary tooling in the docs.

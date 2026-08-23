@@ -386,6 +386,7 @@ enum : int {
     ID_GEN_SEED_LABEL, ID_GEN_SEED, ID_GEN_RANDOM, ID_GEN_LAND_LABEL, ID_GEN_LAND,
     ID_GEN_CONC_LABEL, ID_GEN_CONC, ID_GEN_HINT, ID_GEN_CREATE, ID_GEN_BACK,
     ID_SCALE_LABEL, ID_TOOLTIP,
+    ID_TIME_DAY, ID_TIME_MONTH, ID_TIME_YEAR,
 };
 
 struct App {
@@ -464,6 +465,8 @@ static void uploadHydrology() {
                  app.world.hydro.cells.data());
 }
 
+static void advanceDays(double days);
+
 static HWND control(int id) {
     for (auto& c : app.controls)
         if (c.first == id) return c.second;
@@ -509,6 +512,9 @@ static void createControls() {
     addControl(ID_GEN_BACK, "BUTTON", "Back", BS_PUSHBUTTON);
     addControl(ID_SCALE_LABEL, "STATIC", "", SS_LEFT);
     addControl(ID_TOOLTIP, "STATIC", "", SS_LEFT | SS_NOPREFIX);
+    addControl(ID_TIME_DAY, "BUTTON", "+1 day", BS_PUSHBUTTON);
+    addControl(ID_TIME_MONTH, "BUTTON", "+1 month", BS_PUSHBUTTON);
+    addControl(ID_TIME_YEAR, "BUTTON", "+1 year", BS_PUSHBUTTON);
 }
 
 // Map scale bar: a 1/2/5 x 10^n distance whose bar is close to a target
@@ -592,9 +598,16 @@ static void layoutControls() {
         place(ID_STATUS, cx - 60, bottom, bw + 120, 30);
         break;
     }
-    case Screen::InGame:
+    case Screen::InGame: {
         place(ID_SCALE_LABEL, SCALE_MARGIN, H - SCALE_MARGIN - 44, 110, 26);
+        // Time-stepping buttons, top right. Temporary evaluation tooling:
+        // the simulation is paused unless stepped.
+        int tw = 96, th = 32, tg = 8;
+        place(ID_TIME_DAY, W - 3 * (tw + tg), 10, tw, th);
+        place(ID_TIME_MONTH, W - 2 * (tw + tg), 10, tw, th);
+        place(ID_TIME_YEAR, W - (tw + tg), 10, tw, th);
         break;
+    }
     }
 }
 
@@ -738,6 +751,9 @@ static void onCommand(int id) {
         setStatus(saveWorld(app.world, app.cam) ? "Saved as " + name : "Save failed");
         break;
     }
+    case ID_TIME_DAY: advanceDays(1); SetFocus(app.hwnd); break;
+    case ID_TIME_MONTH: advanceDays(30); SetFocus(app.hwnd); break;
+    case ID_TIME_YEAR: advanceDays(365); SetFocus(app.hwnd); break;
     case ID_MAIN_MENU:
         setStatus("");
         setScreen(Screen::MainMenu);
@@ -847,6 +863,34 @@ static void updateTooltip(int x, int y) {
     int tx = std::min(x + 18, app.cam.width - wdt - 4), ty = y + 22;
     if (ty + 26 > app.cam.height) ty = y - 30;
     SetWindowPos(tip, HWND_TOP, tx, ty, wdt, 26, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+}
+
+// Step the paused clock forward and let every settlement catch up. Wakes
+// repeat until nothing is due, so a year's jump replays each settlement's
+// scheduled re-evaluations in order.
+static void advanceDays(double days) {
+    app.world.simTime += days;
+    population::Field& pf = app.world.pop;
+    if (pf.settlements.empty()) return;
+    bool any = false, again = true;
+    while (again) {
+        again = false;
+        for (population::Settlement& s : pf.settlements)
+            if (s.nextUpdate <= app.world.simTime) {
+                any |= population::advance(s, pf.K[s.cell], app.world.simTime);
+                again = true;
+            }
+    }
+    if (any && app.popTex) {
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, app.popTex);
+        for (const population::Settlement& s : pf.settlements) {
+            float texel[2] = {pf.K[s.cell], std::max(s.P, 1.0f)};
+            glTexSubImage2D(GL_TEXTURE_2D, 0, s.cell % population::W, s.cell / population::W,
+                            1, 1, GL_RG, GL_FLOAT, texel);
+        }
+        glActiveTexture(GL_TEXTURE0);
+    }
 }
 
 static void applyDrag(int x, int y) {
@@ -1050,33 +1094,6 @@ int main(int argc, char** argv) {
             }
             TranslateMessage(&m);
             DispatchMessageA(&m);
-        }
-        // Simulation clock: 60 days per real second while playing. Settlements
-        // wake at their scheduled times; nothing else runs.
-        {
-            static LARGE_INTEGER prevT = {};
-            LARGE_INTEGER nowT;
-            QueryPerformanceCounter(&nowT);
-            double frameDt = prevT.QuadPart ? (double)(nowT.QuadPart - prevT.QuadPart) / qpf.QuadPart : 0.0;
-            prevT = nowT;
-            if (app.screen == Screen::InGame) {
-                app.world.simTime += std::min(frameDt, 0.25) * 60.0;
-                bool any = false;
-                population::Field& pf = app.world.pop;
-                for (population::Settlement& s : pf.settlements)
-                    if (s.nextUpdate <= app.world.simTime)
-                        any |= population::advance(s, pf.K[s.cell], app.world.simTime);
-                if (any) {
-                    glActiveTexture(GL_TEXTURE2);
-                    glBindTexture(GL_TEXTURE_2D, app.popTex);
-                    for (const population::Settlement& s : pf.settlements) {
-                        float texel[2] = {pf.K[s.cell], std::max(s.P, 1.0f)};
-                        glTexSubImage2D(GL_TEXTURE_2D, 0, s.cell % population::W, s.cell / population::W,
-                                        1, 1, GL_RG, GL_FLOAT, texel);
-                    }
-                    glActiveTexture(GL_TEXTURE0);
-                }
-            }
         }
         bool showGlobe = app.screen == Screen::InGame || app.screen == Screen::PauseMenu;
         if (showGlobe) {
