@@ -16,10 +16,13 @@ constexpr int W = hydrology::W, H = hydrology::H;
 constexpr float FORAGE_KM2 = 314.0f;          // 10 km radius disc
 constexpr float WATER_L_PER_PERSON = 20.0f;   // per day
 constexpr float USABLE_WATER = 0.05f;         // fraction of discharge usable
-constexpr float GROWTH_MAX = 0.02f;           // per year at full surplus
-constexpr float DECLINE_MAX = 0.06f;          // per year in famine
-constexpr float R_REGEN_YEARS = 12.0f;        // land recovery
-constexpr float R_DEPLETE_YEARS = 8.0f;       // land depletion at P = K
+constexpr float GROWTH_MAX = 0.028f;          // per year at full surplus
+constexpr float DECLINE_MAX = 0.07f;          // per year in famine
+// The land timescales are slow relative to growth so populations overshoot
+// visibly (~18% peak around year 33 from a half-capacity start) before the
+// land's decline pulls them back. Their ratio (1.5) fixes R* = 0.549.
+constexpr float R_REGEN_YEARS = 33.0f;        // land recovery
+constexpr float R_DEPLETE_YEARS = 22.0f;      // land depletion at P = K
 // Land condition settles where regeneration balances depletion:
 // (1-R)/T_regen = R^2/T_deplete, giving R* = 0.549 for 12 and 8 years.
 // The yield table is measured *sustained* density, so the pristine ceiling
@@ -134,8 +137,8 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
 inline void derivatives(float P, float R, float K, float& dP, float& dR) {
     float supply = K * R;
     float phi = P > 1 ? supply / P : 2.0f;
-    float g = phi >= 1 ? GROWTH_MAX * std::min((phi - 1) / 0.25f, 1.0f)
-                       : -DECLINE_MAX * std::min((1 - phi) / 0.2f, 1.0f);
+    float g = phi >= 1 ? GROWTH_MAX * std::min((phi - 1) / 0.11f, 1.0f)
+                       : -DECLINE_MAX * std::min((1 - phi) / 0.22f, 1.0f);
     dP = P * g / 365.0f;
     dR = (1 - R) / (R_REGEN_YEARS * 365) - (P / std::max(K, 1.0f)) * R / (R_DEPLETE_YEARS * 365);
 }

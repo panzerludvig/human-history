@@ -26,8 +26,8 @@ Sparse actors at local maxima of K (at least 80 km apart, K ≥ 800). Each has:
 
 Dynamics (the overshoot the real world has — a stock between people and starvation):
 
-- Growth: up to +2%/yr when food per head is ample, down to −6%/yr in famine, proportional to the surplus/deficit.
-- Land: regenerates toward 1 over ~12 years; is depleted in proportion to use (~8-year timescale at P = K).
+- Growth: up to +2.8%/yr when food per head is ample, down to −7%/yr in famine, proportional to the surplus/deficit (saturating quickly, so growth runs near its maximum whenever there is real surplus).
+- Land: regenerates toward 1 over ~33 years; is depleted in proportion to use (~22-year timescale at P = K). Slow land feedback against fast growth is what makes the overshoot pronounced: ~18% above the sustained capacity, peaking around year 33 from a half-capacity start.
 
 P can overshoot because R gives way slowly, then falls back as R runs down; depending on how hard the overshoot ran, it settles or oscillates. Depleted land that outlives its people is the beginning of "the world remembers".
 
