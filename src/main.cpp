@@ -354,7 +354,7 @@ enum : int {
     ID_TITLE, ID_STATUS,
     ID_GEN_SEED_LABEL, ID_GEN_SEED, ID_GEN_RANDOM, ID_GEN_LAND_LABEL, ID_GEN_LAND,
     ID_GEN_CONC_LABEL, ID_GEN_CONC, ID_GEN_HINT, ID_GEN_CREATE, ID_GEN_BACK,
-    ID_SCALE_LABEL,
+    ID_SCALE_LABEL, ID_TOOLTIP,
 };
 
 struct App {
@@ -370,6 +370,7 @@ struct App {
     GLuint plateTex = 0;
     bool running = true;
     int debugMode = 0; // 0 normal, 1 plates, 2 substrate, 3 vegetation
+    int octaves = 8;   // current level of detail, shared with the tooltip
     HWND hwnd = nullptr;
     HFONT font = nullptr, titleFont = nullptr;
     HBRUSH bgBrush = nullptr;
@@ -452,6 +453,7 @@ static void createControls() {
     addControl(ID_GEN_CREATE, "BUTTON", "Generate", BS_PUSHBUTTON);
     addControl(ID_GEN_BACK, "BUTTON", "Back", BS_PUSHBUTTON);
     addControl(ID_SCALE_LABEL, "STATIC", "", SS_LEFT);
+    addControl(ID_TOOLTIP, "STATIC", "", SS_LEFT | SS_NOPREFIX);
 }
 
 // Map scale bar: a 1/2/5 x 10^n distance whose bar is close to a target
@@ -588,6 +590,7 @@ static void fillNewWorldFields(const World& w) {
 
 static void setScreen(Screen s) {
     app.screen = s;
+    ShowWindow(control(ID_TOOLTIP), SW_HIDE);
     app.dragging = false;
     if (s == Screen::LoadMenu) refreshWorldList();
     if (s == Screen::NewWorldMenu) fillNewWorldFields(app.world);
@@ -687,6 +690,79 @@ static void onCommand(int id) {
     }
 }
 
+// What is under the cursor, from the CPU mirror of the terrain function.
+static const char* SUBSTRATE_NAMES[] = {"soil", "sand", "rock", "scree", "silt", "mud", "ice"};
+static const char* VEGETATION_NAMES[] = {"bare", "tundra", "taiga", "forest", "rainforest", "grassland",
+                                         "steppe", "savanna", "shrubland", "marsh", "desert"};
+
+static std::string describePoint(Vec3 n) {
+    const World& wd = app.world;
+    terrain::V3 nf = {(float)n.x, (float)n.y, (float)n.z};
+    terrain::V3 off = {(float)wd.offset.x, (float)wd.offset.y, (float)wd.offset.z};
+    float h = terrain::heightMeters(terrain::rotate(wd.rot, nf) + off, nf, wd.cp, wd.seaLevel, app.octaves,
+                                    wd.plateField, wd.rot);
+    float lat = (float)std::asin(std::clamp(n.z, -1.0, 1.0));
+    float temp = terrain::temperatureC(lat, h);
+    char buf[160];
+    auto fmtM = [](float m) {
+        char b[32];
+        snprintf(b, sizeof b, "%d m", (int)std::lround(m));
+        return std::string(b);
+    };
+
+    if (h < 0) {
+        snprintf(buf, sizeof buf, "Sea, %s deep  |  %.0f C", fmtM(-h).c_str(), temp);
+        return buf;
+    }
+    // Lake: below the level of any adjacent lake cell (same rule as the shader).
+    float lon = (float)std::atan2(n.y, n.x);
+    int cx = (int)std::floor((lon + PI) / (2 * PI) * hydrology::W), cy = (int)std::floor((lat + PI / 2) / PI * hydrology::H);
+    cx = hydrology::wrapX(cx);
+    cy = std::clamp(cy, 0, hydrology::H - 1);
+    bool nearRiver = false;
+    if (!wd.hydro.cells.empty()) {
+        const hydrology::Cell& c = wd.hydro.cells[cy * hydrology::W + cx];
+        nearRiver = c.nearRiver > 0.5f;
+        float lake = hydrology::NO_LAKE;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) {
+                int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
+                lake = std::max(lake, wd.hydro.cells[yy * hydrology::W + hydrology::wrapX(cx + dx)].lakeLevel);
+            }
+        if (lake > hydrology::NO_LAKE + 1 && h < lake + 12.0f) {
+            snprintf(buf, sizeof buf, "Lake, %s deep  |  %.0f C", fmtM(lake + 12.0f - h).c_str(), temp);
+            return buf;
+        }
+    }
+    terrain::V3 w = terrain::rotate(wd.rot, nf) + off;
+    float moist = terrain::moistureAt(w, lat);
+    float slope = terrain::slopeAt(nf, wd.cp, wd.seaLevel, std::min(app.octaves, 12), wd.plateField, wd.rot, off);
+    float uplift = wd.plateField.sample({nf.x, nf.y, nf.z}).uplift;
+    terrain::Substrate sub = terrain::substrateAt(h, slope, temp, moist, uplift, nearRiver);
+    terrain::Vegetation veg = terrain::vegetationAt(sub, temp, moist);
+    if (veg == terrain::VEG_NONE)
+        snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s", fmtM(h).c_str(), temp, SUBSTRATE_NAMES[sub]);
+    else
+        snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s on %s", fmtM(h).c_str(), temp, VEGETATION_NAMES[veg],
+                 SUBSTRATE_NAMES[sub]);
+    return buf;
+}
+
+static void updateTooltip(int x, int y) {
+    HWND tip = control(ID_TOOLTIP);
+    Vec3 hit;
+    if (app.screen != Screen::InGame || !app.cam.hitSphere(x, y, hit)) {
+        ShowWindow(tip, SW_HIDE);
+        return;
+    }
+    std::string txt = describePoint(hit);
+    SetWindowTextA(tip, txt.c_str());
+    int wdt = 12 + (int)txt.size() * 11;
+    int tx = std::min(x + 18, app.cam.width - wdt - 4), ty = y + 22;
+    if (ty + 26 > app.cam.height) ty = y - 30;
+    SetWindowPos(tip, HWND_TOP, tx, ty, wdt, 26, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+}
+
 static void applyDrag(int x, int y) {
     Camera& c = app.cam;
     Vec3 hit;
@@ -752,14 +828,16 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         ReleaseCapture();
         app.dragging = false;
         return 0;
-    case WM_MOUSEMOVE:
+    case WM_MOUSEMOVE: {
+        int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
         if (app.dragging) {
-            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
             applyDrag(x, y);
             app.lastX = x;
             app.lastY = y;
         }
+        updateTooltip(x, y);
         return 0;
+    }
     case WM_MOUSEWHEEL: {
         if (app.screen != Screen::InGame) return 0;
         int delta = GET_WHEEL_DELTA_WPARAM(wp);
@@ -894,6 +972,7 @@ int main(int argc, char** argv) {
             double kmpp = c.kmPerPixel();
             int octaves = (int)std::ceil(std::log2(EARTH_RADIUS_KM / (2.0 * kmpp)));
             octaves = std::clamp(octaves, 4, 16);
+            app.octaves = octaves;
 
             glUniform3f(uCamPos, (float)p.x, (float)p.y, (float)p.z);
             glUniform3f(uForward, (float)f.x, (float)f.y, (float)f.z);

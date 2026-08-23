@@ -53,6 +53,10 @@ Generation takes well under a second. Nothing is saved; the layer is rebuilt fro
 
 Bottom-left, in game only. The distance is a 1/2/5 × 10ⁿ value chosen so the bar is close to 160 px at the current km-per-pixel (measured at the screen centre, so it is exact there and slightly off toward the limb at full-globe zoom). The bar is drawn by the fragment shader as a screen-space overlay; the label is a static control like the menu text.
 
+## Tooltip
+
+In game, a label follows the cursor with what is under it: elevation, mean temperature, and terrain ("forest on soil", "rock", "Sea, 354 m deep", "Lake, 20 m deep"). It is computed on the CPU from the terrain mirror (`terrain.h`) at the current level of detail, using the same lake rule as the shader, so it doubles as a live check that the CPU and GPU terrain agree.
+
 ## Camera
 
 Sits at (lat, lon, altitude) above the surface and always looks at the globe's centre, so at deep zoom it is looking straight down. Vertical field of view 45°.

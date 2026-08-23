@@ -229,3 +229,13 @@ Temperature moved from a 0–1 "warmth" to °C with a lapse rate, so thresholds 
 
 **Coarse moisture noise**
 Hard classification of a field with fine octaves speckles. Moisture now uses three octaves (features ≥ ~500 km), which keeps classes regional.
+
+---
+
+## 2026-08-23 — Tooltip
+
+### What was done
+A cursor tooltip showing elevation, temperature and terrain class, computed from the CPU terrain mirror.
+
+### Decisions and reasoning
+Computed on the CPU rather than read back from the GPU: a readback would stall the frame, and the CPU mirror exists precisely so the simulation can ask these questions. Any disagreement between the tooltip and the pixel under it is now a visible CPU/GPU drift — the check the todo list asked for, in a form that gets exercised every time the mouse moves.
