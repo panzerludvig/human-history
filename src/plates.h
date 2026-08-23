@@ -48,8 +48,8 @@ struct Field {
     std::vector<Cell> cells; // W*H, row 0 = south
     std::vector<Plate> plates;
 
-    // Bilinear sample at a unit vector, matching the GPU's GL_LINEAR lookup
-    // with S repeating and T clamped.
+    // Bicubic B-spline sample at a unit vector (C2, no overshoot, rounded
+    // iso-lines). Matches the GPU's plateAt(); S repeats, T clamps.
     Cell sample(V3 n) const {
         float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
         float lon = std::atan2(n.y, n.x);
@@ -57,18 +57,30 @@ struct Field {
         float v = (lat + PI_F / 2) / PI_F * H - 0.5f;
         int x0 = (int)std::floor(u), y0 = (int)std::floor(v);
         float fx = u - x0, fy = v - y0;
-        auto at = [&](int x, int y) -> const Cell& {
-            x = ((x % W) + W) % W;
-            y = std::clamp(y, 0, H - 1);
-            return cells[y * W + x];
-        };
-        const Cell &a = at(x0, y0), &b = at(x0 + 1, y0), &c = at(x0, y0 + 1), &d = at(x0 + 1, y0 + 1);
-        auto lerp = [](float p, float q, float t) { return p + (q - p) * t; };
-        auto bil = [&](float ca, float cb, float cc, float cd) {
-            return lerp(lerp(ca, cb, fx), lerp(cc, cd, fx), fy);
-        };
-        return {bil(a.uplift, b.uplift, c.uplift, d.uplift), bil(a.crust, b.crust, c.crust, d.crust),
-                bil(a.beltDist, b.beltDist, c.beltDist, d.beltDist), 0.0f};
+        float wx[4], wy[4];
+        bsplineWeights(fx, wx);
+        bsplineWeights(fy, wy);
+        Cell out = {0, 0, 0, 0};
+        for (int j = 0; j < 4; j++) {
+            int y = std::clamp(y0 - 1 + j, 0, H - 1);
+            for (int i = 0; i < 4; i++) {
+                int x = (((x0 - 1 + i) % W) + W) % W;
+                const Cell& c = cells[y * W + x];
+                float wgt = wx[i] * wy[j];
+                out.uplift += c.uplift * wgt;
+                out.crust += c.crust * wgt;
+                out.beltDist += c.beltDist * wgt;
+            }
+        }
+        return out;
+    }
+
+    static void bsplineWeights(float t, float w[4]) {
+        float t2 = t * t, t3 = t2 * t;
+        w[0] = (1 - 3 * t + 3 * t2 - t3) / 6;
+        w[1] = (4 - 6 * t2 + 3 * t3) / 6;
+        w[2] = (1 + 3 * t + 3 * t2 - 3 * t3) / 6;
+        w[3] = t3 / 6;
     }
 };
 

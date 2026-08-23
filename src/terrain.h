@@ -110,15 +110,17 @@ inline V3 hash01(int ix, int iy, int iz) {
 // from a random centre, tilted so one side is steep — and the terrain is the
 // highest heap at each point. Where heaps meet, the crease is sharp and
 // irregular: rock shoved against rock, with no uniform edge band.
+// Feature points sit in the middle half of their cell, so the 2x2x2 cells
+// around the point (found by rounding) hold every heap that can reach it.
 inline float blocks(V3 p) {
-    int cx = (int)std::floor(p.x), cy = (int)std::floor(p.y), cz = (int)std::floor(p.z);
+    int cx = (int)std::floor(p.x - 0.5f), cy = (int)std::floor(p.y - 0.5f), cz = (int)std::floor(p.z - 0.5f);
     V3 f = {p.x - cx, p.y - cy, p.z - cz};
     float best = -1e9f;
-    for (int dz = -1; dz <= 1; dz++)
-        for (int dy = -1; dy <= 1; dy++)
-            for (int dx = -1; dx <= 1; dx++) {
+    for (int dz = 0; dz <= 1; dz++)
+        for (int dy = 0; dy <= 1; dy++)
+            for (int dx = 0; dx <= 1; dx++) {
                 int ix = cx + dx, iy = cy + dy, iz = cz + dz;
-                V3 fp = hash01(ix, iy, iz);
+                V3 fp = hash01(ix, iy, iz) * 0.5f + 0.25f;
                 V3 d = {f.x - (dx + fp.x), f.y - (dy + fp.y), f.z - (dz + fp.z)};
                 V3 r = hash01(ix * 3 + 1, iy * 3 + 7, iz * 3 + 13);
                 V3 t2 = hash01(ix + 5, iy - 3, iz + 9);
@@ -129,7 +131,7 @@ inline float blocks(V3 p) {
                 V3 a2 = {t2.z * 2 - 1, 1.0f, r.y * 2 - 1};
                 V3 a3 = {r.z * 2 - 1, t2.x * 2 - 1, 1.0f};
                 float dist = std::max({std::fabs(dot(d, a1)), std::fabs(dot(d, a2)), std::fabs(dot(d, a3))});
-                float slope = 1.0f + t2.y * 0.9f;
+                float slope = 1.3f + t2.y * 0.9f;
                 float h = r.x * 0.7f + 0.3f - dist * slope + dot(d, tilt) * 0.5f;
                 best = std::max(best, h);
             }
@@ -141,9 +143,9 @@ inline float fbm(V3 p, int octaves, float gain);
 // Blocks at a given frequency with a domain warp so edges are crooked.
 inline float warpedBlocks(V3 p, float freq, float seedOff) {
     V3 q = p * freq;
-    V3 w = {fbm(q * 0.5f + seedOff, 2, 0.5f), fbm(q * 0.5f + seedOff + 7.0f, 2, 0.5f),
-            fbm(q * 0.5f + seedOff + 19.0f, 2, 0.5f)};
-    return blocks(q + w * 0.45f + seedOff);
+    V3 w = {fbm(q * 0.7f + seedOff, 2, 0.55f), fbm(q * 0.7f + seedOff + 7.0f, 2, 0.55f),
+            fbm(q * 0.7f + seedOff + 19.0f, 2, 0.55f)};
+    return blocks(q + w * 0.4f + seedOff);
 }
 
 inline float smoothstep(float a, float b, float x) {
@@ -180,7 +182,7 @@ inline float heightMeters(V3 p, V3 n, const ContinentParams& cp, float seaLevel,
     // blocks ~35 km, slabs ~12 km) with jagged ridged peaks on top. The
     // blocks are discontinuous at their edges by design: rock pushed over rock.
     V3 q = p * 7.0f + 2.0f;
-    float peaks = ridged(q, std::max(octaves - 2, 1));
+    float peaks = ridged(q, std::max(octaves - 3, 1));
     float uplift = pl.uplift;
     // Blocks appear only where uplift is substantial; lowlands keep peaks/hills.
     float blockMask = smoothstep(0.35f, 0.75f, uplift);
@@ -189,14 +191,15 @@ inline float heightMeters(V3 p, V3 n, const ContinentParams& cp, float seaLevel,
         float sheets = warpedBlocks(p, 60.0f, 3.0f);
         float mid = octaves >= 7 ? warpedBlocks(p, 180.0f, 11.0f) : 0.5f;
         float slabs = octaves >= 10 ? warpedBlocks(p, 500.0f, 23.0f) : 0.5f;
-        float rubble = octaves >= 13 ? warpedBlocks(p, 1500.0f, 37.0f) : 0.5f;
         // Uplift only ever adds: heaps never cut below the belt's baseline.
-        stack = std::max(sheets * 0.45f + mid * 0.28f + slabs * 0.17f + rubble * 0.1f, 0.05f);
-        // Fine ridged texture so facets read as rock, not polygons.
-        stack *= 0.82f + 0.18f * ridged(p * 45.0f + 5.0f, std::max(octaves - 6, 1));
+        stack = std::max(sheets * 0.45f + mid * 0.3f + slabs * 0.25f, 0.05f);
     }
-    float ranges = stack * blockMask * 0.7f * (0.55f + 0.45f * peaks) + peaks * 0.5f;
-    float hills = ridged(p * 4.0f + 2.0f, std::max(octaves - 2, 1)) *
+    // Below ~10 km the rock is ridges and gullies carved into the heap
+    // faces: a ridged multifractal added on top, not more blocks.
+    float gullies = octaves >= 11 ? ridged(p * 60.0f + 5.0f, std::max(octaves - 8, 1)) - 0.45f : 0.0f;
+    float ranges = stack * blockMask * 0.7f * (0.55f + 0.45f * peaks) + peaks * 0.5f +
+                   gullies * blockMask * 0.4f;
+    float hills = ridged(p * 4.0f + 2.0f, std::clamp(octaves - 2, 1, 6)) *
                   smoothstep(0.02f, 0.25f, continent) *
                   smoothstep(0.3f, 0.7f, fbm(p * 2.2f + 41.0f, 3, 0.5f) * 0.5f + 0.5f);
     float h = continent + detail * 0.06f + ranges * std::max(uplift, 0.0f) * 0.9f +

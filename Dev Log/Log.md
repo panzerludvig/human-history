@@ -184,3 +184,27 @@ The user's critique: the belts looked like ripples in textile. Both smooth ridge
 
 **From tiles to heaps**
 The first block version (one tilted plane per Voronoi cell) read as stained glass: straight polygon edges and a uniform bevel band at every edge. Replaced by heaps — a per-cell pyramid under a random faceted norm, terrain = max over heaps. A Euclidean falloff was tried in between and gave cobblestones; angular norms were the difference. The heap stack is clamped non-negative so belts only add height; without that, heaps dipping below sea level shattered subduction coastlines into shard islands.
+
+---
+
+## 2026-08-23 — Mountain Look, Staircase Artifact, Frame Rate
+
+### What was done
+Iterated the rock-heap mountains to a stable form, fixed a staircase artifact from the plate texture, and roughly doubled frame rate in mountain belts.
+
+### Decisions and reasoning
+
+**Relief from screen-space derivatives**
+The height function was evaluated three times per pixel (centre plus two offsets) for the shading normal. `dFdx`/`dFdy` of the surface point give the same normal from one evaluation. Largest single speed win; the only cost is 2×2-pixel quantisation of the normal, invisible in practice.
+
+**Bicubic plate sampling**
+Bilinear interpolation of the 40 km plate texture is continuous but has a slope kink at every texel edge; relief shading turned those kinks into a visible staircase across flat desert, and colour ramps traced texel-aligned contours at the shelf edge. Smoothstep-weighted bilinear removed the shading kinks but not the contours; bicubic B-spline (16 fetches, C², no overshoot) removed both.
+
+**Heaps: 8 cells, three scales, gullies on top**
+Feature points confined to the middle half of each cell let the heap search drop from 27 to 8 cells. Two finer heap scales (4 km, 1.3 km) were tried and removed — they produced curly slab edges that read as crumpled paper — in favour of an additive ridge-and-gully multifractal below ~10 km.
+
+**Lake shoreline on the grid**
+Two attempts to interpolate lake level across cells failed instructively. Carrying "height − 60 m" in non-lake cells flooded half the land, because the CPU's cell-centre height is nowhere near the GPU's within-cell terrain. Including the dilation ring in a weighted average made rounded-rectangle "pills". The working rule: any adjacent lake cell defines the level, the terrain decides the shore, lakes under three cells are dropped, and the drawn level sits 12 m above the spill. Flat-ground lakes still show the grid; recorded as a limitation.
+
+**FPS in the title bar**
+Added so performance claims are measured, not guessed: ~35 fps in belts before this session's changes, ~50 after, 60 (vsync) elsewhere.

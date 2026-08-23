@@ -23,9 +23,10 @@ constexpr int DX[8] = {1, 1, 0, -1, -1, -1, 0, 1};
 constexpr int DY[8] = {0, 1, 1, 1, 0, -1, -1, -1};
 
 // One texel per cell, RGBA32F: lake level (m), drainage area (km^2),
-// downstream direction (0..7, -1 none), terrain height (m).
+// downstream direction (0..7, -1 none), and a flag: 1 if any river cell
+// lies within two cells (lets the shader skip the river search elsewhere).
 struct Cell {
-    float lakeLevel, flow, dir, height;
+    float lakeLevel, flow, dir, nearRiver;
 };
 
 struct Result {
@@ -161,6 +162,8 @@ inline Result build(const terrain::ContinentParams& cp, float seaLevel, const fl
             bool great = roll < 3;
             bool kept = roll < 30;
             float cap = great ? 1.0e9f : 60.0f;
+            // Lakes under three cells are playas the grid cannot draw well.
+            if (members.size() < 3) kept = false;
             float lvl = kept ? std::min(filled[i], floorH + cap) : floorH;
             for (int c : members) level[c] = lvl;
             ncomp++;
@@ -173,7 +176,7 @@ inline Result build(const terrain::ContinentParams& cp, float seaLevel, const fl
         Cell& cell = r.cells[i];
         bool ocean = h[i] <= 0;
         bool lake = !ocean && level[i] > h[i] + 0.5f;
-        cell.height = h[i];
+        cell.nearRiver = 0;
         cell.lakeLevel = lake ? level[i] : NO_LAKE;
         // Rivers are drawn from land cells only; lakes and the sea absorb them.
         cell.flow = (!ocean && !lake && acc[i] >= riverThresholdKm2) ? acc[i] : 0.0f;
@@ -187,22 +190,20 @@ inline Result build(const terrain::ContinentParams& cp, float seaLevel, const fl
         if (cell.flow > 0) r.riverCells++;
     }
 
-    // Let lake levels spill one cell outward so the shoreline is decided by
-    // the GPU's height rather than the grid's cell edges.
-    std::vector<float> spill(N, NO_LAKE);
+    // No dilation: the shader takes the lake level from any adjacent lake
+    // cell and lets the terrain decide where the shoreline falls.
+
+    // River-nearby flag over a 5x5 window, matching the shader's search.
     for (int i = 0; i < N; i++) {
-        if (r.cells[i].lakeLevel != NO_LAKE) continue;
+        if (r.cells[i].flow <= 0) continue;
         int cx = i % W, cy = i / W;
-        float best = NO_LAKE;
-        for (int d = 0; d < 8; d++) {
-            int nx = wrapX(cx + DX[d]), ny = cy + DY[d];
-            if (ny < 0 || ny >= H) continue;
-            best = std::max(best, r.cells[ny * W + nx].lakeLevel);
-        }
-        spill[i] = best;
+        for (int dy = -2; dy <= 2; dy++)
+            for (int dx = -2; dx <= 2; dx++) {
+                int ny = cy + dy;
+                if (ny < 0 || ny >= H) continue;
+                r.cells[ny * W + wrapX(cx + dx)].nearRiver = 1;
+            }
     }
-    for (int i = 0; i < N; i++)
-        if (spill[i] != NO_LAKE && h[i] > 0) r.cells[i].lakeLevel = spill[i];
     return r;
 }
 

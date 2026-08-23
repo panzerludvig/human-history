@@ -861,6 +861,10 @@ int main(int argc, char** argv) {
         setScreen(Screen::MainMenu);
     }
 
+    LARGE_INTEGER qpf, fpsT0;
+    QueryPerformanceFrequency(&qpf);
+    QueryPerformanceCounter(&fpsT0);
+    int fpsFrames = 0;
     while (app.running) {
         MSG m;
         while (PeekMessageA(&m, nullptr, 0, 0, PM_REMOVE)) {
@@ -883,7 +887,7 @@ int main(int argc, char** argv) {
             // Finest noise octave should be around two pixels wide on screen.
             double kmpp = c.kmPerPixel();
             int octaves = (int)std::ceil(std::log2(EARTH_RADIUS_KM / (2.0 * kmpp)));
-            octaves = std::clamp(octaves, 4, 20);
+            octaves = std::clamp(octaves, 4, 16);
 
             glUniform3f(uCamPos, (float)p.x, (float)p.y, (float)p.z);
             glUniform3f(uForward, (float)f.x, (float)f.y, (float)f.z);
@@ -923,6 +927,19 @@ int main(int argc, char** argv) {
             glClear(GL_COLOR_BUFFER_BIT);
         }
         SwapBuffers(dc);
+
+        // Frame rate in the title bar, updated twice a second.
+        fpsFrames++;
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        double dt = (double)(now.QuadPart - fpsT0.QuadPart) / qpf.QuadPart;
+        if (dt >= 0.5) {
+            char title[64];
+            snprintf(title, sizeof title, "Iron and Blood - %.0f fps", fpsFrames / dt);
+            SetWindowTextA(hwnd, title);
+            fpsFrames = 0;
+            fpsT0 = now;
+        }
     }
 
     wglMakeCurrent(nullptr, nullptr);

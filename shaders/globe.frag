@@ -81,15 +81,17 @@ vec3 hash01(ivec3 c) {
 // highest heap at each point. Where heaps meet, the crease is sharp and
 // irregular: rock shoved against rock, with no uniform edge band.
 // Mirrored in src/terrain.h — keep in sync.
+// Feature points sit in the middle half of their cell, so the 2x2x2 cells
+// around the point (found by rounding) hold every heap that can reach it.
 float blocks(vec3 p) {
-    ivec3 c = ivec3(floor(p));
+    ivec3 c = ivec3(floor(p - 0.5));
     vec3 f = p - vec3(c);
     float best = -1e9;
-    for (int dz = -1; dz <= 1; dz++)
-        for (int dy = -1; dy <= 1; dy++)
-            for (int dx = -1; dx <= 1; dx++) {
+    for (int dz = 0; dz <= 1; dz++)
+        for (int dy = 0; dy <= 1; dy++)
+            for (int dx = 0; dx <= 1; dx++) {
                 ivec3 cell = c + ivec3(dx, dy, dz);
-                vec3 d = f - (vec3(dx, dy, dz) + hash01(cell));
+                vec3 d = f - (vec3(dx, dy, dz) + hash01(cell) * 0.5 + 0.25);
                 vec3 r = hash01(cell * 3 + ivec3(1, 7, 13));
                 vec3 t2 = hash01(cell + ivec3(5, -3, 9));
                 vec3 tilt = vec3(r.y * 2.0 - 1.0, r.z * 2.0 - 1.0, t2.x * 2.0 - 1.0);
@@ -99,7 +101,7 @@ float blocks(vec3 p) {
                 vec3 a2 = vec3(t2.z * 2.0 - 1.0, 1.0, r.y * 2.0 - 1.0);
                 vec3 a3 = vec3(r.z * 2.0 - 1.0, t2.x * 2.0 - 1.0, 1.0);
                 float dist = max(max(abs(dot(d, a1)), abs(dot(d, a2))), abs(dot(d, a3)));
-                float slope = 1.0 + t2.y * 0.9;
+                float slope = 1.3 + t2.y * 0.9;
                 float h = r.x * 0.7 + 0.3 - dist * slope + dot(d, tilt) * 0.5;
                 best = max(best, h);
             }
@@ -120,9 +122,9 @@ float fbm(vec3 p, int octaves, float gain) {
 // Blocks at a given frequency with a domain warp so edges are crooked.
 float warpedBlocks(vec3 p, float freq, float seedOff) {
     vec3 q = p * freq;
-    vec3 w = vec3(fbm(q * 0.5 + seedOff, 2, 0.5), fbm(q * 0.5 + seedOff + 7.0, 2, 0.5),
-                  fbm(q * 0.5 + seedOff + 19.0, 2, 0.5));
-    return blocks(q + w * 0.45 + seedOff);
+    vec3 w = vec3(fbm(q * 0.7 + seedOff, 2, 0.55), fbm(q * 0.7 + seedOff + 7.0, 2, 0.55),
+                  fbm(q * 0.7 + seedOff + 19.0, 2, 0.55));
+    return blocks(q + w * 0.4 + seedOff);
 }
 
 // Ridged multifractal for mountain ranges.
@@ -152,10 +154,32 @@ float continentField(vec3 p) {
     return mix(base, web, uWebness);
 }
 
+const int PW = 1024, PH = 512; // plate grid size, must match plates.h
+
+// Bicubic B-spline: C2 and free of overshoot, so neither relief shading nor
+// colour ramps show the texel grid. Mirrored in plates.h Field::sample.
+vec4 bsplineWeights(float t) {
+    float t2 = t * t, t3 = t2 * t;
+    return vec4(1.0 - 3.0 * t + 3.0 * t2 - t3, 4.0 - 6.0 * t2 + 3.0 * t3,
+                1.0 + 3.0 * t + 3.0 * t2 - 3.0 * t3, t3) / 6.0;
+}
+
 vec4 plateAt(vec3 n) {
     float lat = asin(clamp(n.z, -1.0, 1.0));
     float lon = atan(n.y, n.x);
-    return texture(uPlates, vec2((lon + PI) / (2.0 * PI), (lat + PI / 2.0) / PI));
+    vec2 uv = vec2((lon + PI) / (2.0 * PI) * float(PW), (lat + PI / 2.0) / PI * float(PH)) - 0.5;
+    ivec2 i = ivec2(floor(uv));
+    vec2 f = uv - vec2(i);
+    vec4 wx = bsplineWeights(f.x), wy = bsplineWeights(f.y);
+    vec4 sum = vec4(0.0);
+    for (int j = 0; j < 4; j++) {
+        int y = clamp(i.y - 1 + j, 0, PH - 1);
+        for (int k = 0; k < 4; k++) {
+            int x = ((i.x - 1 + k) % PW + PW) % PW;
+            sum += texelFetch(uPlates, ivec2(x, y), 0) * (wx[k] * wy[j]);
+        }
+    }
+    return sum;
 }
 
 // Height in metres above sea level. `p` is the point in noise space, `n` the
@@ -169,7 +193,7 @@ float terrainHeight(vec3 p, vec3 n, int octaves) {
     // blocks ~35 km, slabs ~12 km) with jagged ridged peaks on top. The
     // blocks are discontinuous at their edges by design: rock pushed over rock.
     vec3 q = p * 7.0 + 2.0;
-    float peaks = ridged(q, max(octaves - 2, 1));
+    float peaks = ridged(q, max(octaves - 3, 1));
     float uplift = pl.r;
     // Blocks appear only where uplift is substantial; lowlands keep peaks/hills.
     float blockMask = smoothstep(0.35, 0.75, uplift);
@@ -178,14 +202,15 @@ float terrainHeight(vec3 p, vec3 n, int octaves) {
         float sheets = warpedBlocks(p, 60.0, 3.0);
         float mid = octaves >= 7 ? warpedBlocks(p, 180.0, 11.0) : 0.5;
         float slabs = octaves >= 10 ? warpedBlocks(p, 500.0, 23.0) : 0.5;
-        float rubble = octaves >= 13 ? warpedBlocks(p, 1500.0, 37.0) : 0.5;
         // Uplift only ever adds: heaps never cut below the belt's baseline.
-        stack = max(sheets * 0.45 + mid * 0.28 + slabs * 0.17 + rubble * 0.1, 0.05);
-        // Fine ridged texture so facets read as rock, not polygons.
-        stack *= 0.82 + 0.18 * ridged(p * 45.0 + 5.0, max(octaves - 6, 1));
+        stack = max(sheets * 0.45 + mid * 0.3 + slabs * 0.25, 0.05);
     }
-    float ranges = stack * blockMask * 0.7 * (0.55 + 0.45 * peaks) + peaks * 0.5;
-    float hills = ridged(p * 4.0 + 2.0, max(octaves - 2, 1)) *
+    // Below ~10 km the rock is ridges and gullies carved into the heap
+    // faces: a ridged multifractal added on top, not more blocks.
+    float gullies = octaves >= 11 ? ridged(p * 60.0 + 5.0, max(octaves - 8, 1)) - 0.45 : 0.0;
+    float ranges = stack * blockMask * 0.7 * (0.55 + 0.45 * peaks) + peaks * 0.5 +
+                   gullies * blockMask * 0.4;
+    float hills = ridged(p * 4.0 + 2.0, clamp(octaves - 2, 1, 6)) *
                   smoothstep(0.02, 0.25, continent) *
                   smoothstep(0.3, 0.7, fbm(p * 2.2 + 41.0, 3, 0.5) * 0.5 + 0.5);
     float h = continent + detail * 0.06 + ranges * max(uplift, 0.0) * 0.9 +
@@ -207,6 +232,27 @@ vec4 hydroFetch(ivec2 c) {
     c.x = (c.x + HW) % HW;
     if (c.y < 0 || c.y >= HH) return vec4(NO_LAKE, 0.0, -1.0, 0.0);
     return texelFetch(uHydro, c, 0);
+}
+
+// Lake level around n: a smooth-weighted average over the 2x2 cells that
+// are lakes. Where lake cells carry less than a third of the weight there is
+// no lake, so the shoreline follows a rounded contour, not the cell grid.
+// Returns NO_LAKE if none.
+float lakeLevelAt(vec3 n) {
+    float lat = asin(clamp(n.z, -1.0, 1.0));
+    float lon = atan(n.y, n.x);
+    vec2 uv = vec2((lon + PI) / (2.0 * PI) * float(HW), (lat + PI / 2.0) / PI * float(HH)) - 0.5;
+    ivec2 i = ivec2(floor(uv));
+    vec2 f = uv - vec2(i);
+    f = f * f * (3.0 - 2.0 * f);
+    float lv[4] = float[4](hydroFetch(i).r, hydroFetch(i + ivec2(1, 0)).r,
+                           hydroFetch(i + ivec2(0, 1)).r, hydroFetch(i + ivec2(1, 1)).r);
+    float wt[4] = float[4]((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+    float sum = 0.0, wsum = 0.0;
+    for (int k = 0; k < 4; k++)
+        if (lv[k] > NO_LAKE + 1.0) { sum += lv[k] * wt[k]; wsum += wt[k]; }
+    // Any adjacent lake cell defines a level; the terrain decides the shore.
+    return wsum > 0.001 ? sum / wsum : NO_LAKE;
 }
 
 vec3 cellCentre(ivec2 c) {
@@ -330,39 +376,40 @@ void main() {
     // Terrain is sampled in a per-world noise space.
     vec3 w = uWorldRot * n + uWorldOff;
     float h = terrainHeight(w, n, uOctaves);
+    float slopePhys = length(vec2(dFdx(h), dFdy(h))) / max(uKmPerPixel * 1000.0, 1.0);
 
     // Water: the sea, a lake surface from the hydrology grid, or a river.
     float waterLevel = 0.0;
     bool isWater = h < 0.0;
     bool isRiver = false;
     if (uHasHydro == 1) {
-        vec4 cell = hydroFetch(hydroCell(n));
-        if (cell.r > NO_LAKE + 1.0 && h < cell.r) { isWater = true; waterLevel = cell.r; }
-        if (!isWater && h > 0.0 && riverAt(n, w) > 0.0) { isWater = true; isRiver = true; waterLevel = h; }
+        // Drawn a little above the spill so flat shores flood irregularly
+        // instead of stopping at the grid cell.
+        float lakeLevel = lakeLevelAt(n) + 12.0;
+        if (lakeLevel > NO_LAKE + 1.0 && h < lakeLevel) { isWater = true; waterLevel = lakeLevel; }
+        if (!isWater && h > 0.0 && hydroFetch(hydroCell(n)).a > 0.5 && riverAt(n, w) > 0.0) { isWater = true; isRiver = true; waterLevel = h; }
     }
     // Ponds: tiny lakes below the grid's resolution, where a fine noise
     // peaks on flat, moist, low ground. Painted by the function, not routed.
     bool isPond = false;
     if (!isWater && h > 0.0 && h < 1500.0) {
         float pondField = fbm(w * 700.0 + 91.0, 3, 0.5);
-        float flatness = 1.0 - smoothstep(0.0, 0.015, abs(terrainHeight(uWorldRot * normalize(n + vec3(0.0005)) + uWorldOff, normalize(n + vec3(0.0005)), max(uOctaves - 4, 4)) - h) / 80.0);
+        float flatness = 1.0 - smoothstep(0.0, 0.015, slopePhys);
         float moist = fbm(w * 3.0 + 77.0, 4, 0.5) * 0.5 + 0.5;
         if (pondField > 0.26 + 0.22 * (1.0 - moist) && flatness > 0.3) { isWater = true; isPond = true; waterLevel = h + 3.0; }
     }
 
-    // Relief: finite-difference gradient in the tangent plane, step ~ one pixel.
-    float eps = max(uKmPerPixel / 6371.0, 1e-6);
-    vec3 tx = normalize(cross(n, abs(n.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0)));
-    vec3 ty = cross(n, tx);
-    vec3 nx = normalize(n + tx * eps), ny = normalize(n + ty * eps);
-    float hx = terrainHeight(uWorldRot * nx + uWorldOff, nx, uOctaves);
-    float hy = terrainHeight(uWorldRot * ny + uWorldOff, ny, uOctaves);
-    // Vertical exaggeration keeps relief visible at every zoom.
-    float reliefScale = 0.004 / eps / HEIGHT_SCALE_M;
-    vec3 gradT = (tx * (hx - h) + ty * (hy - h)) * reliefScale;
-    vec3 shadeN = normalize(n - gradT);
+    // Relief from screen-space derivatives: one height evaluation per pixel.
+    // The surface point in metres is n * (R + h); its screen derivatives span
+    // the tangent plane, and their cross product is the normal. Height is
+    // exaggerated 3x so relief stays visible from orbit.
+    const float R = 6371000.0;
+    vec3 dPdx = dFdx(n) * R + n * dFdx(h) * 3.2;
+    vec3 dPdy = dFdy(n) * R + n * dFdy(h) * 3.2;
+    vec3 shadeN = normalize(cross(dPdx, dPdy));
+    if (dot(shadeN, n) < 0.0) shadeN = -shadeN;
     // Physical slope (rise over run) decides rock; the exaggerated normal only shades.
-    float slope = clamp(length(vec2(hx - h, hy - h)) / (eps * 6371000.0) * 2.0, 0.0, 1.0);
+    float slope = clamp(slopePhys * 2.0, 0.0, 1.0);
     if (isWater) { shadeN = n; slope = 0.0; }
 
     vec3 albedo;
