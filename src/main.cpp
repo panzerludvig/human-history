@@ -386,7 +386,7 @@ enum : int {
     ID_GEN_SEED_LABEL, ID_GEN_SEED, ID_GEN_RANDOM, ID_GEN_LAND_LABEL, ID_GEN_LAND,
     ID_GEN_CONC_LABEL, ID_GEN_CONC, ID_GEN_HINT, ID_GEN_CREATE, ID_GEN_BACK,
     ID_SCALE_LABEL, ID_TOOLTIP,
-    ID_TIME_DAY, ID_TIME_MONTH, ID_TIME_YEAR,
+    ID_TIME_DAY, ID_TIME_MONTH, ID_TIME_YEAR, ID_DATE_LABEL,
 };
 
 struct App {
@@ -466,6 +466,7 @@ static void uploadHydrology() {
 }
 
 static void advanceDays(double days);
+static void updateDateLabel();
 
 static HWND control(int id) {
     for (auto& c : app.controls)
@@ -512,6 +513,7 @@ static void createControls() {
     addControl(ID_GEN_BACK, "BUTTON", "Back", BS_PUSHBUTTON);
     addControl(ID_SCALE_LABEL, "STATIC", "", SS_LEFT);
     addControl(ID_TOOLTIP, "STATIC", "", SS_LEFT | SS_NOPREFIX);
+    addControl(ID_DATE_LABEL, "STATIC", "", SS_RIGHT);
     addControl(ID_TIME_DAY, "BUTTON", "+1 day", BS_PUSHBUTTON);
     addControl(ID_TIME_MONTH, "BUTTON", "+1 month", BS_PUSHBUTTON);
     addControl(ID_TIME_YEAR, "BUTTON", "+1 year", BS_PUSHBUTTON);
@@ -603,6 +605,7 @@ static void layoutControls() {
         // Time-stepping buttons, top right. Temporary evaluation tooling:
         // the simulation is paused unless stepped.
         int tw = 96, th = 32, tg = 8;
+        place(ID_DATE_LABEL, W - 3 * (tw + tg) - 190, 16, 180, 24);
         place(ID_TIME_DAY, W - 3 * (tw + tg), 10, tw, th);
         place(ID_TIME_MONTH, W - 2 * (tw + tg), 10, tw, th);
         place(ID_TIME_YEAR, W - (tw + tg), 10, tw, th);
@@ -664,7 +667,7 @@ static void setScreen(Screen s) {
     if (s == Screen::NewWorldMenu) fillNewWorldFields(app.world);
     if (s == Screen::PauseMenu) SetWindowTextA(control(ID_SAVE_NAME), app.world.name.c_str());
     layoutControls();
-    if (s == Screen::InGame) SetFocus(app.hwnd);
+    if (s == Screen::InGame) { updateDateLabel(); SetFocus(app.hwnd); }
     if (s == Screen::PauseMenu) {
         HWND edit = control(ID_SAVE_NAME);
         SetFocus(edit);
@@ -870,8 +873,15 @@ static void updateTooltip(int x, int y) {
 // Step the paused clock forward and let every settlement catch up. Wakes
 // repeat until nothing is due, so a year's jump replays each settlement's
 // scheduled re-evaluations in order.
+static void updateDateLabel() {
+    char b[48];
+    snprintf(b, sizeof b, "Year %d, day %d", (int)(app.world.simTime / 365), (int)app.world.simTime % 365);
+    SetWindowTextA(control(ID_DATE_LABEL), b);
+}
+
 static void advanceDays(double days) {
     app.world.simTime += days;
+    updateDateLabel();
     population::Field& pf = app.world.pop;
     if (pf.settlements.empty()) return;
     bool any = false, again = true;
