@@ -4,6 +4,7 @@
 #pragma once
 #include "terrain.h"
 #include "hydrology.h"
+#include <cstdio>
 #include <vector>
 #include <algorithm>
 
@@ -113,6 +114,12 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         if (!clear) continue;
         f.settlementAt[c.cell] = (int)f.settlements.size();
         f.settlements.push_back({c.cell, c.k * 0.5f, 1.0f, 0.0, 0.0});
+    }
+    // Startup listing for testing: where the first settlements are.
+    for (int i = 0; i < (int)f.settlements.size() && i < 5; i++) {
+        int cx = f.settlements[i].cell % W, cy = f.settlements[i].cell / W;
+        float lat = ((cy + 0.5f) / H) * 180.0f - 90.0f, lon = ((cx + 0.5f) / W) * 360.0f - 180.0f;
+        fprintf(stderr, "settlement %d: lat %.2f lon %.2f K %.0f\n", i, lat, lon, f.K[f.settlements[i].cell]);
     }
     return f;
 }

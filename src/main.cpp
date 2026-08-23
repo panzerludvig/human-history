@@ -835,8 +835,10 @@ static std::string describePoint(Vec3 n) {
                 int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
                 int si = wd.pop.settlementAt[yy * hydrology::W + hydrology::wrapX(cx + dx)];
                 if (si >= 0 && extra.empty()) {
-                    char b[64];
-                    snprintf(b, sizeof b, "  |  settlement: %d people", (int)wd.pop.settlements[si].P);
+                    const population::Settlement& st = wd.pop.settlements[si];
+                    char b[80];
+                    snprintf(b, sizeof b, "  |  settlement: %d people (capacity %d)", (int)st.P,
+                             (int)wd.pop.K[st.cell]);
                     extra = b;
                 }
             }
