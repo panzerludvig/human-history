@@ -67,6 +67,45 @@ float noise(vec3 p) {
                mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z) * 1.6;
 }
 
+// Hash of a lattice cell to three values in [0, 1).
+vec3 hash01(ivec3 c) {
+    uvec3 h = pcg3d(uvec3(c));
+    return vec3(h) / 4294967296.0;
+}
+
+// Thrust blocks: Voronoi cells, each a tilted slab at its own random height.
+// Cell edges are discontinuities — scarps where one block rides over the next.
+// Mirrored in src/terrain.h — keep in sync.
+// Rock heaps: every lattice cell owns a lopsided heap — height falling off
+// from a random centre, tilted so one side is steep — and the terrain is the
+// highest heap at each point. Where heaps meet, the crease is sharp and
+// irregular: rock shoved against rock, with no uniform edge band.
+// Mirrored in src/terrain.h — keep in sync.
+float blocks(vec3 p) {
+    ivec3 c = ivec3(floor(p));
+    vec3 f = p - vec3(c);
+    float best = -1e9;
+    for (int dz = -1; dz <= 1; dz++)
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) {
+                ivec3 cell = c + ivec3(dx, dy, dz);
+                vec3 d = f - (vec3(dx, dy, dz) + hash01(cell));
+                vec3 r = hash01(cell * 3 + ivec3(1, 7, 13));
+                vec3 t2 = hash01(cell + ivec3(5, -3, 9));
+                vec3 tilt = vec3(r.y * 2.0 - 1.0, r.z * 2.0 - 1.0, t2.x * 2.0 - 1.0);
+                // Faceted norm: three random axes make the heap a pyramid with
+                // sharp edges rather than a round dome.
+                vec3 a1 = vec3(1.0, t2.y * 2.0 - 1.0, t2.z * 2.0 - 1.0);
+                vec3 a2 = vec3(t2.z * 2.0 - 1.0, 1.0, r.y * 2.0 - 1.0);
+                vec3 a3 = vec3(r.z * 2.0 - 1.0, t2.x * 2.0 - 1.0, 1.0);
+                float dist = max(max(abs(dot(d, a1)), abs(dot(d, a2))), abs(dot(d, a3)));
+                float slope = 1.0 + t2.y * 0.9;
+                float h = r.x * 0.7 + 0.3 - dist * slope + dot(d, tilt) * 0.5;
+                best = max(best, h);
+            }
+    return best;
+}
+
 float fbm(vec3 p, int octaves, float gain) {
     float sum = 0.0, amp = 1.0, norm = 0.0;
     for (int i = 0; i < octaves; i++) {
@@ -76,6 +115,14 @@ float fbm(vec3 p, int octaves, float gain) {
         p = p * 2.03 + vec3(17.1, 31.7, 5.3);
     }
     return sum / norm;
+}
+
+// Blocks at a given frequency with a domain warp so edges are crooked.
+float warpedBlocks(vec3 p, float freq, float seedOff) {
+    vec3 q = p * freq;
+    vec3 w = vec3(fbm(q * 0.5 + seedOff, 2, 0.5), fbm(q * 0.5 + seedOff + 7.0, 2, 0.5),
+                  fbm(q * 0.5 + seedOff + 19.0, 2, 0.5));
+    return blocks(q + w * 0.45 + seedOff);
 }
 
 // Ridged multifractal for mountain ranges.
@@ -118,21 +165,29 @@ float terrainHeight(vec3 p, vec3 n, int octaves) {
     float continent = continentField(p) + pl.g * CRUST_WEIGHT - uSeaLevel;
     float detail = fbm(p * 9.0 + 5.0, max(octaves - 3, 1), 0.5);
 
-    // Mountain ranges: isotropic ridged noise plus parallel ridge-and-valley
-    // bands that follow the contours of distance to the plate boundary —
-    // a smooth scalar, so no frame can rotate and smear the noise.
+    // Mountain ranges: thrust blocks at three scales (sheets ~100 km,
+    // blocks ~35 km, slabs ~12 km) with jagged ridged peaks on top. The
+    // blocks are discontinuous at their edges by design: rock pushed over rock.
     vec3 q = p * 7.0 + 2.0;
     float peaks = ridged(q, max(octaves - 2, 1));
-    // Bands are gated by a slow noise so ridges are finite segments, and
-    // warped so their spacing varies and neighbours merge.
-    float band = pl.b / 45.0 + fbm(p * 6.0 + 61.0, 3, 0.5) * 2.5;
-    float bands = 0.5 + 0.5 * cos(band * 6.2831853);
-    float gate = smoothstep(0.0, 0.35, fbm(p * 5.0 + 83.0, 2, 0.5));
-    float ranges = peaks * 0.8 + bands * bands * gate * peaks * 0.5;
+    float uplift = pl.r;
+    // Blocks appear only where uplift is substantial; lowlands keep peaks/hills.
+    float blockMask = smoothstep(0.35, 0.75, uplift);
+    float stack = 0.5;
+    if (blockMask > 0.0) {
+        float sheets = warpedBlocks(p, 60.0, 3.0);
+        float mid = octaves >= 7 ? warpedBlocks(p, 180.0, 11.0) : 0.5;
+        float slabs = octaves >= 10 ? warpedBlocks(p, 500.0, 23.0) : 0.5;
+        float rubble = octaves >= 13 ? warpedBlocks(p, 1500.0, 37.0) : 0.5;
+        // Uplift only ever adds: heaps never cut below the belt's baseline.
+        stack = max(sheets * 0.45 + mid * 0.28 + slabs * 0.17 + rubble * 0.1, 0.05);
+        // Fine ridged texture so facets read as rock, not polygons.
+        stack *= 0.82 + 0.18 * ridged(p * 45.0 + 5.0, max(octaves - 6, 1));
+    }
+    float ranges = stack * blockMask * 0.7 * (0.55 + 0.45 * peaks) + peaks * 0.5;
     float hills = ridged(p * 4.0 + 2.0, max(octaves - 2, 1)) *
                   smoothstep(0.02, 0.25, continent) *
                   smoothstep(0.3, 0.7, fbm(p * 2.2 + 41.0, 3, 0.5) * 0.5 + 0.5);
-    float uplift = pl.r;
     float h = continent + detail * 0.06 + ranges * max(uplift, 0.0) * 0.9 +
               min(uplift, 0.0) * 0.12 + hills * 0.12;
     return h * HEIGHT_SCALE_M;

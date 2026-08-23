@@ -169,3 +169,18 @@ A second cliff survived the profile fix: a perfectly straight wall inside a plat
 **Directional stretch replaced by boundary-distance bands**
 The user found concentric stripes and rectangular discontinuities at a mountain belt. Cause: stretching the noise along the belt direction subtracts a component of the *absolute* coordinate (~20 units from the origin), so wherever the direction field rotates — at every junction, and at every cell edge of the 40 km plate texture — the noise coordinates sweep across many cells and draw contours. Any anisotropy expressed in a rotating frame far from its origin has this failure. Replaced with isotropic ridged peaks plus cosine bands of the distance-to-boundary scalar, which is smooth, intrinsic and needs no frame. Belt direction is no longer stored.
 The first band version was a pure cosine of distance — perfectly periodic corrugations that ran far past the belt and moiréd from orbit. Gating by a slow noise and warping harder made them finite, irregular segments; the isotropic peaks carry most of the relief.
+
+---
+
+## 2026-08-23 — Mountains as Thrust Blocks
+
+### What was done
+Replaced the ridge-band mountains with tilted Voronoi blocks at three scales plus ridged peaks.
+
+### Decisions and reasoning
+
+**Blocks, not bands**
+The user's critique: the belts looked like ripples in textile. Both smooth ridged noise and cosine bands are continuous, draped surfaces; real orogens are stacks of near-rigid sheets shoved over one another, with scarps between. Voronoi cells give convex blocks; a random height and tilt per cell gives thrust sheets; the discontinuity at cell edges is the scarp. This is the first deliberately discontinuous term in the height function — the hydrology grid handles it because it only samples heights, and the relief shading handles it because it is finite-difference. Finer block scales switch on with the octave count so orbit views stay cheap.
+
+**From tiles to heaps**
+The first block version (one tilted plane per Voronoi cell) read as stained glass: straight polygon edges and a uniform bevel band at every edge. Replaced by heaps — a per-cell pyramid under a random faceted norm, terrain = max over heaps. A Euclidean falloff was tried in between and gave cobblestones; angular norms were the difference. The heap stack is clamped non-negative so belts only add height; without that, heaps dipping below sea level shattered subduction coastlines into shard islands.
