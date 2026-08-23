@@ -16,9 +16,11 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <array>
 #include <random>
 #include "terrain.h"
 #include "hydrology.h"
+#include "population.h"
 
 // ---------------------------------------------------------------- GL loading
 
@@ -31,6 +33,9 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_RGBA32F 0x8814
 #define GL_TEXTURE0 0x84C0
 #define GL_TEXTURE1 0x84C1
+#define GL_TEXTURE2 0x84C2
+#define GL_RG32F 0x8230
+#define GL_RG 0x8227
 #define GL_CLAMP_TO_EDGE 0x812F
 
 typedef GLuint(APIENTRY* PFNGLCREATESHADERPROC)(GLenum);
@@ -260,7 +265,9 @@ struct World {
     terrain::ContinentParams cp{};
     float seaLevel = 0;
     hydrology::Result hydro;
+    double simTime = 0; // sim days
     plates::Field plateField;
+    population::Field pop;
 
     void derive() {
         std::mt19937 rng(seed);
@@ -288,6 +295,7 @@ struct World {
         plateField = plates::build(seed);
         seaLevel = terrain::seaLevelFor(landPercent / 100.0f, cp, rot, off, plateField);
         hydro = hydrology::build(cp, seaLevel, rot, off, /*riverThresholdKm2=*/12000.0f, plateField);
+        pop = population::build(cp, seaLevel, rot, off, plateField, hydro);
     }
 };
 
@@ -298,13 +306,16 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 1\n";
+    f << "version 2\n";
     f << "seed " << w.seed << "\n";
+    f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
     f << "concentration " << w.concentration << "\n";
     f << "lat " << c.lat << "\n";
     f << "lon " << c.lon << "\n";
     f << "altitude " << c.altitude << "\n";
+    for (const population::Settlement& s : w.pop.settlements)
+        f << "settlement " << s.cell << " " << s.P << " " << s.R << "\n";
     return (bool)f;
 }
 
@@ -313,9 +324,17 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     if (!f) return false;
     w = World{};
     w.name = name;
+    std::vector<std::array<double, 3>> savedSettlements;
+    double savedTime = 0;
     std::string key;
     while (f >> key) {
         if (key == "seed") f >> w.seed;
+        else if (key == "time") f >> savedTime;
+        else if (key == "settlement") {
+            std::array<double, 3> sv{};
+            f >> sv[0] >> sv[1] >> sv[2];
+            savedSettlements.push_back(sv);
+        }
         else if (key == "land") f >> w.landPercent;
         else if (key == "concentration") f >> w.concentration;
         else if (key == "lat") f >> c.lat;
@@ -324,6 +343,18 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         else { std::string skip; f >> skip; }
     }
     w.build();
+    // Restore the saved population on top of the regenerated field.
+    if (!savedSettlements.empty()) {
+        w.pop.settlements.clear();
+        std::fill(w.pop.settlementAt.begin(), w.pop.settlementAt.end(), -1);
+        for (auto& sv : savedSettlements) {
+            int cell = (int)sv[0];
+            if (cell < 0 || cell >= population::W * population::H) continue;
+            w.pop.settlementAt[cell] = (int)w.pop.settlements.size();
+            w.pop.settlements.push_back({cell, (float)sv[1], (float)sv[2], savedTime, savedTime});
+        }
+    }
+    w.simTime = savedTime;
     c.clampAltitude();
     return true;
 }
@@ -368,6 +399,7 @@ struct App {
     GLuint program = 0;
     GLuint hydroTex = 0;
     GLuint plateTex = 0;
+    GLuint popTex = 0;
     bool running = true;
     int debugMode = 0; // 0 normal, 1 plates, 2 substrate, 3 vegetation
     int octaves = 8;   // current level of detail, shared with the tooltip
@@ -395,9 +427,32 @@ static void uploadPlates() {
     glActiveTexture(GL_TEXTURE0);
 }
 
+static std::vector<float> popTexData() {
+    std::vector<float> d(population::W * population::H * 2, 0.0f);
+    const population::Field& pf = app.world.pop;
+    for (int i = 0; i < population::W * population::H; i++) d[i * 2] = pf.K[i];
+    for (const population::Settlement& s : pf.settlements) d[s.cell * 2 + 1] = std::max(s.P, 1.0f);
+    return d;
+}
+
+static void uploadPopulation() {
+    glActiveTexture(GL_TEXTURE2);
+    if (!app.popTex) {
+        glGenTextures(1, &app.popTex);
+        glBindTexture(GL_TEXTURE_2D, app.popTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+    glBindTexture(GL_TEXTURE_2D, app.popTex);
+    std::vector<float> d = popTexData();
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, population::W, population::H, 0, GL_RG, GL_FLOAT, d.data());
+    glActiveTexture(GL_TEXTURE0);
+}
+
 // Push the world's hydrology table to the GPU as one RGBA32F texel per cell.
 static void uploadHydrology() {
     uploadPlates();
+    uploadPopulation();
     if (!app.hydroTex) {
         glGenTextures(1, &app.hydroTex);
         glBindTexture(GL_TEXTURE_2D, app.hydroTex);
@@ -756,7 +811,26 @@ static std::string describePoint(Vec3 n) {
     float slope = terrain::slopeAt(nf, wd.cp, wd.seaLevel, std::min(app.octaves, 12), wd.plateField, wd.rot, off);
     float uplift = wd.plateField.sample({nf.x, nf.y, nf.z}).uplift;
     terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift, nearRiver, terrain::patchNoise(w));
-    snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s", fmtM(h).c_str(), temp, describeMixture(m).c_str());
+    std::string extra;
+    if (!wd.pop.K.empty()) {
+        int ci = cy * hydrology::W + cx;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) {
+                int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
+                int si = wd.pop.settlementAt[yy * hydrology::W + hydrology::wrapX(cx + dx)];
+                if (si >= 0 && extra.empty()) {
+                    char b[64];
+                    snprintf(b, sizeof b, "  |  settlement: %d people", (int)wd.pop.settlements[si].P);
+                    extra = b;
+                }
+            }
+        if (extra.empty() && wd.pop.K[ci] > 0) {
+            char b[48];
+            snprintf(b, sizeof b, "  |  capacity %d", (int)wd.pop.K[ci]);
+            extra = b;
+        }
+    }
+    snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s%s", fmtM(h).c_str(), temp, describeMixture(m).c_str(), extra.c_str());
     return buf;
 }
 
@@ -860,7 +934,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_KEYDOWN:
         if (app.screen == Screen::InGame) {
-            int mode = wp == 'P' ? 1 : wp == 'B' ? 2 : wp == 'V' ? 3 : 0;
+            int mode = wp == 'P' ? 1 : wp == 'B' ? 2 : wp == 'V' ? 3 : wp == 'K' ? 4 : 0;
             if (mode) app.debugMode = app.debugMode == mode ? 0 : mode;
         }
         return 0;
@@ -933,6 +1007,7 @@ int main(int argc, char** argv) {
     std::string lastScaleText;
     glUniform1i(uHydro, 0);
     glUniform1i(glGetUniformLocation(app.program, "uPlates"), 1);
+    glUniform1i(glGetUniformLocation(app.program, "uPop"), 2);
 
     createControls();
     app.cam.clampAltitude();
@@ -944,7 +1019,7 @@ int main(int argc, char** argv) {
         if (argc >= 7) app.world.concentration = (float)atof(argv[6]);
         if (argc >= 8) {
             std::string d = argv[7];
-            app.debugMode = d == "plates" ? 1 : d == "substrate" ? 2 : d == "vegetation" ? 3 : 0;
+            app.debugMode = d == "plates" ? 1 : d == "substrate" ? 2 : d == "vegetation" ? 3 : d == "population" ? 4 : 0;
         }
         app.world.build();
         uploadHydrology();
@@ -975,6 +1050,33 @@ int main(int argc, char** argv) {
             }
             TranslateMessage(&m);
             DispatchMessageA(&m);
+        }
+        // Simulation clock: 60 days per real second while playing. Settlements
+        // wake at their scheduled times; nothing else runs.
+        {
+            static LARGE_INTEGER prevT = {};
+            LARGE_INTEGER nowT;
+            QueryPerformanceCounter(&nowT);
+            double frameDt = prevT.QuadPart ? (double)(nowT.QuadPart - prevT.QuadPart) / qpf.QuadPart : 0.0;
+            prevT = nowT;
+            if (app.screen == Screen::InGame) {
+                app.world.simTime += std::min(frameDt, 0.25) * 60.0;
+                bool any = false;
+                population::Field& pf = app.world.pop;
+                for (population::Settlement& s : pf.settlements)
+                    if (s.nextUpdate <= app.world.simTime)
+                        any |= population::advance(s, pf.K[s.cell], app.world.simTime);
+                if (any) {
+                    glActiveTexture(GL_TEXTURE2);
+                    glBindTexture(GL_TEXTURE_2D, app.popTex);
+                    for (const population::Settlement& s : pf.settlements) {
+                        float texel[2] = {pf.K[s.cell], std::max(s.P, 1.0f)};
+                        glTexSubImage2D(GL_TEXTURE_2D, 0, s.cell % population::W, s.cell / population::W,
+                                        1, 1, GL_RG, GL_FLOAT, texel);
+                    }
+                    glActiveTexture(GL_TEXTURE0);
+                }
+            }
         }
         bool showGlobe = app.screen == Screen::InGame || app.screen == Screen::PauseMenu;
         if (showGlobe) {
@@ -1031,8 +1133,9 @@ int main(int argc, char** argv) {
         QueryPerformanceCounter(&now);
         double dt = (double)(now.QuadPart - fpsT0.QuadPart) / qpf.QuadPart;
         if (dt >= 0.5) {
-            char title[64];
-            snprintf(title, sizeof title, "Iron and Blood - %.0f fps", fpsFrames / dt);
+            char title[96];
+            snprintf(title, sizeof title, "Iron and Blood - year %d, day %d - %.0f fps",
+                     (int)(app.world.simTime / 365), (int)app.world.simTime % 365, fpsFrames / dt);
             SetWindowTextA(hwnd, title);
             fpsFrames = 0;
             fpsT0 = now;

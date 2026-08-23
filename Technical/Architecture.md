@@ -10,7 +10,7 @@
 
 ## Key Systems
 - [[Technical/Globe Viewer]] — raycast sphere with procedural terrain in metres; zoom and pan; worlds; plate and hydrology layers (Implemented)
-- Event scheduler — priority queue of timed events with dependency-based invalidation ([[Design/Event-Driven]]) (not started)
+- Event scheduler — settlements schedule their own re-evaluations (population.h); a general queue with dependency invalidation is still to come ([[Design/Event-Driven]]) (begun)
 - Spherical spatial index — positions, distances, and trajectory intersection on a sphere ([[Design/Spherical World]]) (not started)
 
 ## External Tools & Libraries

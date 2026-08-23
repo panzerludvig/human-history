@@ -24,6 +24,7 @@ uniform float uSeaLevel; // field value at the coastline, chosen on the CPU
 uniform sampler2D uHydro; // per-cell lake level, drainage area, flow direction, height
 uniform int uHasHydro;
 uniform sampler2D uPlates; // uplift, crust, km to nearest plate boundary
+uniform sampler2D uPop;    // carrying capacity K, settlement population
 uniform int uDebugMode;    // 0 normal, 1 plates, 2 substrate, 3 vegetation
 const float CRUST_WEIGHT = 0.2;
 uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 < 0 hides it
@@ -263,6 +264,22 @@ vec3 cellCentre(ivec2 c) {
 
 const ivec2 DIRS[8] = ivec2[8](ivec2(1, 0), ivec2(1, 1), ivec2(0, 1), ivec2(-1, 1),
                                ivec2(-1, 0), ivec2(-1, -1), ivec2(0, -1), ivec2(1, -1));
+
+// Population of a settlement whose marker covers n, else 0.
+float settlementNear(vec3 n) {
+    ivec2 c0 = hydroCell(n);
+    float radiusKm = clamp(uKmPerPixel * 5.0, 4.0, 18.0);
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 c = c0 + ivec2(dx, dy);
+            ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
+            float p = texelFetch(uPop, cw, 0).g;
+            if (p <= 0.0) continue;
+            float dist = length(n - cellCentre(cw)) * 6371.0;
+            if (dist < radiusKm) return p;
+        }
+    return 0.0;
+}
 
 // Distance (in units of the sphere radius) from n to the segment a-b.
 float segmentDistance(vec3 n, vec3 a, vec3 b) {
@@ -519,6 +536,20 @@ void main() {
     vec3 albedo;
     float upliftHere = plateAt(n).r;
     bool nearRiverHere = uHasHydro == 1 && hydroFetch(hydroCell(n)).a > 0.5;
+    if (uDebugMode == 4) {
+        // Carrying capacity as a heat ramp; settlements as white dots.
+        vec3 c;
+        if (isWater) c = vec3(0.05, 0.08, 0.2);
+        else {
+            float K = texelFetch(uPop, hydroCell(n), 0).r;
+            float t2 = clamp(log(max(K, 1.0)) / log(500.0), 0.0, 1.0);
+            vec3 warm = mix(vec3(0.9, 0.85, 0.2), vec3(0.85, 0.1, 0.05), smoothstep(0.66, 1.0, t2));
+            c = mix(vec3(0.08, 0.08, 0.1), mix(vec3(0.1, 0.3, 0.7), warm, smoothstep(0.33, 0.9, t2)), smoothstep(0.0, 0.4, t2));
+        }
+        if (settlementNear(n) > 0.0) c = vec3(1.0);
+        fragColor = vec4(scaleBarOverlay(c * uDim), 1.0);
+        return;
+    }
     if (uDebugMode == 2 || uDebugMode == 3) {
         vec3 base = isWater ? vec3(0.05, 0.1, 0.25) : debugClassColor(uDebugMode, h, slopePhys, lat, w, upliftHere, nearRiverHere);
         fragColor = vec4(scaleBarOverlay(base * uDim), 1.0);
@@ -534,7 +565,9 @@ void main() {
         fragColor = vec4(scaleBarOverlay(base * uDim), 1.0);
         return;
     }
-    if (isRiver) albedo = vec3(0.10, 0.30, 0.48);
+    float sp = uHasHydro == 1 ? settlementNear(n) : 0.0;
+    if (sp > 0.0 && !isWater) albedo = vec3(0.55, 0.08, 0.05) * (0.75 + 0.25 * clamp(log(sp) / 11.0, 0.0, 1.0));
+    else if (isRiver) albedo = vec3(0.10, 0.30, 0.48);
     else if (isPond) albedo = vec3(0.14, 0.36, 0.50);
     else if (isWater) albedo = waterColor(waterLevel - h, lat, w);
     else albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere);

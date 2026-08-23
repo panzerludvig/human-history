@@ -53,9 +53,15 @@ Generation takes well under a second. Nothing is saved; the layer is rebuilt fro
 
 Bottom-left, in game only. The distance is a 1/2/5 × 10ⁿ value chosen so the bar is close to 160 px at the current km-per-pixel (measured at the screen centre, so it is exact there and slightly off toward the limb at full-globe zoom). The bar is drawn by the fragment shader as a screen-space overlay; the label is a static control like the menu text.
 
+## Population
+
+`src/population.h`, rules in [[Design/Population]]. The carrying-capacity field K is computed per hydrology cell at world creation (cover yields × foraging area, min'd with usable river water); settlements sit at local maxima of K, at least 80 km apart. Each settlement holds P (people) and R (land condition) and integrates itself forward at scheduled re-evaluations — the next wake-up is "when will my state drift ~5%" — with no per-tick work. The sim clock runs at 60 days per real second in game (paused in menus) and shows in the title bar.
+
+Rendering: texture unit 2 carries K and settlement population per cell; settlements draw as dark-red dots scaled with zoom; **K** toggles a capacity heat overlay with settlements in white. Saves are version 2: sim time plus each settlement's cell, P and R (the K field rebuilds from the seed).
+
 ## Tooltip
 
-In game, a label follows the cursor with what is under it: elevation, mean temperature, and the terrain mixture ("forest 68%, grassland 22%, rock 10%"; "Sea, 354 m deep"; "Lake, 20 m deep"). It is computed on the CPU from the terrain mirror (`terrain.h`) at the current level of detail, using the same lake rule as the shader, so it doubles as a live check that the CPU and GPU terrain agree.
+In game, a label follows the cursor with what is under it: elevation, mean temperature, the terrain mixture ("forest 68%, grassland 22%, rock 10%"; "Sea, 354 m deep"; "Lake, 20 m deep"), and the carrying capacity or settlement under the cursor. It is computed on the CPU from the terrain mirror (`terrain.h`) at the current level of detail, using the same lake rule as the shader, so it doubles as a live check that the CPU and GPU terrain agree.
 
 ## Camera
 

@@ -257,3 +257,20 @@ Each mixture starts at one member and is pulled toward others (`v = v·(1−t); 
 
 **Same code on both sides**
 `mixtureAt` in `terrain.h` and `coverMix`/`substrateMix` in the shader are line-for-line the same arithmetic; the tooltip is the running check.
+
+---
+
+## 2026-08-23 — Population: the K Field and Settlements
+
+### What was done
+Built the population system designed in conversation: a carrying-capacity field from cover yields and river water, settlements as sparse actors at K maxima, P–R overshoot dynamics on self-scheduled re-evaluations, a sim clock (60 days/s), a capacity overlay (K), settlement markers, tooltip integration, and save format v2 (sim time + settlements).
+
+### Decisions and reasoning
+
+**Rules as agreed**: 20 L water and 2200 kcal per person-day; 5% of discharge usable; 10 km foraging; yield table by cover mixture; logistic-with-stock dynamics (R regenerates over 12 years, depletes on an 8-year scale) so populations overshoot and fall back, settling near P ≈ 0.55·K.
+
+**Time lives in the world**: simTime is a World field, saved with it — a world is its terrain plus its history position.
+
+**First bug worth recording**: the settlement threshold (K ≥ 800) was above the maximum K the yield table can produce (1.2/km² × 314 km² = 377), so zero settlements existed and — because the clock was gated on settlements — time stood still. Two lessons: derive thresholds from the tables they gate, and never make the clock depend on there being anything to clock.
+
+**Placement clusters**: top-K placement with spacing puts most settlements in the single best biome belt. Acceptable for v1; founding-over-time (new settlements where K is unclaimed) is the recorded fix.

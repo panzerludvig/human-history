@@ -25,6 +25,7 @@ Mechanics built on the core concepts, each with its own note:
 | Note | Description | Status |
 |------|-------------|--------|
 | [[Design/Terrain]] | Layered terrain: height, substrate, climate, vegetation; only deviations are stored | Concept |
+| [[Design/Population]] | A carrying-capacity field; settlements as sparse actors with overshoot dynamics | Concept |
 
 ---
 

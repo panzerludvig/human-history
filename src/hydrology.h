@@ -13,6 +13,8 @@
 
 namespace hydrology {
 
+using V3orig = terrain::V3;
+
 constexpr int W = 2048, H = 1024;        // cells: ~20 km at the equator
 constexpr float NO_LAKE = -1.0e6f;        // lakeLevel value meaning "no lake here"
 constexpr float EARTH_RADIUS_KM = 6371.0f;
@@ -30,7 +32,9 @@ struct Cell {
 };
 
 struct Result {
-    std::vector<Cell> cells;   // W*H, row-major, row 0 = south
+    std::vector<Cell> cells;    // W*H, row-major, row 0 = south
+    std::vector<float> heightM; // terrain height per cell (m)
+    std::vector<float> accKm2;  // drainage area per cell (km^2)
     int lakeCells = 0, riverCells = 0;
 };
 
@@ -172,6 +176,8 @@ inline Result build(const terrain::ContinentParams& cp, float seaLevel, const fl
 
     Result r;
     r.cells.resize(N);
+    r.heightM = h;
+    r.accKm2 = acc;
     for (int i = 0; i < N; i++) {
         Cell& cell = r.cells[i];
         bool ocean = h[i] <= 0;
