@@ -208,3 +208,24 @@ Two attempts to interpolate lake level across cells failed instructively. Carryi
 
 **FPS in the title bar**
 Added so performance claims are measured, not guessed: ~35 fps in belts before this session's changes, ~50 after, 60 (vsync) elsewhere.
+
+---
+
+## 2026-08-23 — Terrain Layers: Substrate and Vegetation
+
+### What was done
+Added substrate and potential-vegetation classification as functions of height, slope, climate, uplift and river proximity, rendered with smooth blending, mirrored on the CPU, with B/V debug overlays. Wrote [[Design/Terrain]].
+
+### Decisions and reasoning
+
+**Three layers, deviations only**
+The user proposed a static ground layer with a vegetation layer on top. Adopted, with climate as a third derived layer between them and one rule added: nothing is stored except deviations from the functions. Cutting a forest stores a clearing with a start time; regrowth is a scheduled event. This is the design that lets terrain change without abandoning the function model, and it is the first mechanic that will need the event scheduler.
+
+**Hard classes and soft rendering from the same variables**
+The simulation needs an enum at a point; rendering needs no visible class edges. Both are cut from the same temperature/moisture/slope values, so a pixel's colour and its class agree even though the colour blends across thresholds.
+
+**Climate in real units**
+Temperature moved from a 0–1 "warmth" to °C with a lapse rate, so thresholds can be reasoned about (ice below −15 °C mean, treeline near −1 °C). The first threshold chosen (−10 °C) iced over a 3000 m mid-latitude plateau; lowered after checking the overlay.
+
+**Coarse moisture noise**
+Hard classification of a field with fine octaves speckles. Moisture now uses three octaves (features ≥ ~500 km), which keeps classes regional.

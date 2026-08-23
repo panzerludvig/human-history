@@ -18,6 +18,16 @@ These three are foundational rather than feature-level: they constrain what ever
 
 ---
 
+## Design notes
+
+Mechanics built on the core concepts, each with its own note:
+
+| Note | Description | Status |
+|------|-------------|--------|
+| [[Design/Terrain]] | Layered terrain: height, substrate, climate, vegetation; only deviations are stored | Concept |
+
+---
+
 ## Candidates
 
 Carried over from Delegate as ideas, not decisions. Each becomes a design note only when promoted to Core.

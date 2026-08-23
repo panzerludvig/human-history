@@ -231,4 +231,63 @@ inline float seaLevelFor(float landFraction, const ContinentParams& cp, const fl
     return v[k];
 }
 
+// ---------------------------------------------------------------- climate, substrate, vegetation
+// Mirrors of the shader's classification (globe.frag) — keep in sync.
+
+inline float temperatureC(float lat, float h) {
+    return 28.0f - 45.0f * std::pow(std::fabs(lat) / 1.5707963f, 1.3f) - 6.5f * std::max(h, 0.0f) / 1000.0f;
+}
+
+inline float moistureAt(V3 w, float lat) {
+    float m = fbm(w * 3.0f + 77.0f, 3, 0.5f) * 0.5f + 0.5f;
+    float dryBand = std::exp(-std::pow((std::fabs(lat) - 0.42f) / 0.16f, 2.0f));
+    return std::clamp(m - dryBand * 0.45f + 0.08f, 0.0f, 1.0f);
+}
+
+enum Substrate { SUB_SOIL = 0, SUB_SAND, SUB_ROCK, SUB_SCREE, SUB_SILT, SUB_MUD, SUB_ICE };
+enum Vegetation {
+    VEG_NONE = 0, VEG_TUNDRA, VEG_TAIGA, VEG_FOREST, VEG_RAINFOREST, VEG_GRASS,
+    VEG_STEPPE, VEG_SAVANNA, VEG_SHRUB, VEG_MARSH, VEG_DESERT
+};
+
+inline Substrate substrateAt(float h, float slope, float temp, float moist, float uplift, bool nearRiver) {
+    if (temp < -15.0f) return SUB_ICE;
+    if (slope > 0.35f || h > 3800.0f) return SUB_ROCK;
+    if (slope > 0.18f && uplift > 0.3f) return SUB_SCREE;
+    if (nearRiver && slope < 0.02f && h < 800.0f) return SUB_SILT;
+    if (moist > 0.8f && slope < 0.015f && h < 300.0f) return SUB_MUD;
+    if (moist < 0.22f && temp > 5.0f) return SUB_SAND;
+    return SUB_SOIL;
+}
+
+inline Vegetation vegetationAt(Substrate sub, float temp, float moist) {
+    if (sub == SUB_ICE || sub == SUB_ROCK) return VEG_NONE;
+    if (sub == SUB_MUD) return VEG_MARSH;
+    if (sub == SUB_SAND) return moist < 0.15f ? VEG_DESERT : VEG_SHRUB;
+    if (sub == SUB_SCREE) return (moist > 0.3f && temp > 0.0f) ? VEG_SHRUB : VEG_NONE;
+    if (temp < -1.0f) return VEG_TUNDRA;
+    if (moist < 0.3f) return VEG_STEPPE;
+    if (moist < 0.5f) return temp > 18.0f ? VEG_SAVANNA : VEG_GRASS;
+    if (temp < 6.0f) return VEG_TAIGA;
+    if (temp > 20.0f && moist > 0.65f) return VEG_RAINFOREST;
+    return VEG_FOREST;
+}
+
+// Physical slope (rise over run) from two height samples ~500 m apart.
+inline float slopeAt(V3 n, const ContinentParams& cp, float seaLevel, int octaves,
+                     const plates::Field& pf, const float rot[9], V3 offset) {
+    const float eps = 500.0f / 6371000.0f;
+    V3 tx = std::fabs(n.z) < 0.99f ? V3{-n.y, n.x, 0} : V3{1, 0, 0};
+    float tl = std::sqrt(dot(tx, tx));
+    tx = tx * (1.0f / tl);
+    V3 ty = {n.y * tx.z - n.z * tx.y, n.z * tx.x - n.x * tx.z, n.x * tx.y - n.y * tx.x};
+    auto at = [&](V3 q) {
+        float l = std::sqrt(dot(q, q));
+        q = q * (1.0f / l);
+        return heightMeters(rotate(rot, q) + offset, q, cp, seaLevel, octaves, pf, rot);
+    };
+    float h0 = at(n), hx = at(n + tx * eps), hy = at(n + ty * eps);
+    return std::sqrt((hx - h0) * (hx - h0) + (hy - h0) * (hy - h0)) / 500.0f;
+}
+
 } // namespace terrain

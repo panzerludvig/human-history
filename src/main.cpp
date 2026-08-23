@@ -369,7 +369,7 @@ struct App {
     GLuint hydroTex = 0;
     GLuint plateTex = 0;
     bool running = true;
-    bool debugPlates = false;
+    int debugMode = 0; // 0 normal, 1 plates, 2 substrate, 3 vegetation
     HWND hwnd = nullptr;
     HFONT font = nullptr, titleFont = nullptr;
     HBRUSH bgBrush = nullptr;
@@ -769,7 +769,10 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_KEYDOWN:
-        if (wp == 'P' && app.screen == Screen::InGame) app.debugPlates = !app.debugPlates;
+        if (app.screen == Screen::InGame) {
+            int mode = wp == 'P' ? 1 : wp == 'B' ? 2 : wp == 'V' ? 3 : 0;
+            if (mode) app.debugMode = app.debugMode == mode ? 0 : mode;
+        }
         return 0;
     case WM_CLOSE:
         app.running = false;
@@ -836,7 +839,7 @@ int main(int argc, char** argv) {
     GLint uHydro = glGetUniformLocation(app.program, "uHydro");
     GLint uHasHydro = glGetUniformLocation(app.program, "uHasHydro");
     GLint uScaleBar = glGetUniformLocation(app.program, "uScaleBar");
-    GLint uDebugPlates = glGetUniformLocation(app.program, "uDebugPlates");
+    GLint uDebugMode = glGetUniformLocation(app.program, "uDebugMode");
     std::string lastScaleText;
     glUniform1i(uHydro, 0);
     glUniform1i(glGetUniformLocation(app.program, "uPlates"), 1);
@@ -849,7 +852,10 @@ int main(int argc, char** argv) {
         app.world.seed = argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0;
         if (argc >= 6) app.world.landPercent = (float)atof(argv[5]);
         if (argc >= 7) app.world.concentration = (float)atof(argv[6]);
-        if (argc >= 8) app.debugPlates = std::string(argv[7]) == "plates";
+        if (argc >= 8) {
+            std::string d = argv[7];
+            app.debugMode = d == "plates" ? 1 : d == "substrate" ? 2 : d == "vegetation" ? 3 : 0;
+        }
         app.world.build();
         uploadHydrology();
         app.cam.lat = atof(argv[1]) * PI / 180;
@@ -906,7 +912,7 @@ int main(int argc, char** argv) {
             glUniform1f(uWebness, app.world.cp.webness);
             glUniform1f(uSeaLevel, app.world.seaLevel);
             glUniform1i(uHasHydro, app.world.hydro.cells.empty() ? 0 : 1);
-            glUniform1i(uDebugPlates, app.debugPlates ? 1 : 0);
+            glUniform1i(uDebugMode, app.debugMode);
             if (app.screen == Screen::InGame) {
                 ScaleBar sb = chooseScale(kmpp);
                 // Pixel coordinates with origin bottom-left, as gl_FragCoord uses.

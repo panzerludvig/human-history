@@ -24,7 +24,7 @@ uniform float uSeaLevel; // field value at the coastline, chosen on the CPU
 uniform sampler2D uHydro; // per-cell lake level, drainage area, flow direction, height
 uniform int uHasHydro;
 uniform sampler2D uPlates; // uplift, crust, km to nearest plate boundary
-uniform int uDebugPlates;  // 1 = tint the globe by plate crust and uplift
+uniform int uDebugMode;    // 0 normal, 1 plates, 2 substrate, 3 vegetation
 const float CRUST_WEIGHT = 0.2;
 uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 < 0 hides it
 
@@ -304,33 +304,119 @@ float riverAt(vec3 n, vec3 w) {
 
 // ------------------------------------------------------------ shading
 
-vec3 terrainColor(vec3 n, float h, float slope, float lat) {
-    float absLat = abs(lat);
-    // Climate: temperature falls with latitude and altitude; moisture from noise.
-    float temp = 1.0 - pow(absLat / (PI / 2.0), 1.3) - max(h, 0.0) / HEIGHT_SCALE_M * 0.9;
-    float moisture = fbm(n * 3.0 + 77.0, 4, 0.5) * 0.5 + 0.5;
-    // Subtropical dry bands around +-25 degrees.
-    float dryBand = exp(-pow((absLat - 0.42) / 0.16, 2.0));
-    moisture = moisture - dryBand * 0.45;
+// ------------------------------------------------------------ climate
 
-    vec3 sand = vec3(0.80, 0.72, 0.50);
-    vec3 grass = vec3(0.30, 0.48, 0.20);
-    vec3 forest = vec3(0.12, 0.30, 0.12);
-    vec3 desert = vec3(0.76, 0.62, 0.40);
-    vec3 tundra = vec3(0.55, 0.52, 0.42);
-    vec3 rock = vec3(0.45, 0.42, 0.38);
-    vec3 snow = vec3(0.94, 0.95, 0.97);
+// Mean temperature in degrees C: latitude, then a 6.5 C/km lapse rate.
+float temperatureC(float lat, float h) {
+    return 28.0 - 45.0 * pow(abs(lat) / (PI / 2.0), 1.3) - 6.5 * max(h, 0.0) / 1000.0;
+}
 
-    vec3 veg = mix(grass, forest, smoothstep(0.45, 0.75, moisture));
-    vec3 c = mix(desert, veg, smoothstep(0.25, 0.45, moisture));
-    c = mix(c, tundra, smoothstep(0.30, 0.12, temp));
-    c = mix(sand, c, smoothstep(0.0, 100.0, h));
-    c = mix(c, rock, smoothstep(0.25, 0.6, slope));
-    // High ground reads as rock from any distance.
-    c = mix(c, rock, smoothstep(1800.0, 3200.0, h) * 0.8);
-    // Snow where it is cold: polar lowlands and high peaks everywhere.
-    c = mix(c, snow, smoothstep(0.16, 0.06, temp + slope * 0.1));
+// Moisture 0..1: a noise field with subtropical dry bands around +-25 deg.
+float moistureAt(vec3 w, float lat) {
+    float m = fbm(w * 3.0 + 77.0, 3, 0.5) * 0.5 + 0.5;
+    float dryBand = exp(-pow((abs(lat) - 0.42) / 0.16, 2.0));
+    return clamp(m - dryBand * 0.45 + 0.08, 0.0, 1.0);
+}
+
+// ------------------------------------------------------------ substrate and vegetation
+// Hard classes for the simulation (mirrored in src/terrain.h — keep in sync);
+// the colours below blend the same variables smoothly.
+
+const int SUB_SOIL = 0, SUB_SAND = 1, SUB_ROCK = 2, SUB_SCREE = 3, SUB_SILT = 4, SUB_MUD = 5, SUB_ICE = 6;
+const int VEG_NONE = 0, VEG_TUNDRA = 1, VEG_TAIGA = 2, VEG_FOREST = 3, VEG_RAINFOREST = 4, VEG_GRASS = 5,
+          VEG_STEPPE = 6, VEG_SAVANNA = 7, VEG_SHRUB = 8, VEG_MARSH = 9, VEG_DESERT = 10;
+
+int substrateAt(float h, float slope, float temp, float moist, float uplift, bool nearRiver) {
+    if (temp < -15.0) return SUB_ICE;
+    if (slope > 0.35 || h > 3800.0) return SUB_ROCK;
+    if (slope > 0.18 && uplift > 0.3) return SUB_SCREE;
+    if (nearRiver && slope < 0.02 && h < 800.0) return SUB_SILT;
+    if (moist > 0.8 && slope < 0.015 && h < 300.0) return SUB_MUD;
+    if (moist < 0.22 && temp > 5.0) return SUB_SAND;
+    return SUB_SOIL;
+}
+
+int vegetationAt(int sub, float temp, float moist) {
+    if (sub == SUB_ICE || sub == SUB_ROCK) return VEG_NONE;
+    if (sub == SUB_MUD) return VEG_MARSH;
+    if (sub == SUB_SAND) return moist < 0.15 ? VEG_DESERT : VEG_SHRUB;
+    if (sub == SUB_SCREE) return moist > 0.3 && temp > 0.0 ? VEG_SHRUB : VEG_NONE;
+    if (temp < -1.0) return VEG_TUNDRA;
+    if (moist < 0.3) return VEG_STEPPE;
+    if (moist < 0.5) return temp > 18.0 ? VEG_SAVANNA : VEG_GRASS;
+    if (temp < 6.0) return VEG_TAIGA;
+    if (temp > 20.0 && moist > 0.65) return VEG_RAINFOREST;
+    return VEG_FOREST;
+}
+
+vec3 substrateColor(int s) {
+    if (s == SUB_SAND) return vec3(0.80, 0.72, 0.50);
+    if (s == SUB_ROCK) return vec3(0.45, 0.42, 0.38);
+    if (s == SUB_SCREE) return vec3(0.52, 0.49, 0.45);
+    if (s == SUB_SILT) return vec3(0.55, 0.48, 0.36);
+    if (s == SUB_MUD) return vec3(0.35, 0.33, 0.25);
+    if (s == SUB_ICE) return vec3(0.94, 0.95, 0.97);
+    return vec3(0.45, 0.38, 0.28); // soil
+}
+
+vec3 vegetationColor(int v) {
+    if (v == VEG_TUNDRA) return vec3(0.55, 0.52, 0.42);
+    if (v == VEG_TAIGA) return vec3(0.10, 0.26, 0.16);
+    if (v == VEG_FOREST) return vec3(0.12, 0.32, 0.12);
+    if (v == VEG_RAINFOREST) return vec3(0.06, 0.28, 0.10);
+    if (v == VEG_GRASS) return vec3(0.36, 0.52, 0.22);
+    if (v == VEG_STEPPE) return vec3(0.62, 0.58, 0.32);
+    if (v == VEG_SAVANNA) return vec3(0.60, 0.56, 0.28);
+    if (v == VEG_SHRUB) return vec3(0.50, 0.50, 0.30);
+    if (v == VEG_MARSH) return vec3(0.25, 0.40, 0.25);
+    if (v == VEG_DESERT) return vec3(0.78, 0.66, 0.42);
+    return vec3(0.0);
+}
+
+// Rendered colour: substrate underneath, vegetation cover blended on top,
+// all from the same continuous variables the classes are cut from.
+vec3 terrainColor(vec3 w, float h, float slope, float lat, float uplift, bool nearRiver) {
+    float temp = temperatureC(lat, h);
+    float moist = moistureAt(w, lat);
+
+    // Substrate, blended.
+    vec3 soil = substrateColor(SUB_SOIL), sand = substrateColor(SUB_SAND);
+    vec3 rock = substrateColor(SUB_ROCK), scree = substrateColor(SUB_SCREE);
+    vec3 silt = substrateColor(SUB_SILT), mud = substrateColor(SUB_MUD), ice = substrateColor(SUB_ICE);
+    vec3 base = mix(soil, sand, smoothstep(0.3, 0.18, moist) * smoothstep(2.0, 8.0, temp));
+    base = mix(base, silt, nearRiver ? smoothstep(0.03, 0.01, slope) * smoothstep(900.0, 600.0, h) * 0.7 : 0.0);
+    base = mix(base, mud, smoothstep(0.7, 0.85, moist) * smoothstep(0.025, 0.01, slope) * smoothstep(400.0, 200.0, h));
+    base = mix(base, scree, smoothstep(0.12, 0.22, slope) * smoothstep(0.2, 0.4, uplift));
+    float rockiness = max(smoothstep(0.28, 0.4, slope), smoothstep(3200.0, 3900.0, h));
+    base = mix(base, rock, rockiness);
+
+    // Vegetation colour by climate, then how much of it covers the ground.
+    vec3 grass = vegetationColor(VEG_GRASS), steppe = vegetationColor(VEG_STEPPE);
+    vec3 forest = mix(vegetationColor(VEG_TAIGA), vegetationColor(VEG_FOREST), smoothstep(3.0, 9.0, temp));
+    forest = mix(forest, vegetationColor(VEG_RAINFOREST), smoothstep(18.0, 23.0, temp) * smoothstep(0.6, 0.7, moist));
+    vec3 open = mix(steppe, grass, smoothstep(0.26, 0.36, moist));
+    open = mix(open, vegetationColor(VEG_SAVANNA), smoothstep(16.0, 20.0, temp) * smoothstep(0.55, 0.45, moist));
+    vec3 veg = mix(open, forest, smoothstep(0.44, 0.56, moist));
+    veg = mix(veg, vegetationColor(VEG_TUNDRA), smoothstep(1.0, -3.0, temp));
+    veg = mix(veg, vegetationColor(VEG_MARSH), smoothstep(0.75, 0.85, moist) * smoothstep(0.025, 0.01, slope) * smoothstep(400.0, 200.0, h));
+    veg = mix(veg, vegetationColor(VEG_SHRUB), smoothstep(0.26, 0.18, moist) * smoothstep(0.1, 0.2, moist));
+
+    float cover = smoothstep(0.1, 0.3, moist) * smoothstep(-15.0, -8.0, temp) * (1.0 - rockiness);
+    cover *= 1.0 - smoothstep(0.12, 0.22, slope) * smoothstep(0.2, 0.4, uplift) * 0.6; // thin on scree
+    vec3 c = mix(base, veg, cover);
+
+    // Permanent ice and snow on the coldest ground.
+    c = mix(c, ice, smoothstep(-11.0, -16.0, temp + slope * 4.0));
     return c;
+}
+
+vec3 debugClassColor(int mode, float h, float slope, float lat, vec3 w, float uplift, bool nearRiver) {
+    float temp = temperatureC(lat, h);
+    float moist = moistureAt(w, lat);
+    int sub = substrateAt(h, slope, temp, moist, uplift, nearRiver);
+    if (mode == 2) return substrateColor(sub);
+    int veg = vegetationAt(sub, temp, moist);
+    return veg == VEG_NONE ? vec3(0.15) : vegetationColor(veg);
 }
 
 vec3 waterColor(float depthM, float lat, vec3 n) {
@@ -413,7 +499,14 @@ void main() {
     if (isWater) { shadeN = n; slope = 0.0; }
 
     vec3 albedo;
-    if (uDebugPlates == 1) {
+    float upliftHere = plateAt(n).r;
+    bool nearRiverHere = uHasHydro == 1 && hydroFetch(hydroCell(n)).a > 0.5;
+    if (uDebugMode == 2 || uDebugMode == 3) {
+        vec3 base = isWater ? vec3(0.05, 0.1, 0.25) : debugClassColor(uDebugMode, h, slopePhys, lat, w, upliftHere, nearRiverHere);
+        fragColor = vec4(scaleBarOverlay(base * uDim), 1.0);
+        return;
+    }
+    if (uDebugMode == 1) {
         // Crust: oceanic blue to continental tan; uplift: red, trench/rift: cyan.
         vec4 pl = plateAt(n);
         vec3 base = mix(vec3(0.15, 0.25, 0.55), vec3(0.65, 0.55, 0.35), pl.g * 0.5 + 0.5);
@@ -426,7 +519,7 @@ void main() {
     if (isRiver) albedo = vec3(0.10, 0.30, 0.48);
     else if (isPond) albedo = vec3(0.14, 0.36, 0.50);
     else if (isWater) albedo = waterColor(waterLevel - h, lat, w);
-    else albedo = terrainColor(w, h, slope, lat);
+    else albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere);
 
     // Sun fixed relative to the camera so the visible side is always lit.
     vec3 sun = normalize(-uForward * 0.45 + uRight * -0.6 + uUp * 0.65);
