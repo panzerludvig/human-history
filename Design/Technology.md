@@ -15,31 +15,36 @@ How settlements learn to do new things. The core ideas are inherited from Delega
 
 ---
 
-## Discovery: pressure invents
+## Discovery: a world clock decides when, need decides who
 
-The trigger for discovery is **need**. [[Design/Population]] already produces the historically correct signal: in the overshoot phase, food per head φ = K·R/P falls below 1 and the settlement is in hardship. The discovery rate for farming scales with that scarcity (and with population — more people, more experiments). Comfortable foragers don't invent agriculture; hungry ones do.
+Independent invention is a **world-level event**, not a per-settlement race. Per-settlement rates would sum — 300 settlements each on a 10,000-year clock discover somewhere within decades — so the pacing is pinned at the world level instead, and local conditions decide *who* invents rather than *when*:
 
-This makes the famine mechanism the *cause* of agriculture with no new machinery: overshoot → hardship → farming → capacity rises → the next growth wave. Different settlements cross the threshold at different times, so agriculture appears independently in a few places and spreads from there — as it did on Earth.
+- **When**: one exponential clock per technology. Rate = (share of world population that does not yet know the technology) / 10,000 years. In a pristine world the share is 1, so the mean time to first invention is exactly 10,000 years; as the technology spreads, independent invention fades toward zero — nobody independently invents farming once it is everywhere. Early on, while the share is still high, several independent cradles can appear.
+- **Who**: when the clock fires, the inventing settlement is a weighted random pick among those that don't know it. Weight = P · s · (1 + 9·scarcity), where s is terrain suitability (below) and scarcity ramps 0→1 as food per head φ = K·R/P falls from 1 to 0.8. Big, hungry settlements on good farmland are the likely inventors — [[Design/Population]]'s overshoot phase is when a settlement is most inventive. Comfortable foragers don't invent agriculture; hungry ones do.
 
-Mechanically, discovery is an event, not a poll: sample the discovery moment from the current rate (an exponential draw) and schedule it; resample only when the settlement's pressure changes at its existing wake-ups. This is a client of [[Design/Event-Driven]].
+This is a client of [[Design/Event-Driven]]: one scheduled event per technology, weights evaluated lazily at fire time, rescheduled only when the non-knowing share changes (each adoption is a discrete event, so this is exact, not polled).
 
 ---
 
 ## Spread: proximity
 
-A settlement near one that already farms adopts the technology far faster than it would discover it independently — contact, not broadcast. Technologies therefore have geography: fronts that radiate outward from their points of origin across the map ([[Design/Map-Centric]]).
+Adoption is local and per-settlement, separate from the world clock. Each settlement that doesn't farm but has farming neighbours within **160 km** (twice the minimum settlement spacing) draws its own exponential adoption time: rate = s · Σ(neighbour expertise) / 100 years — a mean of ~100 years with one fully-expert neighbour, faster with several, slower while the neighbourhood is still inexpert. Gated on the adopter's own terrain (s = 0 has nothing to adopt the technique onto).
+
+At 80 km settlement spacing this reproduces the real diffusion speed of agriculture (~1 km/year across Neolithic Europe). Technologies therefore have geography: fronts that radiate outward from their points of origin ([[Design/Map-Centric]]), accelerate as the heartland's expertise matures, and stop at oceans — other continents must wait for independent invention, giving separate agricultural cradles as Earth had.
 
 ---
 
 ## Expertise
 
-Knowing a technology is separate from being good at it (kept from Delegate). Each settlement holds an expertise level 0–1 per technology, growing over years of practice, which scales the technology's effect. A settlement that just learned farming gains little; three generations later it is transformed. A technology that spreads by contact arrives at low expertise — which answers Delegate's open question about how spread and expertise interact.
+Knowing a technology is separate from being good at it (kept from Delegate). Each settlement holds an expertise level 0–1 per technology which scales the technology's effect. Inventor and adopter alike start at **0.2** and grow toward 1 with a **~50-year** timescale of practice. A settlement that just learned farming gains little; three generations later it is transformed — which answers Delegate's open question about how spread and expertise interact, and (since adoption rate is expertise-weighted) makes fronts spread slowly from a fresh cradle and faster from a mature one.
 
 ---
 
 ## Farming (the first technology)
 
-Raises food yield where conditions allow — enough warmth and moisture, gentle slope, workable substrate — with the multiplier scaled by expertise. Grassland and river valleys become the prizes; tundra stays foraging country. Irrigation will later multiply water use, so rivers start deciding where the large settlements are, through the same min() in [[Design/Population]].
+**Terrain suitability s** (used by both discovery weight and adoption rate): the grass-like share of the surrounding cover mixture — grassland + savanna + steppe, with marsh at half credit (the real cradles were river floodplains) — times the farming climate window (warmth and moisture). Cereal agriculture came from wild grasses; you can't domesticate what doesn't grow around you. Grassland river valleys become the world's invention hotspots; tundra stays foraging country.
+
+Farming raises food yield where s allows — with the multiplier scaled by expertise. Irrigation will later multiply water use, so rivers start deciding where the large settlements are, through the same min() in [[Design/Population]].
 
 Represented as an entry in a technology table, not a hardcoded flag, so herding and fishing slot in beside it.
 
@@ -57,7 +62,7 @@ These were part of Delegate's Tech Tree design. Each is deferred because its pre
 
 ## Open Questions
 
-- What exactly sets the discovery rate — scarcity alone, or scarcity × population, and with what constant so first farming appears at a plausible world age?
-- Contact radius and adoption time for spread; does spread require sustained proximity or a single encounter?
-- How fast does expertise grow, and does it decay if a technology goes unused?
+- How large is farming's yield multiplier at full expertise, and what exactly is the climate window?
+- Does expertise decay if a technology goes unused (a collapsed settlement's knowledge)?
 - Does farming change the map — cleared fields as terrain deviations ([[Design/Terrain]])?
+- The world-clock model means a harsher world does not discover sooner — pacing is fixed by design. Revisit if that ever feels wrong in play.
