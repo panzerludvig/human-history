@@ -356,6 +356,32 @@ inline float annualBalanceAt(const Climatology& c, float latRad, float lonRad) {
     return rain - std::max(0.4f, 0.11f * (t + 8.0f));
 }
 
+// The derived climate fields that retire the painted temperatureC /
+// moistureAt (Design/Weather.md, the unification): annual mean temperature
+// lapse-corrected to local height, and moisture as an aridity index
+// (rain / potential evapotranspiration) with mirrored detail noise.
+inline float derivedTempC(const Climatology& c, float latRad, float lonRad, float hLocal) {
+    if (c.meanT.empty()) return terrain::temperatureC(latRad, hLocal);
+    int ax = ((int)(((lonRad + 3.14159265f) / (2 * 3.14159265f)) * W) % W + W) % W;
+    int ay = std::clamp((int)(((latRad + 3.14159265f / 2) / 3.14159265f) * H), 0, H - 1);
+    float t = 0;
+    for (int se = 0; se < SEASONS; se++) t += c.meanT[se * W * H + ay * W + ax] / SEASONS;
+    return t - 6.5f * (std::max(hLocal, 0.0f) - c.elev[ay * W + ax]) / 1000.0f;
+}
+
+inline float derivedMoisture(const Climatology& c, float latRad, float lonRad, terrain::V3 w,
+                             float hLocal) {
+    if (c.rainMmDay.empty()) return terrain::moistureAt(w, latRad);
+    int ax = ((int)(((lonRad + 3.14159265f) / (2 * 3.14159265f)) * W) % W + W) % W;
+    int ay = std::clamp((int)(((latRad + 3.14159265f / 2) / 3.14159265f) * H), 0, H - 1);
+    float rain = 0;
+    for (int se = 0; se < SEASONS; se++) rain += c.rainMmDay[se * W * H + ay * W + ax] / SEASONS;
+    float t = derivedTempC(c, latRad, lonRad, hLocal);
+    float pet = std::max(0.4f, 0.11f * (t + 8.0f));
+    float m = std::clamp(0.5f * rain / pet, 0.0f, 1.0f);
+    return std::clamp(m + terrain::moistureDetail(w), 0.0f, 1.0f);
+}
+
 // Waterlogging 0..1 from the balance: the marsh pull in terrain::mixtureAt.
 inline float swampinessAt(const Climatology& c, float latRad, float lonRad) {
     float b = annualBalanceAt(c, latRad, lonRad);

@@ -1025,7 +1025,8 @@ static std::string describePoint(Vec3 n) {
                                     wd.plateField, wd.rot);
     float lat = (float)std::asin(std::clamp(n.z, -1.0, 1.0));
     float lon = (float)std::atan2(n.y, n.x);
-    float temp = terrain::temperatureC(lat, h);
+    terrain::V3 wDerive = terrain::rotate(wd.rot, nf) + off;
+    float temp = atmosphere::derivedTempC(wd.clim, lat, lon, h);
     char buf[240];
     auto fmtM = [](float m) {
         char b[32];
@@ -1077,8 +1078,8 @@ static std::string describePoint(Vec3 n) {
             return buf;
         }
     }
-    terrain::V3 w = terrain::rotate(wd.rot, nf) + off;
-    float moist = terrain::moistureAt(w, lat);
+    terrain::V3 w = wDerive;
+    float moist = atmosphere::derivedMoisture(wd.clim, lat, lon, w, h);
     float slope = terrain::slopeAt(nf, wd.cp, wd.seaLevel, std::min(app.octaves, 12), wd.plateField, wd.rot, off);
     float uplift = wd.plateField.sample({nf.x, nf.y, nf.z}).uplift;
     float swamp = atmosphere::swampinessAt(wd.clim, lat, lon);

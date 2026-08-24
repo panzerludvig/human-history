@@ -266,6 +266,10 @@ inline float patchNoise(V3 w) { return fbm(w * 90.0f + 7.0f, 3, 0.5f) * 0.5f + 0
 
 // `swamp` (0..1) is the climate's waterlogging: it pulls flat ground toward
 // mud, and marsh cover follows mud. 0 keeps the pre-climate behaviour.
+// Fine within-region moisture variation, added to the coarse climate-derived
+// moisture so vegetation keeps sub-cell texture. Mirrored in the shader.
+inline float moistureDetail(V3 w) { return 0.12f * fbm(w * 5.0f + 31.0f, 3, 0.5f); }
+
 inline Mixture mixtureAt(float h, float slope, float temp, float moist, float uplift, bool nearRiver, float patch,
                          float swamp = 0.0f) {
     Mixture m{};

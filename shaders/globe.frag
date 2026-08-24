@@ -319,6 +319,33 @@ vec4 climSample(sampler2D tex, vec3 n) {
 }
 vec4 climAt(vec3 n) { return climSample(uClim, n); }
 
+// Annual mean over the four season bands.
+vec4 climAnnual(sampler2D tex, vec3 n) {
+    float lat = asin(clamp(n.z, -1.0, 1.0));
+    float lon = atan(n.y, n.x);
+    float cx = (lon + 3.14159265) / 6.2831853;
+    float cy = clamp((lat + 1.5707963) / 3.14159265, 0.02, 0.98);
+    vec4 sum = vec4(0.0);
+    for (int sSeason = 0; sSeason < 4; sSeason++)
+        sum += texture(tex, vec2(cx, (float(sSeason) + cy) * 0.25));
+    return sum * 0.25;
+}
+
+// Derived climate (mirrors atmosphere::derivedTempC / derivedMoisture): the
+// painted temperatureC / moistureAt retire in favour of these.
+float derivedTempC(vec3 n, float h) {
+    vec4 c2 = climAnnual(uClim2, n);
+    return c2.r - 6.5 * (max(h, 0.0) - c2.b) / 1000.0;
+}
+
+float derivedMoist(vec3 n, vec3 w, float h) {
+    float rain = climAnnual(uClim, n).g;
+    float t = derivedTempC(n, h);
+    float pet = max(0.4, 0.11 * (t + 8.0));
+    float m = clamp(0.5 * rain / pet, 0.0, 1.0);
+    return clamp(m + 0.12 * fbm(w * 5.0 + 31.0, 3, 0.5), 0.0, 1.0);
+}
+
 // Seasonal snow cover 0..1 on land: the season's coarse temperature, lapse-
 // corrected to the local height, must be freezing, and some precipitation
 // must fall to supply the snow.
@@ -496,9 +523,8 @@ void coverMix(float h, float slope, float temp, float moist, float uplift, float
 float patchNoise(vec3 w) { return fbm(w * 90.0 + 7.0, 3, 0.5) * 0.5 + 0.5; }
 
 // Rendered colour: substrate mixture underneath, cover mixture on top.
-vec3 terrainColor(vec3 w, float h, float slope, float lat, float uplift, bool nearRiver, float swamp) {
-    float temp = temperatureC(lat, h);
-    float moist = moistureAt(w, lat);
+vec3 terrainColor(vec3 w, float h, float slope, float lat, float uplift, bool nearRiver, float swamp,
+                  float temp, float moist) {
     float s[NSUB];
     float v[NCOV];
     substrateMix(h, slope, temp, moist, uplift, nearRiver, swamp, s);
@@ -511,9 +537,8 @@ vec3 terrainColor(vec3 w, float h, float slope, float lat, float uplift, bool ne
 }
 
 // Debug: colour of the dominant member.
-vec3 debugClassColor(int mode, float h, float slope, float lat, vec3 w, float uplift, bool nearRiver, float swamp) {
-    float temp = temperatureC(lat, h);
-    float moist = moistureAt(w, lat);
+vec3 debugClassColor(int mode, float h, float slope, float lat, vec3 w, float uplift, bool nearRiver, float swamp,
+                     float temp, float moist) {
     float s[NSUB];
     float v[NCOV];
     substrateMix(h, slope, temp, moist, uplift, nearRiver, swamp, s);
@@ -627,7 +652,7 @@ void main() {
         return;
     }
     if (uDebugMode == 2 || uDebugMode == 3) {
-        vec3 base = isWater ? vec3(0.05, 0.1, 0.25) : debugClassColor(uDebugMode, h, slopePhys, lat, w, upliftHere, nearRiverHere, 0.85 * smoothstep(0.45, 1.3, climSample(uClim2, n).a));
+        vec3 base = isWater ? vec3(0.05, 0.1, 0.25) : debugClassColor(uDebugMode, h, slopePhys, lat, w, upliftHere, nearRiverHere, 0.85 * smoothstep(0.45, 1.3, climSample(uClim2, n).a), derivedTempC(n, h), derivedMoist(n, w, h));
         fragColor = vec4(scaleBarOverlay(base * uDim), 1.0);
         return;
     }
@@ -663,7 +688,8 @@ void main() {
     }
     else {
         float swampV = 0.85 * smoothstep(0.45, 1.3, climSample(uClim2, n).a);
-        albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere, swampV);
+        albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere, swampV,
+                              derivedTempC(n, h), derivedMoist(n, w, h));
         albedo = mix(albedo, vec3(0.91, 0.93, 0.96), snowCoverAt(n, h)); // winter snow
     }
 
