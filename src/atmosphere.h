@@ -474,8 +474,8 @@ inline float swampinessAt(const Climatology& c, float latRad, float lonRad) {
     // Wide ramp and a modest cap: saturating to near-total marsh over a
     // narrow window painted a hard dark ribbon along every wet edge.
     float b = annualBalanceAt(c, latRad, lonRad);
-    float x = std::clamp((b - 0.5f) / (2.5f - 0.5f), 0.0f, 1.0f);
-    return 0.55f * x * x * (3 - 2 * x);
+    float x = std::clamp((b - 1.5f) / (4.0f - 1.5f), 0.0f, 1.0f);
+    return 0.45f * x * x * (3 - 2 * x);
 }
 
 } // namespace atmosphere

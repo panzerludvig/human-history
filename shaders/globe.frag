@@ -487,13 +487,13 @@ void pullSub(inout float s[NSUB], int k, float t) {
     s[k] += t;
 }
 
-void substrateMix(float h, float slope, float temp, float moist, float uplift, bool nearRiver, float swamp, out float s[NSUB]) {
+void substrateMix(float h, float slope, float temp, float moist, float uplift, bool nearRiver, float swamp, float patchy, out float s[NSUB]) {
     for (int i = 0; i < NSUB; i++) s[i] = 0.0;
     s[0] = 1.0;
     pullSub(s, 1, smoothstep(0.3, 0.18, moist) * smoothstep(2.0, 8.0, temp));
     pullSub(s, 4, nearRiver ? smoothstep(0.03, 0.01, slope) * smoothstep(900.0, 600.0, h) * 0.7 : 0.0);
     pullSub(s, 5, max(smoothstep(0.7, 0.85, moist) * smoothstep(0.025, 0.01, slope) * smoothstep(400.0, 200.0, h),
-                      swamp * smoothstep(0.035, 0.015, slope)));
+                      swamp * smoothstep(0.035, 0.015, slope) * smoothstep(0.3, 0.7, 1.0 - patchy)));
     pullSub(s, 3, smoothstep(0.12, 0.22, slope) * smoothstep(0.2, 0.4, uplift));
     pullSub(s, 2, max(smoothstep(0.28, 0.4, slope), smoothstep(3200.0, 3900.0, h)));
     pullSub(s, 6, smoothstep(-11.0, -16.0, temp + slope * 4.0));
@@ -504,9 +504,9 @@ void coverMix(float h, float slope, float temp, float moist, float uplift, float
     for (int i = 0; i < NCOV; i++) v[i] = 0.0;
 
     // Trees vs open ground, then each split by climate.
-    float tree = smoothstep(0.30, 0.70, moist) * smoothstep(-3.0, 4.0, temp) * (0.45 + 0.55 * patchy);
+    float tree = smoothstep(0.22, 0.55, moist) * smoothstep(-3.0, 4.0, temp) * (0.45 + 0.55 * patchy);
     float wT = smoothstep(9.0, 3.0, temp);
-    float wR = smoothstep(18.0, 23.0, temp) * smoothstep(0.6, 0.72, moist);
+    float wR = smoothstep(20.0, 25.0, temp) * smoothstep(0.72, 0.85, moist);
     float wF = max(1.0 - wT - wR, 0.0);
     float tn = wT + wR + wF;
     v[2] = tree * wT / tn; v[3] = tree * wF / tn; v[4] = tree * wR / tn;
@@ -537,8 +537,9 @@ vec3 terrainColor(vec3 w, float h, float slope, float lat, float uplift, bool ne
                   float temp, float moist) {
     float s[NSUB];
     float v[NCOV];
-    substrateMix(h, slope, temp, moist, uplift, nearRiver, swamp, s);
-    coverMix(h, slope, temp, moist, uplift, patchNoise(w), s, v);
+    float patchy = patchNoise(w);
+    substrateMix(h, slope, temp, moist, uplift, nearRiver, swamp, patchy, s);
+    coverMix(h, slope, temp, moist, uplift, patchy, s, v);
     vec3 base = vec3(0.0);
     for (int i = 0; i < NSUB; i++) base += substrateColor(i) * s[i];
     vec3 c = base * v[0];
@@ -551,13 +552,14 @@ vec3 debugClassColor(int mode, float h, float slope, float lat, vec3 w, float up
                      float temp, float moist) {
     float s[NSUB];
     float v[NCOV];
-    substrateMix(h, slope, temp, moist, uplift, nearRiver, swamp, s);
+    float patchy2 = patchNoise(w);
+    substrateMix(h, slope, temp, moist, uplift, nearRiver, swamp, patchy2, s);
     if (mode == 2) {
         int best = 0;
         for (int i = 1; i < NSUB; i++) if (s[i] > s[best]) best = i;
         return substrateColor(best);
     }
-    coverMix(h, slope, temp, moist, uplift, patchNoise(w), s, v);
+    coverMix(h, slope, temp, moist, uplift, patchy2, s, v);
     int best = 0;
     for (int i = 1; i < NCOV; i++) if (v[i] > v[best]) best = i;
     return best == 0 ? vec3(0.15) : coverColor(best);

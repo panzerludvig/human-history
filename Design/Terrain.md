@@ -38,6 +38,8 @@ The potential cover at a point is `cover(substrate, climate, patchiness)`. The a
 ---
 
 
+**Biome balance**: plain forest is the default tree cover — it takes most of most worlds. Rainforest needs hot *and* truly wet (roughly 7 mm/day at tropical evaporation); marsh is a local patchy feature of extreme waterlogging, broken up by the tree-density noise, never a regional biome.
+
 **Waterlogging**: the climate's water balance (rain minus evaporation) is an input to the mixture — waterlogged flat ground pulls toward mud substrate, and marsh cover follows. Bog country instead of endless ponds.
 
 ## Open Questions

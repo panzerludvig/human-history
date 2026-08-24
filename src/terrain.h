@@ -277,16 +277,21 @@ inline Mixture mixtureAt(float h, float slope, float temp, float moist, float up
     s[0] = 1.0f;
     pullTo(s, NSUB, 1, smoothstep(0.3f, 0.18f, moist) * smoothstep(2.0f, 8.0f, temp));
     pullTo(s, NSUB, 4, nearRiver ? smoothstep(0.03f, 0.01f, slope) * smoothstep(900.0f, 600.0f, h) * 0.7f : 0.0f);
+    // Marsh is a local feature, not a biome: the waterlogging pull is broken
+    // into patches by the same noise that varies tree density.
     pullTo(s, NSUB, 5, std::max(smoothstep(0.7f, 0.85f, moist) * smoothstep(0.025f, 0.01f, slope) * smoothstep(400.0f, 200.0f, h),
-                                swamp * smoothstep(0.035f, 0.015f, slope)));
+                                swamp * smoothstep(0.035f, 0.015f, slope) *
+                                    smoothstep(0.3f, 0.7f, 1.0f - patch)));
     pullTo(s, NSUB, 3, smoothstep(0.12f, 0.22f, slope) * smoothstep(0.2f, 0.4f, uplift));
     pullTo(s, NSUB, 2, std::max(smoothstep(0.28f, 0.4f, slope), smoothstep(3200.0f, 3900.0f, h)));
     pullTo(s, NSUB, 6, smoothstep(-11.0f, -16.0f, temp + slope * 4.0f));
 
     float* v = m.cov;
-    float tree = smoothstep(0.30f, 0.70f, moist) * smoothstep(-3.0f, 4.0f, temp) * (0.45f + 0.55f * patch);
+    float tree = smoothstep(0.22f, 0.55f, moist) * smoothstep(-3.0f, 4.0f, temp) * (0.45f + 0.55f * patch);
     float wT = smoothstep(9.0f, 3.0f, temp);
-    float wR = smoothstep(18.0f, 23.0f, temp) * smoothstep(0.6f, 0.72f, moist);
+    // Rainforest only in the hot, truly wet cores (~7 mm/day at tropical
+    // evaporation); plain forest is the default tree everywhere else.
+    float wR = smoothstep(20.0f, 25.0f, temp) * smoothstep(0.72f, 0.85f, moist);
     float wF = std::max(1.0f - wT - wR, 0.0f);
     float tn = wT + wR + wF;
     v[2] = tree * wT / tn; v[3] = tree * wF / tn; v[4] = tree * wR / tn;
