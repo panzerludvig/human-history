@@ -73,7 +73,8 @@ struct Climatology {
     std::vector<float> meanT, rainMmDay, snowMmDay, rainProb, windU, windV, cloud, diurnal;
     std::vector<float> elev; // [cell], the model's smoothed elevation (for lapse correction)
     // elev has one band; bilinearAt/annualAt want [season][cell]. A repeated
-    // view is built once on demand.
+    // view is built eagerly at the end of build() -- the lazy path races when
+    // parallel consumers (population's cell loop) hit it simultaneously.
     mutable std::vector<float> elevRep;
     const std::vector<float>& elev4() const {
         if (elevRep.empty() && !elev.empty()) {
@@ -410,6 +411,8 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                     &c.cloud, &c.diurnal})
         blur(*v, SEASONS);
     blur(c.elev, 1);
+    c.elevRep.clear();
+    c.elev4(); // build the repeated view now, before parallel consumers race the lazy path
 
     return c;
 }
