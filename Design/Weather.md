@@ -16,6 +16,8 @@ Three deviations from the design as first written, each forced by the model blow
 
 A fourth lesson landed with the follow-up work: **mid-latitude rain needed frontal storms.** Steady diagnostic winds cannot make baroclinic eddies, so the mid-latitudes came out ~3× too dry; a storm-rain term proportional to |grad T| × moisture (strong on winter storm tracks, negligible in the flat-gradient tropics) restored ~500 mm/yr at 45°. Cold seas also barely evaporate now. Known bias: polar precipitation runs a few times too wet (reads as persistent light snow). Precipitation below freezing is recorded separately as snow.
 
+A fifth lesson came from the first derived-climate worlds: **continental interiors were wetter than their coasts** — inverted. The interior thermal low pulled moist air inland, and because hot land raises the air's capacity, nothing rained until the convergence line deep inside the continent (real heat lows are subsidence-capped and dry; real air rains out along its path). Fix: over land, moisture rains out progressively on a ~3-day e-folding (~1300 km at typical winds), so coasts catch rain first and interiors starve smoothly with distance from the sea. This also un-binarized the biome map: gradients instead of a savanna sea with rainforest islands.
+
 Accepted at: correct zonal structure (wet tropics ~3 mm/day, subtropical minimum, dry poles), monsoon-like seasonal migration of rain onto summer continents, wet tropical coasts with dry continental interiors, and an emergent Antarctica analogue (continental pole −54 °C vs oceanic pole −5 °C). Generation adds ~12 s (OpenMP) to world build.
 
 ## The generator: a two-layer atmosphere

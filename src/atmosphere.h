@@ -49,6 +49,11 @@ constexpr double H_FLOW = 1500.0;               // m, depth of the inflow layer
 constexpr double RAIN_FRAC = 0.65;              // rain begins above this fraction of capacity
 constexpr double RAIN_RATE = 0.15;              // fraction of the excess per hour
 constexpr double DIV_CAP_SCALE = 0.05;          // m/s of uplift for a ~46% capacity swing
+// Over land, moisture rains out progressively along its path (precipitation
+// is not withheld until a convergence line): an e-folding of ~3 days, i.e.
+// ~1300 km at typical winds. This is what makes coasts wetter than deep
+// continental interiors.
+constexpr double LAND_RAINOUT_TAU = 3.0 * 86400.0; // s
 constexpr double K_DIFF = 2.0e5;                // m^2/s eddy diffusion of moisture
 // Frontal-storm rain: mid-latitude rain on Earth is mostly baroclinic storms
 // riding the temperature gradient, which steady diagnostic winds cannot
@@ -243,6 +248,7 @@ struct Model {
                               std::max(1.0 - Wv[i] / std::max(cap, 1.0), 0.0) *
                               std::clamp(0.3 + T[i] / 25.0, 0.0, 1.5); // cold seas barely evaporate
                 double rain = std::max(Wv[i] - RAIN_FRAC * cap, 0.0) * RAIN_RATE;
+                if (!water[i]) rain += Wv[i] * (DT / LAND_RAINOUT_TAU);
                 double gtx = (T[xe] - T[xw]) / (2 * dx), gty = (T[yn] - T[ys]) / (2 * dy);
                 rain += K_STORM * std::sqrt(gtx * gtx + gty * gty) * Wv[i];
                 auto face = [&](double ur, double Wl, double Wr, double dd) {
