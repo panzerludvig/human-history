@@ -918,6 +918,7 @@ static std::string describePoint(Vec3 n) {
     float h = terrain::heightMeters(terrain::rotate(wd.rot, nf) + off, nf, wd.cp, wd.seaLevel, app.octaves,
                                     wd.plateField, wd.rot);
     float lat = (float)std::asin(std::clamp(n.z, -1.0, 1.0));
+    float lon = (float)std::atan2(n.y, n.x);
     float temp = terrain::temperatureC(lat, h);
     char buf[240];
     auto fmtM = [](float m) {
@@ -925,13 +926,25 @@ static std::string describePoint(Vec3 n) {
         snprintf(b, sizeof b, "%d m", (int)std::lround(m));
         return std::string(b);
     };
+    // Climatology at the cursor, season-interpolated: shown for sea, lake, and land.
+    char climTxt[48] = "";
+    if (!wd.clim.rainMmDay.empty()) {
+        int ax = (int)(((lon + PI) / (2 * PI)) * atmosphere::W) % atmosphere::W;
+        int ay = std::clamp((int)(((lat + PI / 2) / PI) * atmosphere::H), 0, atmosphere::H - 1);
+        double sf = fmod(wd.simTime, 365.0) / 365.0 * 4.0 - 0.5;
+        int s0 = ((int)std::floor(sf) % 4 + 4) % 4, s1 = (s0 + 1) % 4;
+        double f = sf - std::floor(sf);
+        int i0 = s0 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
+        int i1 = s1 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
+        double rain = wd.clim.rainMmDay[i0] * (1 - f) + wd.clim.rainMmDay[i1] * f;
+        snprintf(climTxt, sizeof climTxt, "  |  rain %.1f mm/d", rain);
+    }
 
     if (h < 0) {
-        snprintf(buf, sizeof buf, "Sea, %s deep  |  %.0f C", fmtM(-h).c_str(), temp);
+        snprintf(buf, sizeof buf, "Sea, %s deep  |  %.0f C%s", fmtM(-h).c_str(), temp, climTxt);
         return buf;
     }
     // Lake: below the level of any adjacent lake cell (same rule as the shader).
-    float lon = (float)std::atan2(n.y, n.x);
     int cx = (int)std::floor((lon + PI) / (2 * PI) * hydrology::W), cy = (int)std::floor((lat + PI / 2) / PI * hydrology::H);
     cx = hydrology::wrapX(cx);
     cy = std::clamp(cy, 0, hydrology::H - 1);
@@ -946,7 +959,7 @@ static std::string describePoint(Vec3 n) {
                 lake = std::max(lake, wd.hydro.cells[yy * hydrology::W + hydrology::wrapX(cx + dx)].lakeLevel);
             }
         if (lake > hydrology::NO_LAKE + 1 && h < lake + 12.0f) {
-            snprintf(buf, sizeof buf, "Lake, %s deep  |  %.0f C", fmtM(lake + 12.0f - h).c_str(), temp);
+            snprintf(buf, sizeof buf, "Lake, %s deep  |  %.0f C%s", fmtM(lake + 12.0f - h).c_str(), temp, climTxt);
             return buf;
         }
     }
@@ -963,19 +976,6 @@ static std::string describePoint(Vec3 n) {
             snprintf(b, sizeof b, "  |  capacity %d", (int)(wd.pop.K[ci] * population::SUSTAIN_R));
             extra = b;
         }
-    }
-    // Climatology at the cursor, season-interpolated.
-    char climTxt[48] = "";
-    if (!wd.clim.rainMmDay.empty()) {
-        int ax = (int)(((lon + PI) / (2 * PI)) * atmosphere::W) % atmosphere::W;
-        int ay = std::clamp((int)(((lat + PI / 2) / PI) * atmosphere::H), 0, atmosphere::H - 1);
-        double sf = fmod(wd.simTime, 365.0) / 365.0 * 4.0 - 0.5;
-        int s0 = ((int)std::floor(sf) % 4 + 4) % 4, s1 = (s0 + 1) % 4;
-        double f = sf - std::floor(sf);
-        int i0 = s0 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
-        int i1 = s1 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
-        double rain = wd.clim.rainMmDay[i0] * (1 - f) + wd.clim.rainMmDay[i1] * f;
-        snprintf(climTxt, sizeof climTxt, "  |  rain %.1f mm/d", rain);
     }
     snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s%s%s", fmtM(h).c_str(), temp, describeMixture(m).c_str(),
              climTxt, extra.c_str());
