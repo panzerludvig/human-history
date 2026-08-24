@@ -26,11 +26,18 @@ This is a client of [[Design/Event-Driven]]: one scheduled event per technology,
 
 ---
 
-## Spread: proximity
+## Spread: proximity, in two layers
 
-Adoption is local and per-settlement, separate from the world clock. Each settlement that doesn't farm but has farming neighbours within **160 km** (twice the minimum settlement spacing) draws its own exponential adoption time: rate = s · Σ(neighbour expertise) / 100 years — a mean of ~100 years with one fully-expert neighbour, faster with several, slower while the neighbourhood is still inexpert. Gated on the adopter's own terrain (s = 0 has nothing to adopt the technique onto).
+Knowing about a technology and practising it are different states — ideas travel where practice can't. Each settlement is **unaware → aware → practising**:
 
-At 80 km settlement spacing this reproduces the real diffusion speed of agriculture (~1 km/year across Neolithic Europe). Technologies therefore have geography: fronts that radiate outward from their points of origin ([[Design/Map-Centric]]), accelerate as the heartland's expertise matures, and stop at oceans — other continents must wait for independent invention, giving separate agricultural cradles as Earth had.
+- **Awareness** spreads by contact, ungated by terrain: hearing about farming needs neighbours who know of it, not soil to plant. Rate = Σ(knowing neighbours) / 25 years within 160 km (twice the minimum settlement spacing); aware-but-not-practising settlements count as sources, so knowledge relays across tundra and desert belts. A modern tundra settlement knows exactly what farming is — it just has nowhere to do it.
+- **Practice** is learning the craft: requires awareness, s > 0, and practising neighbours to learn from. Rate = s · Σ(neighbour expertise) / 100 years within the same radius — a mean of ~100 years with one fully-expert neighbour, faster with several, slower while the neighbourhood is still inexpert. Expertise accrues only here. Invention puts a settlement straight into practising.
+
+Both draws are exponential and per-settlement, separate from the world clock; the clock's "non-knowing share" means *unaware*.
+
+At 80 km settlement spacing the practice front reproduces the real diffusion speed of agriculture (~1 km/year across Neolithic Europe). Technologies therefore have geography: fronts that radiate outward from their points of origin ([[Design/Map-Centric]]), accelerate as the heartland's expertise matures, flow as knowledge across unsuitable belts and re-ignite as practice where s recovers on the far side — and stop at oceans, so other continents must wait for independent invention, giving separate agricultural cradles as Earth had.
+
+The aware state is Delegate's "theoretical" stage arrived at from need rather than by adopting the full state machine — a partial, cheap resurrection of the deferred staging.
 
 ---
 
