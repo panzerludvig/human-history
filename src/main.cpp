@@ -1029,7 +1029,8 @@ static std::string describePoint(Vec3 n) {
     // Annual mean drives the mixture (biomes don't change by the hour);
     // the displayed temperature is the current one: seasonal mean plus the
     // diurnal swing phased to local solar time (peak ~14:00).
-    float temp = atmosphere::derivedTempC(wd.clim, lat, lon, h);
+    atmosphere::DerivedClimate dcTip = atmosphere::deriveAt(wd.clim, lat, lon, wDerive, h);
+    float temp = dcTip.temp;
     float tempNow = temp;
     if (!wd.clim.meanT.empty()) {
         float tSeason = sim::seasonalT(wd.clim, nf, std::max(h, 0.0f), wd.simTime);
@@ -1090,11 +1091,11 @@ static std::string describePoint(Vec3 n) {
         }
     }
     terrain::V3 w = wDerive;
-    float moist = atmosphere::derivedMoisture(wd.clim, lat, lon, w, h);
+    float moist = dcTip.moist;
     float slope = terrain::slopeAt(nf, wd.cp, wd.seaLevel, std::min(app.octaves, 12), wd.plateField, wd.rot, off);
     float uplift = wd.plateField.sample({nf.x, nf.y, nf.z}).uplift;
-    float swamp = atmosphere::swampinessAt(wd.clim, lat, lon);
-    terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift, nearRiver, terrain::patchNoise(w), swamp);
+    terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift, nearRiver, terrain::patchNoise(w),
+                                            dcTip.swamp, dcTip.tCold);
     std::string extra;
     if (!wd.pop.K.empty()) {
         int ci = cy * hydrology::W + cx;

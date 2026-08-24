@@ -484,6 +484,16 @@ inline float derivedTempC(const Climatology& c, float latRad, float lonRad, floa
            6.5f * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), n)) / 1000.0f;
 }
 
+// Coldest-season surface temperature: the Koppen-style gate for rainforest
+// (a true tropical climate never cools off).
+inline float coldestSeasonTempC(const Climatology& c, float latRad, float lonRad, float hLocal) {
+    if (c.meanT.empty()) return terrain::temperatureC(latRad, hLocal) - 4.0f;
+    terrain::V3 n = climFuzz(unitAt(latRad, lonRad));
+    float t = 1e9f;
+    for (int se = 0; se < SEASONS; se++) t = std::min(t, bilinearAt(c.meanT, se, n));
+    return t - 6.5f * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), n)) / 1000.0f;
+}
+
 inline float derivedMoisture(const Climatology& c, float latRad, float lonRad, terrain::V3 w,
                              float hLocal) {
     if (c.rainMmDay.empty()) return terrain::moistureAt(w, latRad);
@@ -495,13 +505,50 @@ inline float derivedMoisture(const Climatology& c, float latRad, float lonRad, t
     return std::clamp(m + terrain::moistureDetail(w), 0.0f, 1.0f);
 }
 
-// Waterlogging 0..1 from the balance: the marsh pull in terrain::mixtureAt.
-inline float swampinessAt(const Climatology& c, float latRad, float lonRad) {
-    // Wide ramp and a modest cap: saturating to near-total marsh over a
-    // narrow window painted a hard dark ribbon along every wet edge.
-    float b = annualBalanceAt(c, latRad, lonRad);
+// All derived climate values at a point with a single fuzz + sample pass:
+// the per-cell consumers (population yields, tooltip) were paying for the
+// fuzz noise four times over.
+struct DerivedClimate {
+    float temp, moist, tCold, swamp;
+};
+
+inline float swampFromBalance(float b) {
     float x = std::clamp((b - 1.5f) / (4.0f - 1.5f), 0.0f, 1.0f);
     return 0.45f * x * x * (3 - 2 * x);
+}
+
+inline DerivedClimate deriveAt(const Climatology& c, float latRad, float lonRad, terrain::V3 w,
+                               float hLocal) {
+    DerivedClimate d{};
+    if (c.meanT.empty()) {
+        d.temp = terrain::temperatureC(latRad, hLocal);
+        d.moist = terrain::moistureAt(w, latRad);
+        d.tCold = d.temp - 4.0f;
+        d.swamp = 0.0f;
+        return d;
+    }
+    terrain::V3 n = climFuzz(unitAt(latRad, lonRad));
+    float coarseE = annualAt(c.elev4(), n);
+    float lapse = 6.5f * (std::max(hLocal, 0.0f) - coarseE) / 1000.0f;
+    float annT = 0, rain = 0, tMin = 1e9f;
+    for (int se = 0; se < SEASONS; se++) {
+        float t = bilinearAt(c.meanT, se, n);
+        annT += t / SEASONS;
+        tMin = std::min(tMin, t);
+        rain += bilinearAt(c.rainMmDay, se, n) / SEASONS;
+    }
+    d.temp = annT - lapse;
+    d.tCold = tMin - lapse;
+    float pet = std::max(0.4f, 0.11f * (d.temp + 8.0f));
+    d.moist = std::clamp(std::clamp(0.5f * rain / pet, 0.0f, 1.0f) + terrain::moistureDetail(w),
+                         0.0f, 1.0f);
+    d.swamp = swampFromBalance(rain - std::max(0.4f, 0.11f * (annT + 8.0f)));
+    return d;
+}
+
+// Waterlogging 0..1 from the balance: the marsh pull in terrain::mixtureAt.
+inline float swampinessAt(const Climatology& c, float latRad, float lonRad) {
+    return swampFromBalance(annualBalanceAt(c, latRad, lonRad));
 }
 
 } // namespace atmosphere

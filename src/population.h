@@ -187,19 +187,22 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         terrain::V3 w = terrain::rotate(rot, n) + offset;
         float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
         float lon = std::atan2(n.y, n.x);
-        float temp = clim ? atmosphere::derivedTempC(*clim, lat, lon, h)
-                          : terrain::temperatureC(lat, h);
-        float moist = clim ? atmosphere::derivedMoisture(*clim, lat, lon, w, h)
-                           : terrain::moistureAt(w, lat);
+        atmosphere::DerivedClimate dc =
+            clim ? atmosphere::deriveAt(*clim, lat, lon, w, h)
+                 : atmosphere::DerivedClimate{terrain::temperatureC(lat, h),
+                                              terrain::moistureAt(w, lat),
+                                              terrain::temperatureC(lat, h) - 4.0f, 0.0f};
+        float temp = dc.temp;
+        float moist = dc.moist;
         // Coarse slope from neighbouring cell heights.
         float hx = hm[y * W + hydrology::wrapX(x + 1)] - hm[y * W + hydrology::wrapX(x - 1)];
         float hyv = hm[std::min(y + 1, H - 1) * W + x] - hm[std::max(y - 1, 0) * W + x];
         float cellKm = 2 * 3.14159265f * 6371.0f / W * std::max(std::cos(lat), 0.05f);
         float slope = std::sqrt(hx * hx + hyv * hyv) / (2000.0f * cellKm);
         float uplift = pf.sample({n.x, n.y, n.z}).uplift;
-        float swamp = clim ? atmosphere::swampinessAt(*clim, lat, lon) : 0.0f;
         terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift,
-                                                hy.cells[i].nearRiver > 0.5f, terrain::patchNoise(w), swamp);
+                                                hy.cells[i].nearRiver > 0.5f, terrain::patchNoise(w),
+                                                dc.swamp, dc.tCold);
 
         // kFood is sustained yield; the pristine ceiling is higher. Water is
         // a physical daily supply and is not scaled (it rarely binds before
@@ -215,6 +218,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
     f.kFoodPMap.assign(W * H, 0.0f);
     f.kWaterMap.assign(W * H, 0.0f);
     f.sFarmMap.assign(W * H, 0.0f);
+#pragma omp parallel for
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
             int i = y * W + x;

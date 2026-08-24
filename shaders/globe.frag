@@ -348,6 +348,25 @@ float derivedTempC(vec3 n, float h) {
     return c2.r - 6.5 * (max(h, 0.0) - c2.b) / 1000.0;
 }
 
+// Coldest-season surface temperature (rainforest gate).
+float derivedTCold(vec3 n, float h) {
+    float lat = asin(clamp(n.z, -1.0, 1.0));
+    float lon = atan(n.y, n.x);
+    vec3 nf = climFuzz(n);
+    float lat2 = asin(clamp(nf.z, -1.0, 1.0));
+    float lon2 = atan(nf.y, nf.x);
+    float cx = (lon2 + 3.14159265) / 6.2831853;
+    float cy = clamp((lat2 + 1.5707963) / 3.14159265, 0.02, 0.98);
+    float t = 1e9;
+    float e = 0.0;
+    for (int sSeason = 0; sSeason < 4; sSeason++) {
+        vec4 c2 = texture(uClim2, vec2(cx, (float(sSeason) + cy) * 0.25));
+        t = min(t, c2.r);
+        e += c2.b * 0.25;
+    }
+    return t - 6.5 * (max(h, 0.0) - e) / 1000.0;
+}
+
 float derivedMoist(vec3 n, vec3 w, float h) {
     float rain = climAnnual(uClim, n).g;
     float t = derivedTempC(n, h);
@@ -500,13 +519,13 @@ void substrateMix(float h, float slope, float temp, float moist, float uplift, b
 }
 
 // `patchy` is a 0..1 noise that varies tree density within a climate zone.
-void coverMix(float h, float slope, float temp, float moist, float uplift, float patchy, float sub[NSUB], out float v[NCOV]) {
+void coverMix(float h, float slope, float temp, float moist, float uplift, float patchy, float tCold, float sub[NSUB], out float v[NCOV]) {
     for (int i = 0; i < NCOV; i++) v[i] = 0.0;
 
     // Trees vs open ground, then each split by climate.
     float tree = smoothstep(0.22, 0.55, moist) * smoothstep(-3.0, 4.0, temp) * (0.45 + 0.55 * patchy);
     float wT = smoothstep(9.0, 3.0, temp);
-    float wR = smoothstep(20.0, 25.0, temp) * smoothstep(0.72, 0.85, moist);
+    float wR = smoothstep(16.0, 20.0, tCold) * smoothstep(0.72, 0.85, moist);
     float wF = max(1.0 - wT - wR, 0.0);
     float tn = wT + wR + wF;
     v[2] = tree * wT / tn; v[3] = tree * wF / tn; v[4] = tree * wR / tn;
@@ -534,12 +553,12 @@ float patchNoise(vec3 w) { return fbm(w * 90.0 + 7.0, 3, 0.5) * 0.5 + 0.5; }
 
 // Rendered colour: substrate mixture underneath, cover mixture on top.
 vec3 terrainColor(vec3 w, float h, float slope, float lat, float uplift, bool nearRiver, float swamp,
-                  float temp, float moist) {
+                  float temp, float moist, float tCold) {
     float s[NSUB];
     float v[NCOV];
     float patchy = patchNoise(w);
     substrateMix(h, slope, temp, moist, uplift, nearRiver, swamp, patchy, s);
-    coverMix(h, slope, temp, moist, uplift, patchy, s, v);
+    coverMix(h, slope, temp, moist, uplift, patchy, tCold, s, v);
     vec3 base = vec3(0.0);
     for (int i = 0; i < NSUB; i++) base += substrateColor(i) * s[i];
     vec3 c = base * v[0];
@@ -549,7 +568,7 @@ vec3 terrainColor(vec3 w, float h, float slope, float lat, float uplift, bool ne
 
 // Debug: colour of the dominant member.
 vec3 debugClassColor(int mode, float h, float slope, float lat, vec3 w, float uplift, bool nearRiver, float swamp,
-                     float temp, float moist) {
+                     float temp, float moist, float tCold) {
     float s[NSUB];
     float v[NCOV];
     float patchy2 = patchNoise(w);
@@ -559,7 +578,7 @@ vec3 debugClassColor(int mode, float h, float slope, float lat, vec3 w, float up
         for (int i = 1; i < NSUB; i++) if (s[i] > s[best]) best = i;
         return substrateColor(best);
     }
-    coverMix(h, slope, temp, moist, uplift, patchy2, s, v);
+    coverMix(h, slope, temp, moist, uplift, patchy2, tCold, s, v);
     int best = 0;
     for (int i = 1; i < NCOV; i++) if (v[i] > v[best]) best = i;
     return best == 0 ? vec3(0.15) : coverColor(best);
@@ -664,7 +683,7 @@ void main() {
         return;
     }
     if (uDebugMode == 2 || uDebugMode == 3) {
-        vec3 base = isWater ? vec3(0.05, 0.1, 0.25) : debugClassColor(uDebugMode, h, slopePhys, lat, w, upliftHere, nearRiverHere, 0.55 * smoothstep(0.5, 2.5, climSample(uClim2, n).a), derivedTempC(n, h), derivedMoist(n, w, h));
+        vec3 base = isWater ? vec3(0.05, 0.1, 0.25) : debugClassColor(uDebugMode, h, slopePhys, lat, w, upliftHere, nearRiverHere, 0.55 * smoothstep(0.5, 2.5, climSample(uClim2, n).a), derivedTempC(n, h), derivedMoist(n, w, h), derivedTCold(n, h));
         fragColor = vec4(scaleBarOverlay(base * uDim), 1.0);
         return;
     }
@@ -701,7 +720,7 @@ void main() {
     else {
         float swampV = 0.55 * smoothstep(0.5, 2.5, climSample(uClim2, n).a);
         albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere, swampV,
-                              derivedTempC(n, h), derivedMoist(n, w, h));
+                              derivedTempC(n, h), derivedMoist(n, w, h), derivedTCold(n, h));
         albedo = mix(albedo, vec3(0.91, 0.93, 0.96), snowCoverAt(n, h)); // winter snow
     }
 

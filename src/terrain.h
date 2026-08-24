@@ -270,8 +270,11 @@ inline float patchNoise(V3 w) { return fbm(w * 90.0f + 7.0f, 3, 0.5f) * 0.5f + 0
 // moisture so vegetation keeps sub-cell texture. Mirrored in the shader.
 inline float moistureDetail(V3 w) { return 0.12f * fbm(w * 5.0f + 31.0f, 3, 0.5f); }
 
+// `tCold` is the coldest-season temperature (rainforest needs warmth all
+// year); the sentinel default derives it crudely from the annual mean.
 inline Mixture mixtureAt(float h, float slope, float temp, float moist, float uplift, bool nearRiver, float patch,
-                         float swamp = 0.0f) {
+                         float swamp = 0.0f, float tCold = -999.0f) {
+    if (tCold < -900.0f) tCold = temp - 4.0f;
     Mixture m{};
     float* s = m.sub;
     s[0] = 1.0f;
@@ -291,7 +294,7 @@ inline Mixture mixtureAt(float h, float slope, float temp, float moist, float up
     float wT = smoothstep(9.0f, 3.0f, temp);
     // Rainforest only in the hot, truly wet cores (~7 mm/day at tropical
     // evaporation); plain forest is the default tree everywhere else.
-    float wR = smoothstep(20.0f, 25.0f, temp) * smoothstep(0.72f, 0.85f, moist);
+    float wR = smoothstep(16.0f, 20.0f, tCold) * smoothstep(0.72f, 0.85f, moist);
     float wF = std::max(1.0f - wT - wR, 0.0f);
     float tn = wT + wR + wF;
     v[2] = tree * wT / tn; v[3] = tree * wF / tn; v[4] = tree * wR / tn;
