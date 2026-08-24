@@ -22,7 +22,7 @@ The land offers a *flow* (the sustained yield K·R around the group's position);
 - **Harvest** H: limited by both the land's flow and the group's gathering time. A settled group forages on full time; a moving band can spend only about a third of its day gathering, so its harvest tops out lower on the same terrain.
 - **Consumption**: P people eat P rations a day. Surplus fills the store; deficit drains it.
 - **Caps**: a settlement stores up to ~90 days × P; a band carries ~10 days × P.
-- **Famine**: while S > 0, the store absorbs deficits. At S = 0, deaths run on a *starvation* timescale — up to ~2%/day at total deficit, scaling with the deficit fraction. One famine rule for everyone; settlements and bands differ only in circumstances.
+- **Famine**: not a hard breakpoint at S = 0 — food is not shared equally, and as stores run low people hoard, so the bottom of the group loses access before the stock is gone. Deaths = starvation rate (up to ~2%/day) × *excluded share* × *harvest shortfall*: the excluded share ramps from 0 to 1 as the store's fill fraction drops below ~¼ of the cap, and the shortfall is the fraction of daily need the current harvest fails to cover. Both factors are needed — a group living hand-to-mouth on good land is poor, not starving — and at an empty store the rule reduces to the full deficit-driven rate. Fill *fraction* (not absolute days) sets the onset, so a settlement with a 90-day cap feels famine below ~22 days of food, a band below ~2.5. One famine rule for everyone; settlements and bands differ only in circumstances.
 
 S evolves piecewise-linearly between events, so "when does the store hit zero (or full)" is computed and scheduled, never polled — a client of [[Design/Event-Driven]].
 
