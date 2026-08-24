@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <array>
 #include <random>
+#include <thread>
+#include <atomic>
 #include "terrain.h"
 #include "hydrology.h"
 #include "population.h"
@@ -505,6 +507,13 @@ struct App {
     bool clickMoved = false;
     std::vector<Panel> panels;
     int panelSpawn = 0;         // cascade offset for new panels
+    // World generation runs on a worker thread so the window stays live; the
+    // menus never render the globe, so the worker owns app.world meanwhile.
+    std::thread genThread;
+    std::atomic<int> genState{0}; // 0 idle, 1 running, 2 finished
+    bool genOk = false;
+    int genKind = 0;            // 0 new world, 1 load
+    std::string genName;
     GLuint program = 0;
     GLuint hydroTex = 0;
     GLuint plateTex = 0;
@@ -883,16 +892,36 @@ static void generateWorld() {
     w.landPercent = (float)std::clamp(getEditNumber(ID_GEN_LAND), 0.0, 100.0);
     w.concentration = (float)std::clamp(getEditNumber(ID_GEN_CONC), 0.0, 100.0);
     app.world = w;
-    app.world.build();
+    app.genKind = 0;
+    app.genState = 1;
+    app.genThread = std::thread([] {
+        app.world.build();
+        app.genOk = true;
+        app.genState = 2;
+    });
+}
+
+// Runs on the main (GL) thread once the worker finishes: textures and the
+// screen switch happen here.
+static void finishGeneration() {
+    app.genThread.join();
+    app.genState = 0;
+    if (!app.genOk) {
+        setStatus("Could not load " + app.genName);
+        return;
+    }
     uploadHydrology();
-    app.cam.lat = 0.35;
-    app.cam.lon = 0.0;
-    app.cam.altitude = app.cam.maxAltitude();
+    if (app.genKind == 0) {
+        app.cam.lat = 0.35;
+        app.cam.lon = 0.0;
+        app.cam.altitude = app.cam.maxAltitude();
+    }
     setStatus("");
     setScreen(Screen::InGame);
 }
 
 static void onCommand(int id) {
+    if (app.genState != 0) return; // generation in progress: only the OS window moves
     switch (id) {
     case ID_NEW_WORLD: openNewWorldMenu(); break;
     case ID_GEN_CREATE: generateWorld(); break;
@@ -911,13 +940,13 @@ static void onCommand(int id) {
             setStatus("No saved worlds");
             break;
         }
-        if (loadWorld(name, app.world, app.cam)) {
-            uploadHydrology();
-            setStatus("");
-            setScreen(Screen::InGame);
-        } else {
-            setStatus("Could not load " + name);
-        }
+        app.genKind = 1;
+        app.genName = name;
+        app.genState = 1;
+        app.genThread = std::thread([name] {
+            app.genOk = loadWorld(name, app.world, app.cam);
+            app.genState = 2;
+        });
         break;
     }
     case ID_LOAD_DELETE: {
@@ -1322,6 +1351,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_KEYDOWN:
+        if (app.genState != 0) return 0;
         if (app.screen == Screen::InGame) {
             int mode = wp == 'P' ? 1 : wp == 'B' ? 2 : wp == 'V' ? 3 : wp == 'K' ? 4 : 0;
             if (mode) app.debugMode = app.debugMode == mode ? 0 : mode;
@@ -1443,6 +1473,7 @@ int main(int argc, char** argv) {
     QueryPerformanceCounter(&fpsT0);
     int fpsFrames = 0;
     while (app.running) {
+        if (app.genState == 2) finishGeneration();
         MSG m;
         while (PeekMessageA(&m, nullptr, 0, 0, PM_REMOVE)) {
             // Buttons take keyboard focus, so catch Escape before it reaches them.
@@ -1559,6 +1590,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (app.genThread.joinable()) app.genThread.join();
     wglMakeCurrent(nullptr, nullptr);
     wglDeleteContext(rc);
     ReleaseDC(hwnd, dc);

@@ -97,7 +97,7 @@ Sits at (lat, lon, altitude) above the surface and always looks at the globe's c
 
 ## Generation feedback
 
-World generation takes ~12 s (mostly the climate run), so `World::build` reports its stage on the menu status line — plates, sea level, rivers, "Simulating climate... year N of 3", settlements — repainted synchronously (the build runs on the UI thread, so the window is otherwise frozen). Stages are also logged to stderr for tests. PrintWindow cannot capture these mid-build paints (a blocked window serves it a stale surface); a live screen shows them.
+World generation takes ~12 s (mostly the climate run) and runs on a **worker thread**: the window stays movable and repainting, `World::build` reports its stage on the menu status line (plates, sea level, rivers, "Simulating climate... year N of 3", settlements), and the main loop polls a done flag to finish on the GL thread (texture uploads, screen switch). Commands and keys are ignored while generating; the menus never render the globe, so the worker owns `app.world` meanwhile. Stages are also logged to stderr for tests.
 
 ## Menus and worlds
 
