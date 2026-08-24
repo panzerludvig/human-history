@@ -53,8 +53,29 @@ constexpr float SPLIT_MIN_P = 50.0f;
 constexpr float SPLIT_SHARE = 1.0f / 3.0f;
 constexpr float BAND_MIN_P = 20.0f;
 constexpr float BAND_SPEED_KM_DAY = 15.0f;
-constexpr float KNOW_RADIUS_KM = 400.0f;
+// Awareness (Design/Migration.md): a base radius, growth with settled age
+// (saturating -- the marginal new ground per year shrinks), a scouting bonus
+// for resting bands, and a vantage bonus from prominence via the real
+// horizon formula. One function each; the shader receives the result.
+constexpr float AWARE_BASE_KM = 150.0f;
+constexpr float AWARE_GROWTH_KM = 300.0f;      // settlements, toward base+this
+constexpr double AWARE_TAU_DAYS = 30.0 * 365;  // settlement growth timescale
+constexpr float AWARE_REST_KM = 100.0f;        // resting bands, toward base+this
+constexpr double AWARE_REST_TAU_DAYS = 45.0;
+constexpr float AWARE_CAP_KM = 600.0f;
 constexpr double BAND_STEP_DAYS = 5.0;
+
+inline float vantageKm(float promM) { return 3.57f * std::sqrt(std::max(promM, 0.0f)); }
+
+inline float settlementAwareKm(double ageDays, float promM) {
+    float r = AWARE_BASE_KM + AWARE_GROWTH_KM * (1.0f - (float)std::exp(-ageDays / AWARE_TAU_DAYS));
+    return std::min(r + vantageKm(promM), AWARE_CAP_KM);
+}
+
+inline float bandAwareKm(double restDays, float promM) {
+    float r = AWARE_BASE_KM + AWARE_REST_KM * (1.0f - (float)std::exp(-restDays / AWARE_REST_TAU_DAYS));
+    return std::min(r + vantageKm(promM), AWARE_CAP_KM);
+}
 constexpr int MAX_BANDS = 200;
 
 struct Settlement {
@@ -65,6 +86,7 @@ struct Settlement {
     double nextUpdate; // sim day of the next scheduled re-evaluation
     float S = 0;               // food store, rations (person-days)
     double scarceSince = -1;   // sim day scarcity began, -1 if fed (split rule)
+    double founded = 0;        // sim day the settlement was founded (awareness age)
     // Fixed local properties (from the terrain at the cell):
     float kFoodP = 0;  // pristine food capacity (already / SUSTAIN_R)
     float kWater = 0;  // water-supply capacity

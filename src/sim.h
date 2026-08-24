@@ -18,6 +18,16 @@ constexpr float RAFT_FACTOR = 0.5f;
 constexpr float RIVER_CROSS_FACTOR = 0.4f;
 constexpr float RIVER_MAJOR_KM2 = 40000.0f; // runoff-equivalent area
 
+// Prominence: how far the site rises above its regional (climate-grid) mean
+// elevation. The vantage input to awareness.
+inline float prominenceM(const hydrology::Result& hy, const atmosphere::Climatology& clim, int cell) {
+    if (clim.elev.empty()) return 0.0f;
+    float h = std::max(hy.heightM[cell], 0.0f);
+    int x = cell % population::W, y = cell / population::W;
+    int ax = x * atmosphere::W / population::W, ay = y * atmosphere::H / population::H;
+    return h - clim.elev[ay * atmosphere::W + ax];
+}
+
 // Season-interpolated local temperature: coarse climate mean, lapse-corrected
 // from the model's smoothed elevation to the local height.
 inline float seasonalT(const atmosphere::Climatology& c, terrain::V3 n, float hLocal, double now) {
@@ -96,10 +106,11 @@ inline bool spacingOK(const population::Field& pf, terrain::V3 n) {
 // The best-looking unclaimed prospect within the knowledge range, judged with
 // noise that grows with distance: near things resolve exactly, far things are
 // rumours. Returns a cell index, or -1 if nothing known is worth going to.
-inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t& rng) {
+inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t& rng,
+                        float radiusKm) {
     using namespace population;
     float lat0 = std::asin(std::clamp(from.z, -1.0f, 1.0f));
-    float dLat = KNOW_RADIUS_KM / 6371.0f;
+    float dLat = radiusKm / 6371.0f;
     int y0 = std::max((int)(((lat0 - dLat) + 3.14159265f / 2) / 3.14159265f * H), 1);
     int y1 = std::min((int)(((lat0 + dLat) + 3.14159265f / 2) / 3.14159265f * H) + 1, H - 2);
     int best = -1;
@@ -110,9 +121,9 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
             if (pf.K[cell] < MIN_SETTLEMENT_K) continue;
             terrain::V3 n = cellCentre(cell);
             float d = distKm(from, n);
-            if (d > KNOW_RADIUS_KM || d < 80.0f) continue;
+            if (d > radiusKm || d < 80.0f) continue;
             if (!spacingOK(pf, n)) continue;
-            float noise = ((float)technology::urand(rng) * 2.0f - 1.0f) * 0.6f * (d / KNOW_RADIUS_KM);
+            float noise = ((float)technology::urand(rng) * 2.0f - 1.0f) * 0.6f * (d / radiusKm);
             float est = pf.K[cell] * (1.0f + noise);
             if (est > bestScore) { bestScore = est; best = cell; }
         }
@@ -143,6 +154,7 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
                             const population::Band& b, int cell, double now) {
     using namespace population;
     Settlement s{cell, b.P, 1.0f, now, now};
+    s.founded = now;
     s.kFoodP = pf.kFoodPMap[cell];
     s.kWater = pf.kWaterMap[cell];
     s.sFarm = pf.sFarmMap[cell];
@@ -251,7 +263,9 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
             foundSettlement(pf, ws, b, cell, now);
             done = true;
         } else {
-            int nt = bestProspect(pf, pos, ws.rng);
+            double rest = b.resting ? now - b.restStart : 0.0;
+            int nt = bestProspect(pf, pos, ws.rng,
+                                  bandAwareKm(rest, prominenceM(hy, clim, cell)));
             if (nt >= 0) b.targetCell = nt;
             else {
                 if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
@@ -275,7 +289,9 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
 
 // Sustained scarcity with enough people: a third leaves as a band, taking the
 // settlement's knowledge and technology with it.
-inline void maybeSplit(population::Field& pf, technology::WorldState& ws, int si, double now) {
+inline void maybeSplit(population::Field& pf, technology::WorldState& ws,
+                       const hydrology::Result& hy, const atmosphere::Climatology& clim, int si,
+                       double now) {
     using namespace population;
     Settlement& s = pf.settlements[si];
     float keff = technology::effectiveK(s, now);
@@ -291,7 +307,8 @@ inline void maybeSplit(population::Field& pf, technology::WorldState& ws, int si
     }
     if (now - s.scarceSince < SPLIT_AFTER_DAYS || (int)pf.bands.size() >= MAX_BANDS) return;
     terrain::V3 home = cellCentre(s.cell);
-    int tgt = bestProspect(pf, home, ws.rng);
+    int tgt = bestProspect(pf, home, ws.rng,
+                           settlementAwareKm(now - s.founded, prominenceM(hy, clim, s.cell)));
     s.scarceSince = now; // whether or not anyone leaves, the pressure resets
     if (tgt < 0) return;
     Band b{};
@@ -334,7 +351,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
         if (kind == 1) {
             population::Settlement& s = pf.settlements[idx];
             changed |= population::advance(s, technology::effectiveK(s, t), t);
-            maybeSplit(pf, ws, idx, t);
+            maybeSplit(pf, ws, hy, clim, idx, t);
         } else if (kind == 2) {
             population::Settlement& s = pf.settlements[idx];
             if (!s.techFires) { technology::redraw(pf, idx, ws, t); continue; }

@@ -348,7 +348,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 5\n";
+    f << "version 6\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -359,7 +359,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     for (const population::Settlement& s : w.pop.settlements)
         f << "settlement " << s.cell << " " << s.P << " " << s.R << " "
           << (int)s.aware << " " << (int)s.practising << " " << s.practiceT << " "
-          << s.S << " " << s.scarceSince << "\n";
+          << s.S << " " << s.scarceSince << " " << s.founded << "\n";
     for (const population::Band& b : w.pop.bands)
         f << "band " << b.id << " " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
           << b.targetCell << " " << (int)b.resting << " " << b.restStart << " "
@@ -373,7 +373,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     if (!f) return false;
     w = World{};
     w.name = name;
-    std::vector<std::array<double, 8>> savedSettlements;
+    std::vector<std::array<double, 9>> savedSettlements;
     std::vector<std::array<double, 12>> savedBands;
     double savedTime = 0;
     int version = 1;
@@ -385,12 +385,13 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         else if (key == "time") f >> savedTime;
         else if (key == "techrng") f >> savedTechRng;
         else if (key == "settlement") {
-            std::array<double, 8> sv{};
+            std::array<double, 9> sv{};
             sv[7] = -1; // scarceSince default
             f >> sv[0] >> sv[1] >> sv[2];
             if (version >= 3) f >> sv[3] >> sv[4] >> sv[5];
             if (version >= 4) f >> sv[6] >> sv[7];
             else sv[6] = 0.5 * population::CAP_DAYS_SETTLED * sv[1];
+            if (version >= 6) f >> sv[8];
             savedSettlements.push_back(sv);
         }
         else if (key == "band") {
@@ -426,6 +427,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.practiceT = sv[5];
             st.S = (float)sv[6];
             st.scarceSince = sv[7];
+            st.founded = sv[8];
             w.pop.settlementAt[cell] = (int)w.pop.settlements.size();
             w.pop.settlements.push_back(st);
         }
@@ -1130,24 +1132,30 @@ static std::string panelText(const Panel& pn) {
         terrain::V3 n = sim::cellCentre(st.cell);
         float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
         float lon = std::atan2(n.y, n.x) * 180.0f / 3.14159265f;
+        float awareKm = population::settlementAwareKm(
+            wd.simTime - st.founded, sim::prominenceM(wd.hydro, wd.clim, st.cell));
         snprintf(buf, sizeof buf,
                  "Settlement %d\n%.1f%c  %.1f%c\nPeople: %d (capacity %d)\nStores: %d days\n"
-                 "Land condition: %d%%\n%s\nFarm suitability: %d%%",
+                 "Land condition: %d%%\n%s\nFarm suitability: %d%%\nAwareness: %d km",
                  pn.index, std::fabs(lat), lat >= 0 ? 'N' : 'S', std::fabs(lon), lon >= 0 ? 'E' : 'W',
                  (int)st.P, (int)(technology::effectiveK(st, wd.simTime) * population::SUSTAIN_R),
                  (int)(st.S / std::max(st.P, 1.0f)), (int)std::lround(st.R * 100),
                  techLine(st.aware, st.practising, st.practiceT).c_str(),
-                 (int)std::lround(st.sFarm * 100));
+                 (int)std::lround(st.sFarm * 100), (int)awareKm);
         return buf;
     }
     for (const population::Band& bd : wd.pop.bands)
         if (bd.id == pn.bandId) {
             float away = sim::distKm({bd.px, bd.py, bd.pz}, sim::cellCentre(bd.targetCell));
+            double rest = bd.resting ? wd.simTime - bd.restStart : 0.0;
+            float awareKm = population::bandAwareKm(
+                rest, sim::prominenceM(wd.hydro, wd.clim, sim::cellOf({bd.px, bd.py, bd.pz})));
             snprintf(buf, sizeof buf,
-                     "Band %u\nPeople: %d\nStores: %d days\nState: %s\nTarget: %d km away\n%s",
+                     "Band %u\nPeople: %d\nStores: %d days\nState: %s\nTarget: %d km away\n%s\n"
+                     "Awareness: %d km",
                      bd.id, (int)bd.P, (int)(bd.S / std::max(bd.P, 1.0f)),
                      bd.resting ? "resting" : "moving", (int)away,
-                     techLine(bd.aware, bd.practising, bd.practiceT).c_str());
+                     techLine(bd.aware, bd.practising, bd.practiceT).c_str(), (int)awareKm);
             return buf;
         }
     snprintf(buf, sizeof buf, "Band %u\n\nNo longer on the move:\nsettled, merged, or perished.",
@@ -1447,8 +1455,6 @@ int main(int argc, char** argv) {
     GLint uClock = glGetUniformLocation(app.program, "uClock");
     GLint uAware = glGetUniformLocation(app.program, "uAware");
     GLint uAwareCount = glGetUniformLocation(app.program, "uAwareCount");
-    // One source of truth for the knowledge radius: the population constant.
-    glUniform1f(glGetUniformLocation(app.program, "uAwareKm"), population::KNOW_RADIUS_KM);
 
     createControls();
     app.cam.clampAltitude();
@@ -1517,19 +1523,29 @@ int main(int argc, char** argv) {
                 for (const Panel& pn : app.panels) {
                     if (nAw >= 8) break;
                     terrain::V3 e{};
-                    bool ok = false;
+                    float radius = 0;
                     if (pn.kind == 0) {
-                        e = sim::cellCentre(app.world.pop.settlements[pn.index].cell);
-                        ok = true;
+                        const population::Settlement& st = app.world.pop.settlements[pn.index];
+                        e = sim::cellCentre(st.cell);
+                        radius = population::settlementAwareKm(
+                            app.world.simTime - st.founded,
+                            sim::prominenceM(app.world.hydro, app.world.clim, st.cell));
                     } else {
                         for (const population::Band& bd : app.world.pop.bands)
-                            if (bd.id == pn.bandId) { e = {bd.px, bd.py, bd.pz}; ok = true; break; }
+                            if (bd.id == pn.bandId) {
+                                e = {bd.px, bd.py, bd.pz};
+                                double rest = bd.resting ? app.world.simTime - bd.restStart : 0.0;
+                                radius = population::bandAwareKm(
+                                    rest, sim::prominenceM(app.world.hydro, app.world.clim,
+                                                           sim::cellOf(e)));
+                                break;
+                            }
                     }
-                    if (!ok) continue;
+                    if (radius <= 0) continue;
                     aw[nAw * 4 + 0] = e.x;
                     aw[nAw * 4 + 1] = e.y;
                     aw[nAw * 4 + 2] = e.z;
-                    aw[nAw * 4 + 3] = 1.0f;
+                    aw[nAw * 4 + 3] = radius;
                     nAw++;
                 }
                 glUniform4fv(uAware, 8, aw);

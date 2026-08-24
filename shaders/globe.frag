@@ -30,9 +30,8 @@ uniform sampler2D uClim;   // climatology, 4 season bands: cloud, rain, wind u, 
 uniform sampler2D uClim2;  // climatology 2: mean T, snowfall, coarse elevation
 uniform float uDoy;        // day of year, 0..365
 uniform float uClock;      // sim days (mod 4096) for cloud drift
-uniform vec4 uAware[8];    // selected entities: xyz unit position, w = 1 active
+uniform vec4 uAware[8];    // selected entities: xyz unit position, w = radius km
 uniform int uAwareCount;
-uniform float uAwareKm;    // knowledge radius, set from population::KNOW_RADIUS_KM
 uniform int uDebugMode;    // 0 normal, 1 plates, 2 substrate, 3 vegetation
 const float CRUST_WEIGHT = 0.2;
 uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 < 0 hides it
@@ -691,7 +690,7 @@ void main() {
     float aw = 0.0;
     for (int i = 0; i < uAwareCount; i++) {
         float d = acos(clamp(dot(n, uAware[i].xyz), -1.0, 1.0)) * 6371.0;
-        aw = max(aw, uAware[i].w * clamp(1.0 - d / uAwareKm, 0.0, 1.0));
+        aw = max(aw, clamp(1.0 - d / max(uAware[i].w, 1.0), 0.0, 1.0));
     }
     // Violet: a hue the terrain palette never uses, so the zone reads at low alpha.
     col = mix(col, vec3(0.55, 0.20, 1.0), aw * 0.32);

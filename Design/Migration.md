@@ -34,7 +34,16 @@ Storage is also the substrate for deferred mechanics: raiding steals stores, gra
 
 ## Knowledge
 
-A group knows its surroundings out to a range, with accuracy decaying over distance — near things resolve exactly, distant things are rumours. Under sustained scarcity the range grows (hungry people explore more). No per-group map rasters: knowledge is a radius plus distance-scaled noise applied when candidate sites are evaluated.
+A group knows its surroundings out to a range, with accuracy decaying over distance — near things resolve exactly, distant things are rumours. No per-group map rasters: knowledge is a radius plus distance-scaled noise applied when candidate sites are evaluated.
+
+The radius is dynamic (capped at 600 km):
+
+- **Base**: 150 km — what any group sees from where it stands.
+- **Settled age**: grows toward +300 km with a ~30-year saturation — people wander their surroundings, and the marginal new ground per year shrinks. A fresh colony is near-sighted; an ancient settlement sees ~450 km.
+- **Resting bands** scout: toward +100 km on a ~45-day timescale. Movement resets it — the stop-and-replenish rhythm doubles as reconnaissance.
+- **Vantage**: prominence above the regional mean elevation adds the real horizon distance, 3.57·√(metres) km — a site 500 m above its surroundings gains ~80 km. A band deliberately climbing for vantage is deferred to its future decision step.
+
+(The earlier idea that scarcity grows the range is superseded by settled age; hungry settlements act by splitting, not by seeing farther.)
 
 ---
 
