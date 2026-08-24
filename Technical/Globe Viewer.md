@@ -71,7 +71,11 @@ Sustained scarcity (φ < 0.99 for 2 years, P ≥ 50) splits a third of a settlem
 
 ## Tooltip
 
-In game, a label follows the cursor with what is under it: elevation, mean temperature, the terrain mixture ("forest 68%, grassland 22%, rock 10%"; "Sea, 354 m deep"; "Lake, 20 m deep"), and the carrying capacity or settlement under the cursor ("settlement: 175 people (capacity 350)"). It is computed on the CPU from the terrain mirror (`terrain.h`) at the current level of detail, using the same lake rule as the shader, so it doubles as a live check that the CPU and GPU terrain agree.
+In game, a label follows the cursor with what is under it: elevation, mean temperature, the terrain mixture ("forest 68%, grassland 22%, rock 10%"; "Sea, 354 m deep"; "Lake, 20 m deep"), and the cell's carrying capacity. It is computed on the CPU from the terrain mirror (`terrain.h`) at the current level of detail, using the same lake rule as the shader, so it doubles as a live check that the CPU and GPU terrain agree.
+
+## Selection panels
+
+Clicking a settlement or band marker opens a detail panel (a dark child window with an X close button); clicking another marker opens another panel rather than replacing the first, cascading down-right, and clicking an already-open target raises its panel. Settlement panels show position, people and capacity, stores in days, land condition, farming status with expertise, and farm suitability; band panels show people, stores, moving/resting, distance to target, and carried technology. Panels refresh after every time step; a panel whose band has settled, merged, or perished says so. The pick radius is the marker's draw radius plus ~3 px of slop (clicks are aim-limited), and bands are picked at their cell centre — where the shader actually draws them, up to half a cell from their true position. A click is a press-release with under ~4 px of travel; more is a drag. Panels close on leaving the game screen.
 
 ## Camera
 

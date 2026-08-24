@@ -310,7 +310,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 4\n";
+    f << "version 5\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -323,7 +323,7 @@ static bool saveWorld(const World& w, const Camera& c) {
           << (int)s.aware << " " << (int)s.practising << " " << s.practiceT << " "
           << s.S << " " << s.scarceSince << "\n";
     for (const population::Band& b : w.pop.bands)
-        f << "band " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
+        f << "band " << b.id << " " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
           << b.targetCell << " " << (int)b.resting << " " << b.restStart << " "
           << (int)b.aware << " " << (int)b.practising << " " << b.practiceT << "\n";
     f << "techrng " << w.tech.rng << "\n";
@@ -336,7 +336,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     w = World{};
     w.name = name;
     std::vector<std::array<double, 8>> savedSettlements;
-    std::vector<std::array<double, 11>> savedBands;
+    std::vector<std::array<double, 12>> savedBands;
     double savedTime = 0;
     int version = 1;
     uint64_t savedTechRng = 0;
@@ -356,8 +356,9 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             savedSettlements.push_back(sv);
         }
         else if (key == "band") {
-            std::array<double, 11> bv{};
-            for (double& v : bv) f >> v;
+            std::array<double, 12> bv{};
+            int i0 = version >= 5 ? 0 : 1; // v4 bands had no id
+            for (int i = i0; i < 12; i++) f >> bv[i];
             savedBands.push_back(bv);
         }
         else if (key == "land") f >> w.landPercent;
@@ -392,14 +393,17 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         }
         for (auto& bv : savedBands) {
             population::Band b{};
-            b.px = (float)bv[0]; b.py = (float)bv[1]; b.pz = (float)bv[2];
-            b.P = (float)bv[3]; b.S = (float)bv[4];
-            b.targetCell = (int)bv[5];
-            b.resting = bv[6] > 0.5;
-            b.restStart = bv[7];
-            b.aware = bv[8] > 0.5;
-            b.practising = bv[9] > 0.5;
-            b.practiceT = bv[10];
+            b.id = (uint32_t)bv[0];
+            if (!b.id) b.id = w.pop.nextBandId;
+            w.pop.nextBandId = std::max(w.pop.nextBandId, b.id + 1);
+            b.px = (float)bv[1]; b.py = (float)bv[2]; b.pz = (float)bv[3];
+            b.P = (float)bv[4]; b.S = (float)bv[5];
+            b.targetCell = (int)bv[6];
+            b.resting = bv[7] > 0.5;
+            b.restStart = bv[8];
+            b.aware = bv[9] > 0.5;
+            b.practising = bv[10] > 0.5;
+            b.practiceT = bv[11];
             b.t = savedTime;
             b.nextUpdate = savedTime;
             if (b.targetCell >= 0 && b.targetCell < population::W * population::H)
@@ -448,6 +452,14 @@ enum : int {
     ID_TIME_STEP, ID_TIME_GO, ID_DATE_LABEL,
 };
 
+// A detail window for one settlement or band, opened by clicking its marker.
+struct Panel {
+    HWND wnd = nullptr;
+    int kind = 0;       // 0 settlement, 1 band
+    int index = 0;      // settlement index (stable; settlements are never erased)
+    uint32_t bandId = 0;
+};
+
 struct App {
     Camera cam;
     World world;
@@ -456,6 +468,10 @@ struct App {
     bool anchorValid = false;
     Vec3 anchor{}; // surface point grabbed at mouse-down
     int lastX = 0, lastY = 0;
+    int downX = 0, downY = 0;   // mouse-down spot, to tell a click from a drag
+    bool clickMoved = false;
+    std::vector<Panel> panels;
+    int panelSpawn = 0;         // cascade offset for new panels
     GLuint program = 0;
     GLuint hydroTex = 0;
     GLuint plateTex = 0;
@@ -530,6 +546,8 @@ static void uploadHydrology() {
 
 static void advanceDays(double days);
 static void updateDateLabel();
+static void closeAllPanels();
+static void refreshPanels();
 
 static HWND control(int id) {
     for (auto& c : app.controls)
@@ -731,6 +749,7 @@ static void fillNewWorldFields(const World& w) {
 static void setScreen(Screen s) {
     app.screen = s;
     ShowWindow(control(ID_TOOLTIP), SW_HIDE);
+    if (s != Screen::InGame) closeAllPanels();
     app.dragging = false;
     if (s == Screen::LoadMenu) refreshWorldList();
     if (s == Screen::NewWorldMenu) fillNewWorldFields(app.world);
@@ -906,38 +925,7 @@ static std::string describePoint(Vec3 n) {
     std::string extra;
     if (!wd.pop.K.empty()) {
         int ci = cy * hydrology::W + cx;
-        for (int dy = -1; dy <= 1; dy++)
-            for (int dx = -1; dx <= 1; dx++) {
-                int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
-                int si = wd.pop.settlementAt[yy * hydrology::W + hydrology::wrapX(cx + dx)];
-                if (si >= 0 && extra.empty()) {
-                    const population::Settlement& st = wd.pop.settlements[si];
-                    char techTxt[40] = "";
-                    if (st.practising)
-                        snprintf(techTxt, sizeof techTxt, ", farming %d%%",
-                                 (int)std::lround(technology::expertise(st, wd.simTime) * 100));
-                    else if (st.aware)
-                        snprintf(techTxt, sizeof techTxt, ", knows farming");
-                    char b[140];
-                    snprintf(b, sizeof b, "  |  settlement: %d people (capacity %d, stores %d d)%s",
-                             (int)st.P,
-                             (int)(technology::effectiveK(st, wd.simTime) * population::SUSTAIN_R),
-                             (int)(st.S / std::max(st.P, 1.0f)), techTxt);
-                    extra = b;
-                }
-            }
-        if (extra.empty()) {
-            float radius = (float)std::clamp(app.cam.kmPerPixel() * 5.0, 4.0, 18.0);
-            for (const population::Band& bd : wd.pop.bands)
-                if (sim::distKm({nf.x, nf.y, nf.z}, {bd.px, bd.py, bd.pz}) < radius) {
-                    char b[80];
-                    snprintf(b, sizeof b, "  |  band: %d people (%s)", (int)bd.P,
-                             bd.resting ? "resting" : "moving");
-                    extra = b;
-                    break;
-                }
-        }
-        if (extra.empty() && wd.pop.K[ci] > 0) {
+        if (wd.pop.K[ci] > 0) {
             char b[48];
             snprintf(b, sizeof b, "  |  capacity %d", (int)(wd.pop.K[ci] * population::SUSTAIN_R));
             extra = b;
@@ -960,6 +948,131 @@ static void updateTooltip(int x, int y) {
     int tx = std::min(x + 18, app.cam.width - wdt - 4), ty = y + 22;
     if (ty + 26 > app.cam.height) ty = y - 30;
     SetWindowPos(tip, HWND_TOP, tx, ty, wdt, 26, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+}
+
+// ------------------------------------------------ selection detail panels
+
+static std::string panelText(const Panel& pn) {
+    const World& wd = app.world;
+    char buf[400];
+    auto techLine = [&](bool aware, bool practising, double practiceT) {
+        if (!practising) return std::string(aware ? "Farming: known, not practised" : "Farming: unknown");
+        population::Settlement tmp{};
+        tmp.practising = true;
+        tmp.practiceT = practiceT;
+        char b[64];
+        snprintf(b, sizeof b, "Farming: practising, expertise %d%%",
+                 (int)std::lround(technology::expertise(tmp, wd.simTime) * 100));
+        return std::string(b);
+    };
+    if (pn.kind == 0) {
+        const population::Settlement& st = wd.pop.settlements[pn.index];
+        terrain::V3 n = sim::cellCentre(st.cell);
+        float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
+        float lon = std::atan2(n.y, n.x) * 180.0f / 3.14159265f;
+        snprintf(buf, sizeof buf,
+                 "Settlement %d\n%.1f%c  %.1f%c\nPeople: %d (capacity %d)\nStores: %d days\n"
+                 "Land condition: %d%%\n%s\nFarm suitability: %d%%",
+                 pn.index, std::fabs(lat), lat >= 0 ? 'N' : 'S', std::fabs(lon), lon >= 0 ? 'E' : 'W',
+                 (int)st.P, (int)(technology::effectiveK(st, wd.simTime) * population::SUSTAIN_R),
+                 (int)(st.S / std::max(st.P, 1.0f)), (int)std::lround(st.R * 100),
+                 techLine(st.aware, st.practising, st.practiceT).c_str(),
+                 (int)std::lround(st.sFarm * 100));
+        return buf;
+    }
+    for (const population::Band& bd : wd.pop.bands)
+        if (bd.id == pn.bandId) {
+            float away = sim::distKm({bd.px, bd.py, bd.pz}, sim::cellCentre(bd.targetCell));
+            snprintf(buf, sizeof buf,
+                     "Band %u\nPeople: %d\nStores: %d days\nState: %s\nTarget: %d km away\n%s",
+                     bd.id, (int)bd.P, (int)(bd.S / std::max(bd.P, 1.0f)),
+                     bd.resting ? "resting" : "moving", (int)away,
+                     techLine(bd.aware, bd.practising, bd.practiceT).c_str());
+            return buf;
+        }
+    snprintf(buf, sizeof buf, "Band %u\n\nNo longer on the move:\nsettled, merged, or perished.",
+             pn.bandId);
+    return buf;
+}
+
+static void refreshPanels() {
+    for (const Panel& pn : app.panels) SetWindowTextA(GetDlgItem(pn.wnd, 3), panelText(pn).c_str());
+}
+
+static void closeAllPanels() {
+    std::vector<Panel> panels = app.panels; // DestroyWindow mutates app.panels
+    for (const Panel& pn : panels)
+        if (IsWindow(pn.wnd)) DestroyWindow(pn.wnd);
+    app.panels.clear();
+    app.panelSpawn = 0;
+}
+
+static LRESULT CALLBACK panelProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_COMMAND:
+        if (LOWORD(wp) == 1) DestroyWindow(h);
+        return 0;
+    case WM_DESTROY:
+        for (size_t i = 0; i < app.panels.size(); i++)
+            if (app.panels[i].wnd == h) { app.panels.erase(app.panels.begin() + i); break; }
+        return 0;
+    case WM_CTLCOLORSTATIC:
+        SetTextColor((HDC)wp, RGB(230, 230, 235));
+        SetBkColor((HDC)wp, RGB(8, 8, 16));
+        return (LRESULT)app.bgBrush;
+    }
+    return DefWindowProcA(h, msg, wp, lp);
+}
+
+static void openPanel(int kind, int index, uint32_t bandId) {
+    for (const Panel& pn : app.panels)
+        if (pn.kind == kind && pn.index == index && pn.bandId == bandId) {
+            SetWindowPos(pn.wnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            return; // already open: raise it instead of stacking a twin
+        }
+    int pw = 340, ph = 216;
+    int x = 16 + (app.panelSpawn % 7) * 30, y = 56 + (app.panelSpawn % 7) * 30;
+    app.panelSpawn++;
+    HINSTANCE inst = GetModuleHandleA(nullptr);
+    HWND w = CreateWindowA("IBPanel", "", WS_CHILD | WS_BORDER | WS_VISIBLE | WS_CLIPSIBLINGS,
+                           x, y, pw, ph, app.hwnd, nullptr, inst, nullptr);
+    HWND btn = CreateWindowA("BUTTON", "X", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, pw - 34, 6, 24, 24,
+                             w, (HMENU)1, inst, nullptr);
+    HWND txt = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, 12, 8,
+                             pw - 54, ph - 20, w, (HMENU)3, inst, nullptr);
+    SendMessageA(btn, WM_SETFONT, (WPARAM)app.font, TRUE);
+    SendMessageA(txt, WM_SETFONT, (WPARAM)app.font, TRUE);
+    app.panels.push_back({w, kind, index, bandId});
+    refreshPanels();
+    SetWindowPos(w, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+}
+
+// A click on the globe: open a detail panel for the settlement or band whose
+// marker is under the cursor (same radii the shader draws them with).
+static void pickAt(int x, int y) {
+    Vec3 hit;
+    if (app.screen != Screen::InGame || !app.cam.hitSphere(x, y, hit)) return;
+    terrain::V3 n = {(float)hit.x, (float)hit.y, (float)hit.z};
+    const population::Field& pf = app.world.pop;
+    // Pick radius = draw radius plus ~3 px of slop: clicks are aim-limited.
+    float slop = (float)(app.cam.kmPerPixel() * 3.0);
+    float sRadius = (float)std::clamp(app.cam.kmPerPixel() * 5.0, 4.0, 18.0) + slop;
+    int best = -1;
+    float bestD = sRadius;
+    for (int i = 0; i < (int)pf.settlements.size(); i++) {
+        float d = sim::distKm(n, sim::cellCentre(pf.settlements[i].cell));
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    if (best >= 0) { openPanel(0, best, 0); return; }
+    float bRadius = (float)std::clamp(app.cam.kmPerPixel() * 4.0, 3.0, 14.0) + slop;
+    uint32_t bestId = 0;
+    bestD = bRadius;
+    for (const population::Band& bd : pf.bands) {
+        // Measure to the cell centre: that is where the shader draws the dot.
+        float d = sim::distKm(n, sim::cellCentre(sim::cellOf({bd.px, bd.py, bd.pz})));
+        if (d < bestD) { bestD = d; bestId = bd.id; }
+    }
+    if (bestId) openPanel(1, 0, bestId);
 }
 
 // Step the paused clock forward and let every settlement catch up. Wakes
@@ -990,6 +1103,7 @@ static void advanceDays(double days) {
     if (pf.settlements.empty()) return;
     bool any = sim::simulate(pf, app.world.tech, app.world.simTime);
     if (any && app.popTex) uploadPopulation();
+    refreshPanels();
 }
 
 static void applyDrag(int x, int y) {
@@ -1051,15 +1165,20 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         app.dragging = true;
         app.lastX = GET_X_LPARAM(lp);
         app.lastY = GET_Y_LPARAM(lp);
+        app.downX = app.lastX;
+        app.downY = app.lastY;
+        app.clickMoved = false;
         app.anchorValid = app.cam.hitSphere(app.lastX, app.lastY, app.anchor);
         return 0;
     case WM_LBUTTONUP:
         ReleaseCapture();
+        if (app.dragging && !app.clickMoved) pickAt(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         app.dragging = false;
         return 0;
     case WM_MOUSEMOVE: {
         int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
         if (app.dragging) {
+            if (std::abs(x - app.downX) + std::abs(y - app.downY) > 4) app.clickMoved = true;
             applyDrag(x, y);
             app.lastX = x;
             app.lastY = y;
@@ -1099,6 +1218,14 @@ int main(int argc, char** argv) {
     wc.hCursor = LoadCursorA(nullptr, IDC_ARROW);
     wc.lpszClassName = "IronAndBlood";
     RegisterClassA(&wc);
+
+    WNDCLASSA pc = {};
+    pc.lpfnWndProc = panelProc;
+    pc.hInstance = inst;
+    pc.hCursor = LoadCursorA(nullptr, IDC_ARROW);
+    pc.hbrBackground = CreateSolidBrush(RGB(8, 8, 16));
+    pc.lpszClassName = "IBPanel";
+    RegisterClassA(&pc);
 
     RECT r = {0, 0, app.cam.width, app.cam.height};
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);

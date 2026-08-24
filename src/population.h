@@ -80,6 +80,7 @@ struct Settlement {
 // forages the cell it stands on with a reduced time budget, carries a small
 // store, and re-evaluates every few days. The first agent.
 struct Band {
+    uint32_t id = 0;         // stable identity (indices shift as bands die)
     float px, py, pz;        // unit-sphere position
     float P = 0;             // people
     float S = 0;             // food store, rations
@@ -99,6 +100,7 @@ struct Field {
     std::vector<Settlement> settlements;
     std::vector<std::vector<int>> neighbours; // settlements within contact range
     std::vector<Band> bands;
+    uint32_t nextBandId = 1;
     // Per-cell local properties, kept for founding settlements at runtime:
     std::vector<float> kFoodPMap, kWaterMap, sFarmMap;
 };

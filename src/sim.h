@@ -255,6 +255,7 @@ inline void maybeSplit(population::Field& pf, technology::WorldState& ws, int si
     s.scarceSince = now; // whether or not anyone leaves, the pressure resets
     if (tgt < 0) return;
     Band b{};
+    b.id = pf.nextBandId++;
     b.px = home.x;
     b.py = home.y;
     b.pz = home.z;
