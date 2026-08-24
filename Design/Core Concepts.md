@@ -28,6 +28,7 @@ Mechanics built on the core concepts, each with its own note:
 | [[Design/Population]] | A carrying-capacity field; settlements as sparse actors with overshoot dynamics | Concept |
 | [[Design/Technology]] | Dark, shared, automatic discovery driven by need; expertise; farming first | Implemented |
 | [[Design/Migration]] | Bands as moving settlements; storage; emergent nomadism; the first agent | Implemented |
+| [[Design/Weather]] | Two-layer atmosphere run at generation; stored climatology; weather as a function | Designed |
 
 ---
 
