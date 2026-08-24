@@ -14,6 +14,8 @@ Three deviations from the design as first written, each forced by the model blow
 - **Heat moves by diffusion only.** Advecting temperature with the surface wind refrigerated every heat low: the convergent branch imports cool air, and the upper return flow that closes the energy loop is not modelled. A large eddy diffusivity stands in for the whole poleward heat transport (Budyko-style). Moisture *is* advected by the winds — that is what shapes the rain map.
 - **Rain comes from a motion-modulated capacity.** Moisture piled up wherever air was cold (148 mm/day at a pole, 0.2 in the tropics). Fix: flux-form moisture transport plus an effective capacity that shrinks under uplift and swells under subsidence — convective and orographic rain where air converges or climbs, dry descent zones and lee sides.
 
+A fourth lesson landed with the follow-up work: **mid-latitude rain needed frontal storms.** Steady diagnostic winds cannot make baroclinic eddies, so the mid-latitudes came out ~3× too dry; a storm-rain term proportional to |grad T| × moisture (strong on winter storm tracks, negligible in the flat-gradient tropics) restored ~500 mm/yr at 45°. Cold seas also barely evaporate now. Known bias: polar precipitation runs a few times too wet (reads as persistent light snow). Precipitation below freezing is recorded separately as snow.
+
 Accepted at: correct zonal structure (wet tropics ~3 mm/day, subtropical minimum, dry poles), monsoon-like seasonal migration of rain onto summer continents, wet tropical coasts with dry continental interiors, and an emergent Antarctica analogue (continental pole −54 °C vs oceanic pole −5 °C). Generation adds ~12 s (OpenMP) to world build.
 
 ## The generator: a two-layer atmosphere
@@ -59,7 +61,7 @@ The climatology is a derived layer like hydrology: constant until something genu
 
 ## The unification prize (deferred)
 
-Both painted climate fields retire once the generator's output is validated — as one milestone, because everything downstream consumes them as a pair:
+**Partially claimed**: rivers and settlement water now derive from the generated rainfall — `hydrology::reweight` re-runs the flow accumulation with runoff weights from annual rain, so desert rivers sink below the drawing threshold and wet-region rivers carry more (dry basins keep their lakes as a salt-lake stand-in). The remaining pair:
 
 - **Moisture**: `moistureAt` is a painted noise field with a hardcoded subtropical dry band. The generated rainfall map replaces it: vegetation, yields, and rivers (runoff) then derive from rain the atmosphere actually delivered, and the desert belt exists because the circulation put it there.
 - **Temperature**: `temperatureC(lat, h)` is a hand-drawn stand-in for the energy balance the generator computes anyway (insolation, albedo, radiation, heat transport). The stored seasonal means replace its latitude curve — gaining continental vs maritime climates, wind-warmed and wind-chilled coasts, and seasons, which the static field cannot express at all. The **lapse rate stays analytic**: the climate grid cannot see individual mountains, so stored temperature is at the model's smoothed elevation and the −6.5 °C/km correction for local height is applied at sample time, mirrored CPU/GPU like the other derived textures.

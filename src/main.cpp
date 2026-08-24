@@ -38,6 +38,7 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_TEXTURE1 0x84C1
 #define GL_TEXTURE2 0x84C2
 #define GL_TEXTURE3 0x84C3
+#define GL_TEXTURE4 0x84C4
 #define GL_RG32F 0x8230
 #define GL_RG 0x8227
 #define GL_CLAMP_TO_EDGE 0x812F
@@ -315,6 +316,15 @@ struct World {
                                               day / 365 + 1, (total + 364) / 365);
                                      buildProgress(b);
                                  });
+        buildProgress("Watering rivers from the rain...");
+        {
+            std::vector<float> annual(atmosphere::W * atmosphere::H, 0.0f);
+            for (int i = 0; i < atmosphere::W * atmosphere::H; i++)
+                for (int se = 0; se < atmosphere::SEASONS; se++)
+                    annual[i] += clim.rainMmDay[se * atmosphere::W * atmosphere::H + i] /
+                                 atmosphere::SEASONS;
+            hydrology::reweight(hydro, annual, atmosphere::W, atmosphere::H, 12000.0f);
+        }
         buildProgress("Placing settlements...");
         pop = population::build(cp, seaLevel, rot, off, plateField, hydro);
         technology::init(pop, tech, seed, simTime);
@@ -496,6 +506,7 @@ struct App {
     GLuint plateTex = 0;
     GLuint popTex = 0;
     GLuint climTex = 0;
+    GLuint clim2Tex = 0;
     bool running = true;
     std::string shotPath; // when set, save the next rendered frame here (testing)
     int debugMode = 0; // 0 normal, 1 plates, 2 substrate, 3 vegetation
@@ -572,6 +583,28 @@ static void uploadClimatology() {
         d[i * 4 + 2] = c.windU[i];
         d[i * 4 + 3] = c.windV[i];
     }
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, W, H * S, 0, GL_RGBA, GL_FLOAT, d.data());
+    // Second climatology texture: seasonal mean temperature, snowfall, and the
+    // model's smoothed elevation (so the shader can lapse-correct to local
+    // terrain height for snow cover).
+    glActiveTexture(GL_TEXTURE4);
+    if (!app.clim2Tex) {
+        glGenTextures(1, &app.clim2Tex);
+        glBindTexture(GL_TEXTURE_2D, app.clim2Tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindTexture(GL_TEXTURE_2D, app.clim2Tex);
+    for (int se = 0; se < S; se++)
+        for (int i = 0; i < W * H; i++) {
+            int si = se * W * H + i;
+            d[si * 4 + 0] = c.meanT[si];
+            d[si * 4 + 1] = c.snowMmDay[si];
+            d[si * 4 + 2] = c.elev.empty() ? 0.0f : c.elev[i];
+            d[si * 4 + 3] = 0.0f;
+        }
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, W, H * S, 0, GL_RGBA, GL_FLOAT, d.data());
     glActiveTexture(GL_TEXTURE0);
 }
@@ -961,7 +994,11 @@ static std::string describePoint(Vec3 n) {
         int i0 = s0 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
         int i1 = s1 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
         double rain = wd.clim.rainMmDay[i0] * (1 - f) + wd.clim.rainMmDay[i1] * f;
-        snprintf(climTxt, sizeof climTxt, "  |  rain %.1f mm/d", rain);
+        double snow = wd.clim.snowMmDay[i0] * (1 - f) + wd.clim.snowMmDay[i1] * f;
+        if (snow > 0.5 * rain && rain > 0.05)
+            snprintf(climTxt, sizeof climTxt, "  |  snow %.1f mm/d", rain);
+        else
+            snprintf(climTxt, sizeof climTxt, "  |  rain %.1f mm/d", rain);
     }
 
     if (h < 0) {
@@ -1351,6 +1388,7 @@ int main(int argc, char** argv) {
     glUniform1i(glGetUniformLocation(app.program, "uPlates"), 1);
     glUniform1i(glGetUniformLocation(app.program, "uPop"), 2);
     glUniform1i(glGetUniformLocation(app.program, "uClim"), 3);
+    glUniform1i(glGetUniformLocation(app.program, "uClim2"), 4);
     GLint uDoy = glGetUniformLocation(app.program, "uDoy");
     GLint uClock = glGetUniformLocation(app.program, "uClock");
 

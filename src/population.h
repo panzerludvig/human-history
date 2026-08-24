@@ -177,10 +177,9 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         // a physical daily supply and is not scaled (it rarely binds before
         // farming and irrigation).
         kFoodP = coverYield(m) * FORAGE_KM2 / SUSTAIN_R;
-        // Water within reach: discharge from the drainage area through this
-        // cell, with runoff set by the moisture field.
-        float runoffMmYr = 20.0f + 580.0f * moist * moist;
-        float litresPerDay = hy.accKm2[i] * runoffMmYr * 1.0e6f / 365.0f;
+        // Water within reach: accKm2 is runoff-equivalent drainage area at the
+        // reference runoff (hydrology::reweight), fed by the climate's rain.
+        float litresPerDay = hy.accKm2[i] * hydrology::REF_RUNOFF_MM_YR * 1.0e6f / 365.0f;
         kWater = litresPerDay * USABLE_WATER / WATER_L_PER_PERSON;
         sFarm = farmSuitability(m, temp);
     };

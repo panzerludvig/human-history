@@ -50,6 +50,12 @@ constexpr double RAIN_FRAC = 0.65;              // rain begins above this fracti
 constexpr double RAIN_RATE = 0.15;              // fraction of the excess per hour
 constexpr double DIV_CAP_SCALE = 0.05;          // m/s of uplift for a ~46% capacity swing
 constexpr double K_DIFF = 2.0e5;                // m^2/s eddy diffusion of moisture
+// Frontal-storm rain: mid-latitude rain on Earth is mostly baroclinic storms
+// riding the temperature gradient, which steady diagnostic winds cannot
+// produce. Parameterized as rain ~ |grad T| * moisture: strong on the winter
+// storm tracks, negligible in the flat-gradient tropics.
+constexpr double K_STORM = 900.0;               // per hour, per (K/m) of gradient
+constexpr double SNOW_T = 0.5;                  // degC: colder precipitation is snow
 // Heat is transported by diffusion alone: the surface wind is the convergent
 // branch of an overturning cell, and advecting T with it refrigerates heat
 // lows (the upper return flow that closes the loop is not modelled). A large
@@ -59,9 +65,10 @@ constexpr double KT_DIFF = 2.5e6;               // m^2/s eddy diffusion of heat
 
 struct Climatology {
     // [season][cell]
-    std::vector<float> meanT, rainMmDay, rainProb, windU, windV, cloud, diurnal;
+    std::vector<float> meanT, rainMmDay, snowMmDay, rainProb, windU, windV, cloud, diurnal;
+    std::vector<float> elev; // [cell], the model's smoothed elevation (for lapse correction)
     Climatology() {
-        for (auto* v : {&meanT, &rainMmDay, &rainProb, &windU, &windV, &cloud, &diurnal})
+        for (auto* v : {&meanT, &rainMmDay, &snowMmDay, &rainProb, &windU, &windV, &cloud, &diurnal})
             v->assign(SEASONS * W * H, 0.0f);
     }
     static int seasonOfDay(int doy) { // DJF=0 starting Dec 1 (day 334)
@@ -234,8 +241,10 @@ struct Model {
                 double cap = capOf(T[i]) * capMul;
                 double evap = (water[i] ? EVAP_WATER : EVAP_LAND) *
                               std::max(1.0 - Wv[i] / std::max(cap, 1.0), 0.0) *
-                              std::clamp(0.5 + T[i] / 40.0, 0.0, 1.5);
+                              std::clamp(0.3 + T[i] / 25.0, 0.0, 1.5); // cold seas barely evaporate
                 double rain = std::max(Wv[i] - RAIN_FRAC * cap, 0.0) * RAIN_RATE;
+                double gtx = (T[xe] - T[xw]) / (2 * dx), gty = (T[yn] - T[ys]) / (2 * dy);
+                rain += K_STORM * std::sqrt(gtx * gtx + gty * gty) * Wv[i];
                 auto face = [&](double ur, double Wl, double Wr, double dd) {
                     double uc = std::clamp(ur, -0.8 * dd / DT, 0.8 * dd / DT);
                     return (uc > 0 ? Wl : Wr) * uc / dd;
@@ -270,6 +279,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
     Model m;
     m.init(cp, seaLevel, rot, offset, pf, hy);
     Climatology c;
+    c.elev.assign(m.elev.begin(), m.elev.end());
     std::vector<double> dayMin(W * H), dayMax(W * H);
     std::vector<double> cnt(SEASONS, 0.0);
     int totalDays = SPINUP_DAYS + STAT_YEARS * 365;
@@ -288,6 +298,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                 int si = season * W * H + i;
                 c.meanT[si] += (float)m.T[i];
                 c.rainMmDay[si] += (float)(m.rainStep[i] * 24.0);      // kg/m2/h -> mm/day
+                if (m.T[i] < SNOW_T) c.snowMmDay[si] += (float)(m.rainStep[i] * 24.0);
                 c.rainProb[si] += m.rainStep[i] > 0.05 ? 1.0f : 0.0f;
                 c.windU[si] += (float)m.u[i];
                 c.windV[si] += (float)m.v[i];
@@ -321,6 +332,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             int si = s * W * H + i;
             c.meanT[si] /= (float)hours;
             c.rainMmDay[si] /= (float)hours;
+            c.snowMmDay[si] /= (float)hours;
             c.rainProb[si] /= (float)hours;
             c.windU[si] /= (float)hours;
             c.windV[si] /= (float)hours;

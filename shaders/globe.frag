@@ -27,6 +27,7 @@ uniform sampler2D uPlates; // uplift, crust, km to nearest plate boundary
 uniform sampler2D uPop;    // carrying capacity K, settlement population, band population
 uniform vec3 uSun;         // world-space sun direction (day-night and seasons)
 uniform sampler2D uClim;   // climatology, 4 season bands: cloud, rain, wind u, wind v
+uniform sampler2D uClim2;  // climatology 2: mean T, snowfall, coarse elevation
 uniform float uDoy;        // day of year, 0..365
 uniform float uClock;      // sim days (mod 4096) for cloud drift
 uniform int uDebugMode;    // 0 normal, 1 plates, 2 substrate, 3 vegetation
@@ -302,7 +303,7 @@ float bandNear(vec3 n) {
 }
 
 // Season-interpolated climatology sample at a surface point.
-vec4 climAt(vec3 n) {
+vec4 climSample(sampler2D tex, vec3 n) {
     float lat = asin(clamp(n.z, -1.0, 1.0));
     float lon = atan(n.y, n.x);
     float cx = (lon + 3.14159265) / 6.2831853;
@@ -310,9 +311,19 @@ vec4 climAt(vec3 n) {
     float sf = uDoy / 365.0 * 4.0 - 0.5;
     float s0 = mod(floor(sf), 4.0), f = fract(sf);
     float s1 = mod(s0 + 1.0, 4.0);
-    vec4 a = texture(uClim, vec2(cx, (s0 + cy) * 0.25));
-    vec4 b = texture(uClim, vec2(cx, (s1 + cy) * 0.25));
+    vec4 a = texture(tex, vec2(cx, (s0 + cy) * 0.25));
+    vec4 b = texture(tex, vec2(cx, (s1 + cy) * 0.25));
     return mix(a, b, f);
+}
+vec4 climAt(vec3 n) { return climSample(uClim, n); }
+
+// Seasonal snow cover 0..1 on land: the season's coarse temperature, lapse-
+// corrected to the local height, must be freezing, and some precipitation
+// must fall to supply the snow.
+float snowCoverAt(vec3 n, float h) {
+    vec4 c2 = climSample(uClim2, n);
+    float tLoc = c2.r - 6.5 * (max(h, 0.0) - c2.b) / 1000.0;
+    return smoothstep(1.0, -3.0, tLoc) * smoothstep(0.01, 0.15, c2.g + climAt(n).g * 0.05);
 }
 
 // Cloud cover at n: climatological cloudiness gates a drifting noise field.
@@ -633,7 +644,10 @@ void main() {
     else if (isRiver) albedo = vec3(0.10, 0.30, 0.48);
     else if (isPond) albedo = vec3(0.14, 0.36, 0.50);
     else if (isWater) albedo = waterColor(waterLevel - h, lat, w);
-    else albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere);
+    else {
+        albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere);
+        albedo = mix(albedo, vec3(0.91, 0.93, 0.96), snowCoverAt(n, h)); // winter snow
+    }
 
     // The sun lives in world space: it circles the globe once per sim day
     // and its declination swings +-23.5 deg over the year, so half the globe

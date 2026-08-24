@@ -32,6 +32,9 @@ struct Cell {
 };
 
 struct Result {
+    // Flow topology, kept so the accumulation can be re-run with runoff
+    // weights once the climate knows the rainfall (see reweight).
+    std::vector<int> parent, order;
     std::vector<Cell> cells;    // W*H, row-major, row 0 = south
     std::vector<float> heightM; // terrain height per cell (m)
     std::vector<float> accKm2;  // drainage area per cell (km^2)
@@ -178,6 +181,8 @@ inline Result build(const terrain::ContinentParams& cp, float seaLevel, const fl
     r.cells.resize(N);
     r.heightM = h;
     r.accKm2 = acc;
+    r.parent = parent;
+    r.order = order;
     for (int i = 0; i < N; i++) {
         Cell& cell = r.cells[i];
         bool ocean = h[i] <= 0;
@@ -211,6 +216,60 @@ inline Result build(const terrain::ContinentParams& cp, float seaLevel, const fl
             }
     }
     return r;
+}
+
+// Re-run the flow accumulation weighted by annual rainfall (mm/day, on a
+// coarse aw x ah grid), so rivers carry what the sky delivers: accKm2 becomes
+// runoff-equivalent area at a 300 mm/yr reference. Wet-region rivers grow,
+// desert rivers sink below the drawing threshold. Lakes are left as terrain
+// (a dry basin keeps its lake as a salt-lake stand-in for now).
+constexpr float REF_RUNOFF_MM_YR = 300.0f;
+
+inline void reweight(Result& r, const std::vector<float>& rainMmDay, int aw, int ah,
+                     float riverThresholdKm2) {
+    const int N = W * H;
+    std::vector<float> acc(N);
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            int i = y * W + x;
+            // bilinear sample of the coarse rain map
+            float u = ((x + 0.5f) / W) * aw - 0.5f, v = ((y + 0.5f) / H) * ah - 0.5f;
+            int x0 = (int)std::floor(u), y0 = (int)std::floor(v);
+            float fx = u - x0, fy = v - y0;
+            auto at = [&](int xx, int yy) {
+                xx = (xx % aw + aw) % aw;
+                yy = std::clamp(yy, 0, ah - 1);
+                return rainMmDay[yy * aw + xx];
+            };
+            float rain = (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) +
+                         (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy;
+            float runoff = std::max(rain * 365.0f * 0.55f - 120.0f, 2.0f); // mm/yr
+            acc[i] = cellAreaKm2(y) * runoff / REF_RUNOFF_MM_YR;
+        }
+    for (int k = N - 1; k >= 0; k--) {
+        int c = r.order[k];
+        if (r.parent[c] >= 0) acc[r.parent[c]] += acc[c];
+    }
+    r.accKm2 = acc;
+    r.riverCells = 0;
+    for (int i = 0; i < N; i++) {
+        Cell& cell = r.cells[i];
+        bool ocean = r.heightM[i] <= 0;
+        bool lake = cell.lakeLevel > NO_LAKE + 1;
+        cell.flow = (!ocean && !lake && acc[i] >= riverThresholdKm2) ? acc[i] : 0.0f;
+        cell.nearRiver = 0;
+        if (cell.flow > 0) r.riverCells++;
+    }
+    for (int i = 0; i < N; i++) {
+        if (r.cells[i].flow <= 0) continue;
+        int cx = i % W, cy = i / W;
+        for (int dy = -2; dy <= 2; dy++)
+            for (int dx = -2; dx <= 2; dx++) {
+                int ny = cy + dy;
+                if (ny < 0 || ny >= H) continue;
+                r.cells[ny * W + wrapX(cx + dx)].nearRiver = 1;
+            }
+    }
 }
 
 } // namespace hydrology
