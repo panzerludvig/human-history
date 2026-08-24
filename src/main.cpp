@@ -84,6 +84,8 @@ static PFNGLUNIFORM1FPROC glUniform1f;
 static PFNGLUNIFORM2FPROC glUniform2f;
 static PFNGLUNIFORM3FPROC glUniform3f;
 static PFNGLUNIFORM4FPROC glUniform4f;
+typedef void(APIENTRY* PFNGLUNIFORM4FVPROC)(GLint, GLsizei, const GLfloat*);
+static PFNGLUNIFORM4FVPROC glUniform4fv;
 static PFNGLUNIFORM1IPROC glUniform1i;
 static PFNGLUNIFORMMATRIX3FVPROC glUniformMatrix3fv;
 static PFNGLACTIVETEXTUREPROC glActiveTexture;
@@ -116,6 +118,7 @@ static bool loadGL() {
     ok &= load(glUniform2f, "glUniform2f");
     ok &= load(glUniform3f, "glUniform3f");
     ok &= load(glUniform4f, "glUniform4f");
+    ok &= load(glUniform4fv, "glUniform4fv");
     ok &= load(glUniform1i, "glUniform1i");
     ok &= load(glUniformMatrix3fv, "glUniformMatrix3fv");
     ok &= load(glActiveTexture, "glActiveTexture");
@@ -1353,6 +1356,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_KEYDOWN:
         if (app.genState != 0) return 0;
+        if (wp == VK_F2) { app.shotPath = "dbg_shot.bmp"; return 0; } // back-buffer screenshot
         if (app.screen == Screen::InGame) {
             int mode = wp == 'P' ? 1 : wp == 'B' ? 2 : wp == 'V' ? 3 : wp == 'K' ? 4 : 0;
             if (mode) app.debugMode = app.debugMode == mode ? 0 : mode;
@@ -1441,6 +1445,8 @@ int main(int argc, char** argv) {
     glUniform1i(glGetUniformLocation(app.program, "uClim2"), 4);
     GLint uDoy = glGetUniformLocation(app.program, "uDoy");
     GLint uClock = glGetUniformLocation(app.program, "uClock");
+    GLint uAware = glGetUniformLocation(app.program, "uAware");
+    GLint uAwareCount = glGetUniformLocation(app.program, "uAwareCount");
 
     createControls();
     app.cam.clampAltitude();
@@ -1502,6 +1508,31 @@ int main(int argc, char** argv) {
             glUniform3f(uCamPos, (float)p.x, (float)p.y, (float)p.z);
             glUniform1f(uDoy, (float)fmod(app.world.simTime, 365.0));
             glUniform1f(uClock, (float)fmod(app.world.simTime, 4096.0));
+            {
+                // Awareness zones for entities with open detail panels.
+                float aw[8 * 4] = {};
+                int nAw = 0;
+                for (const Panel& pn : app.panels) {
+                    if (nAw >= 8) break;
+                    terrain::V3 e{};
+                    bool ok = false;
+                    if (pn.kind == 0) {
+                        e = sim::cellCentre(app.world.pop.settlements[pn.index].cell);
+                        ok = true;
+                    } else {
+                        for (const population::Band& bd : app.world.pop.bands)
+                            if (bd.id == pn.bandId) { e = {bd.px, bd.py, bd.pz}; ok = true; break; }
+                    }
+                    if (!ok) continue;
+                    aw[nAw * 4 + 0] = e.x;
+                    aw[nAw * 4 + 1] = e.y;
+                    aw[nAw * 4 + 2] = e.z;
+                    aw[nAw * 4 + 3] = 1.0f;
+                    nAw++;
+                }
+                glUniform4fv(uAware, 8, aw);
+                glUniform1i(uAwareCount, nAw);
+            }
             {
                 // Subsolar point from the sim clock: one lap per day westward
                 // (solar noon at longitude 0 at 12:00), declination +-23.5 deg

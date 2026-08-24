@@ -30,6 +30,8 @@ uniform sampler2D uClim;   // climatology, 4 season bands: cloud, rain, wind u, 
 uniform sampler2D uClim2;  // climatology 2: mean T, snowfall, coarse elevation
 uniform float uDoy;        // day of year, 0..365
 uniform float uClock;      // sim days (mod 4096) for cloud drift
+uniform vec4 uAware[8];    // selected entities: xyz unit position, w = 1 active
+uniform int uAwareCount;
 uniform int uDebugMode;    // 0 normal, 1 plates, 2 substrate, 3 vegetation
 const float CRUST_WEIGHT = 0.2;
 uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 < 0 hides it
@@ -683,5 +685,14 @@ void main() {
     col += vec3(0.3, 0.5, 0.9) * limb * 0.35 * smoothstep(0.0, 0.6, length(uCamPos) - 1.0);
 
     col = pow(col, vec3(1.0 / 1.6)) * uDim;
+    // Awareness zones of selected entities: the 400 km knowledge range,
+    // alpha fading with distance like the accuracy does, faint even at centre.
+    float aw = 0.0;
+    for (int i = 0; i < uAwareCount; i++) {
+        float d = acos(clamp(dot(n, uAware[i].xyz), -1.0, 1.0)) * 6371.0;
+        aw = max(aw, uAware[i].w * clamp(1.0 - d / 400.0, 0.0, 1.0));
+    }
+    col = mix(col, vec3(1.0, 0.95, 0.65), aw * 0.18);
+
     fragColor = vec4(scaleBarOverlay(col), 1.0);
 }

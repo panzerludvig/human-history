@@ -22,7 +22,7 @@ There is no mesh. The fragment shader draws a full-screen triangle, casts a ray 
 
 The sun is a world-space direction computed from the sim clock: it laps the globe once per day westward (solar noon at longitude 0 at 12:00) and its declination swings +-23.5 degrees over the 365-day year, peaking at the June 21 solstice — so half the globe is always in night, the terminator is a soft band, the night side renders in dim blue, and the poles get midnight sun and polar night. Purely visual for now: nothing in the simulation reads the sun. With the clock paused the sun stands still; step time to move it.
 
-For testing, a tenth argv parameter names a BMP file: the next rendered frame is saved from the back buffer with glReadPixels, which stays correct even when the window is occluded or the desktop is not compositing (PrintWindow can return white then).
+For testing, F2 saves a back-buffer screenshot to dbg_shot.bmp beside the exe, and a tenth argv parameter names a BMP file: the next rendered frame is saved from the back buffer with glReadPixels, which stays correct even when the window is occluded or the desktop is not compositing (PrintWindow can return white then).
 
 ## Atmosphere and climatology
 
@@ -85,7 +85,7 @@ In game, a label follows the cursor with what is under it: elevation, mean tempe
 
 ## Selection panels
 
-Clicking a settlement or band marker opens a detail panel (a dark child window with an X close button); clicking another marker opens another panel rather than replacing the first, cascading down-right, and clicking an already-open target raises its panel. Settlement panels show position, people and capacity, stores in days, land condition, farming status with expertise, and farm suitability; band panels show people, stores, moving/resting, distance to target, and carried technology. Panels refresh after every time step; a panel whose band has settled, merged, or perished says so. The pick radius is the marker's draw radius plus ~3 px of slop (clicks are aim-limited), and bands are picked at their cell centre — where the shader actually draws them, up to half a cell from their true position. A click is a press-release with under ~4 px of travel; more is a drag. Panels close on leaving the game screen.
+Clicking a settlement or band marker opens a detail panel (a dark child window with an X close button); clicking another marker opens another panel rather than replacing the first, cascading down-right, and clicking an already-open target raises its panel. Settlement panels show position, people and capacity, stores in days, land condition, farming status with expertise, and farm suitability; band panels show people, stores, moving/resting, distance to target, and carried technology. Panels refresh after every time step; a panel whose band has settled, merged, or perished says so. The pick radius is the marker's draw radius plus ~3 px of slop (clicks are aim-limited), and bands are picked at their cell centre — where the shader actually draws them, up to half a cell from their true position. A click is a press-release with under ~4 px of travel; more is a drag. Panels close on leaving the game screen. Every entity with an open panel shows its **awareness zone**: a radial overlay over the 400 km knowledge range, alpha fading with distance exactly as the knowledge accuracy does, capped low (~0.18) so it stays transparent (up to 8 zones, uniform array uAware).
 
 ## Camera
 
