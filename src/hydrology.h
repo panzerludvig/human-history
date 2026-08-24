@@ -225,10 +225,15 @@ inline Result build(const terrain::ContinentParams& cp, float seaLevel, const fl
 // (a dry basin keeps its lake as a salt-lake stand-in for now).
 constexpr float REF_RUNOFF_MM_YR = 300.0f;
 
-inline void reweight(Result& r, const std::vector<float>& rainMmDay, int aw, int ah,
+// Potential evapotranspiration proxy, mm/day from mean temperature.
+inline float petMmDay(float tC) { return std::max(0.4f, 0.11f * (tC + 8.0f)); }
+
+inline void reweight(Result& r, const std::vector<float>& rainMmDay,
+                     const std::vector<float>& meanTC, int aw, int ah,
                      float riverThresholdKm2) {
     const int N = W * H;
     std::vector<float> acc(N);
+    std::vector<float> balance(N); // rain - PET, mm/day, sampled per cell
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
             int i = y * W + x;
@@ -241,8 +246,16 @@ inline void reweight(Result& r, const std::vector<float>& rainMmDay, int aw, int
                 yy = std::clamp(yy, 0, ah - 1);
                 return rainMmDay[yy * aw + xx];
             };
+            auto atT = [&](int xx, int yy) {
+                xx = (xx % aw + aw) % aw;
+                yy = std::clamp(yy, 0, ah - 1);
+                return meanTC[yy * aw + xx];
+            };
             float rain = (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) +
                          (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy;
+            float tC = (atT(x0, y0) * (1 - fx) + atT(x0 + 1, y0) * fx) * (1 - fy) +
+                       (atT(x0, y0 + 1) * (1 - fx) + atT(x0 + 1, y0 + 1) * fx) * fy;
+            balance[i] = rain - petMmDay(tC);
             float runoff = std::max(rain * 365.0f * 0.55f - 120.0f, 2.0f); // mm/yr
             acc[i] = cellAreaKm2(y) * runoff / REF_RUNOFF_MM_YR;
         }
@@ -251,6 +264,42 @@ inline void reweight(Result& r, const std::vector<float>& rainMmDay, int aw, int
         if (r.parent[c] >= 0) acc[r.parent[c]] += acc[c];
     }
     r.accKm2 = acc;
+
+    // Cull lakes the climate cannot sustain: a lake component survives on a
+    // positive local water balance (rain-fed pond country, Finland-style) or
+    // on a large river inflow (a terminal lake of an exotic river). Dry
+    // basins otherwise drain into memory.
+    {
+        std::vector<char> visited(N, 0);
+        std::vector<int> comp;
+        for (int i0 = 0; i0 < N; i0++) {
+            if (visited[i0] || r.cells[i0].lakeLevel <= NO_LAKE + 1) continue;
+            comp.clear();
+            comp.push_back(i0);
+            visited[i0] = 1;
+            double balSum = 0, accMax = 0;
+            for (size_t k = 0; k < comp.size(); k++) {
+                int c = comp[k];
+                balSum += balance[c];
+                accMax = std::max(accMax, (double)acc[c]);
+                int cx = c % W, cy = c / W;
+                for (int d = 0; d < 8; d++) {
+                    int ny = cy + DY[d];
+                    if (ny < 0 || ny >= H) continue;
+                    int n = ny * W + wrapX(cx + DX[d]);
+                    if (!visited[n] && r.cells[n].lakeLevel > NO_LAKE + 1) {
+                        visited[n] = 1;
+                        comp.push_back(n);
+                    }
+                }
+            }
+            bool keep = balSum / comp.size() > 0.1 || accMax >= 30000.0;
+            if (!keep) {
+                for (int c : comp) r.cells[c].lakeLevel = NO_LAKE;
+                r.lakeCells -= (int)comp.size();
+            }
+        }
+    }
     r.riverCells = 0;
     for (int i = 0; i < N; i++) {
         Cell& cell = r.cells[i];

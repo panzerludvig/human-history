@@ -319,11 +319,15 @@ struct World {
         buildProgress("Watering rivers from the rain...");
         {
             std::vector<float> annual(atmosphere::W * atmosphere::H, 0.0f);
+            std::vector<float> annualT(atmosphere::W * atmosphere::H, 0.0f);
             for (int i = 0; i < atmosphere::W * atmosphere::H; i++)
-                for (int se = 0; se < atmosphere::SEASONS; se++)
+                for (int se = 0; se < atmosphere::SEASONS; se++) {
                     annual[i] += clim.rainMmDay[se * atmosphere::W * atmosphere::H + i] /
                                  atmosphere::SEASONS;
-            hydrology::reweight(hydro, annual, atmosphere::W, atmosphere::H, 12000.0f);
+                    annualT[i] += clim.meanT[se * atmosphere::W * atmosphere::H + i] /
+                                  atmosphere::SEASONS;
+                }
+            hydrology::reweight(hydro, annual, annualT, atmosphere::W, atmosphere::H, 12000.0f);
         }
         buildProgress("Placing settlements...");
         pop = population::build(cp, seaLevel, rot, off, plateField, hydro);
@@ -597,13 +601,24 @@ static void uploadClimatology() {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
     glBindTexture(GL_TEXTURE_2D, app.clim2Tex);
+    // Alpha carries the annual water balance (rain - PET, mm/day): the
+    // shader's pond density follows it.
+    std::vector<float> balance(W * H, 0.0f);
+    for (int i = 0; i < W * H; i++) {
+        float rain = 0, tC = 0;
+        for (int se = 0; se < S; se++) {
+            rain += c.rainMmDay[se * W * H + i] / S;
+            tC += c.meanT[se * W * H + i] / S;
+        }
+        balance[i] = rain - hydrology::petMmDay(tC);
+    }
     for (int se = 0; se < S; se++)
         for (int i = 0; i < W * H; i++) {
             int si = se * W * H + i;
             d[si * 4 + 0] = c.meanT[si];
             d[si * 4 + 1] = c.snowMmDay[si];
             d[si * 4 + 2] = c.elev.empty() ? 0.0f : c.elev[i];
-            d[si * 4 + 3] = 0.0f;
+            d[si * 4 + 3] = balance[i];
         }
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, W, H * S, 0, GL_RGBA, GL_FLOAT, d.data());
     glActiveTexture(GL_TEXTURE0);

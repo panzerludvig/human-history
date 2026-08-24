@@ -582,13 +582,15 @@ void main() {
         if (!isWater && h > 0.0 && hydroFetch(hydroCell(n)).a > 0.5 && riverAt(n, w) > 0.0) { isWater = true; isRiver = true; waterLevel = h; }
     }
     // Ponds: tiny lakes below the grid's resolution, where a fine noise
-    // peaks on flat, moist, low ground. Painted by the function, not routed.
+    // peaks on flat, low ground -- and only where the climate's water balance
+    // (rain minus evaporation, clim2 alpha) supports standing water. Cold
+    // rain-fed plains fill with ponds; deserts hold none.
     bool isPond = false;
     if (!isWater && h > 0.0 && h < 1500.0) {
         float pondField = fbm(w * 700.0 + 91.0, 3, 0.5);
         float flatness = 1.0 - smoothstep(0.0, 0.015, slopePhys);
-        float moist = fbm(w * 3.0 + 77.0, 4, 0.5) * 0.5 + 0.5;
-        if (pondField > 0.26 + 0.22 * (1.0 - moist) && flatness > 0.3) { isWater = true; isPond = true; waterLevel = h + 3.0; }
+        float wetness = smoothstep(-0.4, 0.8, climSample(uClim2, n).a);
+        if (pondField > 0.28 + 0.30 * (1.0 - wetness) && flatness > 0.3) { isWater = true; isPond = true; waterLevel = h + 3.0; }
     }
 
     // Relief from screen-space derivatives: one height evaluation per pixel.
