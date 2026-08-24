@@ -693,7 +693,8 @@ void main() {
         float d = acos(clamp(dot(n, uAware[i].xyz), -1.0, 1.0)) * 6371.0;
         aw = max(aw, uAware[i].w * clamp(1.0 - d / uAwareKm, 0.0, 1.0));
     }
-    col = mix(col, vec3(1.0, 0.95, 0.65), aw * 0.18);
+    // Violet: a hue the terrain palette never uses, so the zone reads at low alpha.
+    col = mix(col, vec3(0.55, 0.20, 1.0), aw * 0.32);
 
     fragColor = vec4(scaleBarOverlay(col), 1.0);
 }
