@@ -47,8 +47,10 @@ inline float expertise(const population::Settlement& s, double now) {
 // Effective pristine capacity: farming multiplies the food side of the min,
 // so water starts to bind where farming succeeds.
 inline float effectiveK(const population::Settlement& s, double now) {
+    // Annual basis: foraging scaled by the seasonal mean (winters yield
+    // little), farming's harvest-shaped total unscaled.
     float mult = 1.0f + FARM_YIELD_GAIN * s.sFarm * expertise(s, now);
-    return std::min(s.kFoodP * mult, s.kWater);
+    return std::min(s.kFoodP * (s.meanF + mult - 1.0f), s.kWater);
 }
 
 // Redraw a settlement's next contact event from its current transition:

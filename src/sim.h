@@ -31,11 +31,7 @@ inline float prominenceM(const hydrology::Result& hy, const atmosphere::Climatol
 // Season-interpolated local temperature: coarse climate mean, lapse-corrected
 // from the model's smoothed elevation to the local height.
 inline float seasonalT(const atmosphere::Climatology& c, terrain::V3 n, float hLocal, double now) {
-    using namespace atmosphere;
-    if (c.meanT.empty()) return 10.0f;
-    terrain::V3 nf = climFuzz(n);
-    float t = seasonalAt(c.meanT, nf, now);
-    return t - 6.5f * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), nf)) / 1000.0f;
+    return atmosphere::seasonalTempC(c, n, hLocal, now);
 }
 
 inline terrain::V3 cellCentre(int cell) {
@@ -123,15 +119,31 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
     return best;
 }
 
+inline population::SeasonCtx seasonCtx(const population::Settlement& s,
+                                       const hydrology::Result& hy,
+                                       const atmosphere::Climatology& clim, double now) {
+    population::SeasonCtx ctx;
+    ctx.clim = &clim;
+    ctx.n = cellCentre(s.cell);
+    ctx.h = std::max(hy.heightM[s.cell], 0.0f);
+    ctx.farmMult = 1.0f + technology::FARM_YIELD_GAIN * s.sFarm * technology::expertise(s, now);
+    return ctx;
+}
+
 // A band forages the cell it stands on: same famine rule as a settlement, but
 // a moving band gathers on a third of the day and carries only a small store.
 // No growth on the march; a migration is months, not generations.
-inline void integrateBand(population::Band& b, float flow, double span, bool resting) {
+inline void integrateBand(population::Band& b, float flowBase, double span, bool resting,
+                          const atmosphere::Climatology& clim, terrain::V3 n, float h,
+                          double startT) {
     using namespace population;
     int steps = std::clamp((int)(span / 2.0) + 1, 1, 60);
     float dt = (float)(span / steps);
     float gather = resting ? GATHER_SETTLED : GATHER_MOVING;
     for (int k = 0; k < steps && dt > 0; k++) {
+        double tk = startT + (k + 0.5) * dt;
+        float flow = flowBase *
+                     atmosphere::forageFactor(atmosphere::seasonalTempC(clim, n, h, tk));
         float H = std::min(flow, gather * b.P);
         float cap = CAP_DAYS_BAND * std::max(b.P, 1.0f);
         float fill = std::clamp(b.S / cap, 0.0f, 1.0f);
@@ -144,6 +156,7 @@ inline void integrateBand(population::Band& b, float flow, double span, bool res
 
 // A band that arrives (or gives up) becomes a settlement on unclaimed ground.
 inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
+                            const hydrology::Result& hy, const atmosphere::Climatology& clim,
                             const population::Band& b, int cell, double now) {
     using namespace population;
     Settlement s{cell, b.P, 1.0f, now, now};
@@ -155,6 +168,8 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     s.aware = b.aware;
     s.practising = b.practising;
     s.practiceT = b.practiceT;
+    atmosphere::seasonMeans(clim, cellCentre(cell), std::max(hy.heightM[cell], 0.0f), s.meanF,
+                            s.meanG2);
     int idx = (int)pf.settlements.size();
     pf.settlementAt[cell] = idx;
     pf.settlements.push_back(s);
@@ -216,8 +231,10 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
     double span = now - b.t;
     b.t = now;
     int hereCell = cellOf(pos);
-    float flow = pf.K[hereCell] * SUSTAIN_R; // 0 on water: crossings cost stores
-    integrateBand(b, flow, span, b.resting);
+    double startT = b.t - span; // b.t was already moved to now
+    float flowBase = pf.K[hereCell] * SUSTAIN_R; // 0 on water: crossings cost stores
+    integrateBand(b, flowBase, span, b.resting, clim, pos,
+                  std::max(hy.heightM[hereCell], 0.0f), startT);
     if (b.P < BAND_MIN_P) {
         if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
         pf.bands.erase(pf.bands.begin() + bi);
@@ -253,7 +270,7 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
         // Arrived: the rumour meets reality.
         if (pf.settlementAt[cell] < 0 && pf.K[cell] >= MIN_SETTLEMENT_K && spacingOK(pf, pos) &&
             (int)pf.settlements.size() < MAX_TOTAL_SETTLEMENTS) {
-            foundSettlement(pf, ws, b, cell, now);
+            foundSettlement(pf, ws, hy, clim, b, cell, now);
             done = true;
         } else {
             double rest = b.resting ? now - b.restStart : 0.0;
@@ -269,7 +286,7 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
                pf.K[cell] >= 0.9f * pf.K[b.targetCell] && spacingOK(pf, pos) &&
                (int)pf.settlements.size() < MAX_TOTAL_SETTLEMENTS) {
         // Good enough ground under their feet beats a distant rumour.
-        foundSettlement(pf, ws, b, cell, now);
+        foundSettlement(pf, ws, hy, clim, b, cell, now);
         done = true;
     }
     if (done) {
@@ -343,7 +360,8 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
         if (t > now) break;
         if (kind == 1) {
             population::Settlement& s = pf.settlements[idx];
-            changed |= population::advance(s, technology::effectiveK(s, t), t);
+            changed |= population::advance(s, technology::effectiveK(s, t),
+                                           seasonCtx(s, hy, clim, t), t);
             maybeSplit(pf, ws, hy, clim, idx, t);
         } else if (kind == 2) {
             population::Settlement& s = pf.settlements[idx];
@@ -374,6 +392,22 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
             technology::scheduleInvention(pf, ws, t);
         }
     }
+    // Catch-up: bring every settlement and band current to `now`, whatever
+    // the step size -- minute steps show the world in full detail, big steps
+    // aggregate through the event loop above first (Design/Event-Driven).
+    for (int i = 0; i < (int)pf.settlements.size(); i++) {
+        population::Settlement& s = pf.settlements[i];
+        if (s.t < now - 1e-9) {
+            changed |= population::advance(s, technology::effectiveK(s, now),
+                                           seasonCtx(s, hy, clim, now), now);
+            maybeSplit(pf, ws, hy, clim, i, now);
+        }
+    }
+    for (int i = (int)pf.bands.size() - 1; i >= 0; i--)
+        if (pf.bands[i].t < now - 1e-9) {
+            stepBand(pf, ws, hy, clim, i, now);
+            changed = true;
+        }
     return changed;
 }
 

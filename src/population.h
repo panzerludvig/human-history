@@ -89,6 +89,8 @@ struct Settlement {
     double founded = 0;        // sim day the settlement was founded (awareness age)
     // Fixed local properties (from the terrain at the cell):
     float kFoodP = 0;  // pristine food capacity (already / SUSTAIN_R)
+    float meanF = 1;   // annual mean forage factor (seasonal climate)
+    float meanG2 = 1;  // annual mean squared growing activity (farming shape)
     float kWater = 0;  // water-supply capacity
     float sFarm = 0;   // farming suitability 0..1 (grass-like cover, warm enough)
     // Technology state (see technology.h / Design/Technology.md):
@@ -260,6 +262,8 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         s.kWater = f.kWaterMap[c.cell];
         s.sFarm = f.sFarmMap[c.cell];
         s.S = 0.5f * CAP_DAYS_SETTLED * s.P;
+        if (clim) atmosphere::seasonMeans(*clim, cellN(c.cell),
+                                          std::max(hy.heightM[c.cell], 0.0f), s.meanF, s.meanG2);
         f.settlements.push_back(s);
     }
     computeNeighbours(f);
@@ -275,11 +279,13 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
 // Growth runs when the land's flow covers everyone; decline is famine:
 // deaths need both low stores (hoarding excludes the bottom of the group) and
 // an inadequate harvest flow. Calibrated offline to preserve the ~18%
-// overshoot at year ~33 and settling at the sustained capacity.
-inline void derivatives(float P, float R, float S, float K, float& dP, float& dR, float& dS) {
-    float flow = K * R;                                   // rations/day offered
+// overshoot at year ~33 and settling at the sustained capacity. `flow` is
+// the seasonal food flow already assembled by the caller; `capDays` grows
+// with farming (granaries).
+inline void derivatives(float P, float R, float S, float flow, float K, float capDays, float& dP,
+                        float& dR, float& dS) {
     float H = std::min(flow, GATHER_SETTLED * P);         // limited by land and time
-    float cap = CAP_DAYS_SETTLED * std::max(P, 1.0f);
+    float cap = capDays * std::max(P, 1.0f);
     float fill = std::clamp(S / cap, 0.0f, 1.0f);
     float excl = std::clamp(1.0f - fill / HOARD_FILL, 0.0f, 1.0f);
     float shortfall = P > 0 ? std::clamp(1.0f - H / P, 0.0f, 1.0f) : 0.0f;
@@ -290,35 +296,63 @@ inline void derivatives(float P, float R, float S, float K, float& dP, float& dR
     dS = H - P;
 }
 
+// The seasonal food flow at time t: foraging follows the forage factor,
+// farming follows squared growing activity normalized to keep its annual
+// total (a prominent harvest season; year-round cropping in the tropics),
+// and water caps the whole.
+struct SeasonCtx {
+    const atmosphere::Climatology* clim = nullptr;
+    terrain::V3 n{};
+    float h = 0;
+    float farmMult = 1; // 1 + gain*s*expertise, from technology
+};
+
+inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double t) {
+    float forage = s.kFoodP, farm = s.kFoodP * (ctx.farmMult - 1.0f);
+    float fF = s.meanF, fG2 = 1.0f;
+    if (ctx.clim) {
+        float tC = atmosphere::seasonalTempC(*ctx.clim, ctx.n, ctx.h, t);
+        fF = atmosphere::forageFactor(tC);
+        float g = atmosphere::growthActivity(tC);
+        fG2 = g * g / std::max(s.meanG2, 0.05f);
+    }
+    return std::min((forage * fF + farm * fG2) * R, s.kWater);
+}
+
 // Integrate a settlement from its valid time to `now` and schedule the next
 // re-evaluation at the moment its state will have drifted about 5%. Famine
 // can move at percent-per-day, so steps stay short and the horizon also
 // watches for the store crossing the hoarding threshold.
-inline bool advance(Settlement& s, float K, double now) {
+inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     if (K <= 0) { s.t = now; s.nextUpdate = now + 3650; return false; }
+    float capDays = CAP_DAYS_SETTLED * (2.0f - 1.0f / std::max(ctx.farmMult, 1.0f)); // granaries
     float P = s.P, R = s.R, S = s.S;
     double span = now - s.t;
-    int steps = std::clamp((int)(span / 5.0) + 1, 1, 500);
+    int steps = std::clamp((int)(span / 5.0) + 1, 1, 800);
     float hstep = (float)(span / steps);
     for (int k = 0; k < steps && hstep > 0; k++) {
+        double tk = s.t + (k + 0.5) * hstep;
         float dP, dR, dS;
-        derivatives(P, R, S, K, dP, dR, dS);
+        derivatives(P, R, S, foodFlow(s, ctx, R, tk), K, capDays, dP, dR, dS);
         P = std::max(P + dP * hstep, 0.0f);
         R = std::clamp(R + dR * hstep, 0.0f, 1.0f);
-        S = std::clamp(S + dS * hstep, 0.0f, CAP_DAYS_SETTLED * std::max(P, 1.0f));
+        S = std::clamp(S + dS * hstep, 0.0f, capDays * std::max(P, 1.0f));
     }
     bool changed = std::fabs(P - s.P) > 0.5f || std::fabs(R - s.R) > 0.002f;
     s.P = P;
     s.R = R;
     s.S = S;
     s.t = now;
+    // Horizon from the ANNUAL-MEAN flow: the seasonal oscillation is
+    // recurring, so a settlement in seasonal equilibrium still sleeps long.
+    float meanFlow = std::min(s.kFoodP * (s.meanF + ctx.farmMult - 1.0f) * s.R, s.kWater);
     float dP, dR, dS;
-    derivatives(s.P, s.R, s.S, K, dP, dR, dS);
+    derivatives(s.P, s.R, s.S, meanFlow, K, capDays, dP, dR, dS);
     double horizon = 1800;
     if (std::fabs(dP) > 1e-9) horizon = std::min(horizon, 0.05 * std::max(s.P, 50.0f) / std::fabs(dP));
     if (std::fabs(dR) > 1e-9) horizon = std::min(horizon, 0.05 * std::max(s.R, 0.1f) / std::fabs(dR));
     if (dS < -1e-9) {
-        double toHoard = (s.S - HOARD_FILL * CAP_DAYS_SETTLED * s.P) / -dS;
+        double toHoard = (s.S - HOARD_FILL * capDays * s.P) / -dS;
         if (toHoard > 0) horizon = std::min(horizon, std::max(toHoard, 15.0));
     }
     s.nextUpdate = now + std::max(horizon, 5.0);

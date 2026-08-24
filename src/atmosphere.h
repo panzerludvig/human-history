@@ -508,6 +508,38 @@ inline float derivedMoisture(const Climatology& c, float latRad, float lonRad, t
     return std::clamp(m + terrain::moistureDetail(w), 0.0f, 1.0f);
 }
 
+// Season-interpolated surface temperature (fuzzed, bilinear, lapse-corrected).
+inline float seasonalTempC(const Climatology& c, terrain::V3 nRaw, float hLocal, double now) {
+    if (c.meanT.empty()) return 10.0f;
+    terrain::V3 nf = climFuzz(nRaw);
+    float t = seasonalAt(c.meanT, nf, now);
+    return t - 6.5f * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), nf)) / 1000.0f;
+}
+
+// Growing activity from temperature: nothing grows at freezing, full growth
+// above ~12 C. Foraging keeps a 12% winter floor (what stays huntable).
+inline float growthActivity(float tC) { return std::clamp(tC / 12.0f, 0.0f, 1.0f); }
+inline float forageFactor(float tC) { return 0.12f + 0.88f * growthActivity(tC); }
+
+// Annual means of the forage factor and squared activity (the farming shape),
+// from the four season bands at a settlement's site.
+inline void seasonMeans(const Climatology& c, terrain::V3 nRaw, float hLocal, float& meanF,
+                        float& meanG2) {
+    meanF = 1.0f;
+    meanG2 = 1.0f;
+    if (c.meanT.empty()) return;
+    terrain::V3 nf = climFuzz(nRaw);
+    float lapse = 6.5f * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), nf)) / 1000.0f;
+    meanF = 0;
+    meanG2 = 0;
+    for (int se = 0; se < SEASONS; se++) {
+        float t = bilinearAt(c.meanT, se, nf) - lapse;
+        float g = growthActivity(t);
+        meanF += forageFactor(t) / SEASONS;
+        meanG2 += g * g / SEASONS;
+    }
+}
+
 // All derived climate values at a point with a single fuzz + sample pass:
 // the per-cell consumers (population yields, tooltip) were paying for the
 // fuzz noise four times over.

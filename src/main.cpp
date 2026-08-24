@@ -428,6 +428,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.S = (float)sv[6];
             st.scarceSince = sv[7];
             st.founded = sv[8];
+            atmosphere::seasonMeans(w.clim, sim::cellCentre(cell),
+                                    std::max(w.hydro.heightM[cell], 0.0f), st.meanF, st.meanG2);
             w.pop.settlementAt[cell] = (int)w.pop.settlements.size();
             w.pop.settlements.push_back(st);
         }
