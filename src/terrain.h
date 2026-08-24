@@ -284,7 +284,7 @@ inline Mixture mixtureAt(float h, float slope, float temp, float moist, float up
     pullTo(s, NSUB, 6, smoothstep(-11.0f, -16.0f, temp + slope * 4.0f));
 
     float* v = m.cov;
-    float tree = smoothstep(0.36f, 0.62f, moist) * smoothstep(-3.0f, 4.0f, temp) * (0.45f + 0.55f * patch);
+    float tree = smoothstep(0.30f, 0.70f, moist) * smoothstep(-3.0f, 4.0f, temp) * (0.45f + 0.55f * patch);
     float wT = smoothstep(9.0f, 3.0f, temp);
     float wR = smoothstep(18.0f, 23.0f, temp) * smoothstep(0.6f, 0.72f, moist);
     float wF = std::max(1.0f - wT - wR, 0.0f);

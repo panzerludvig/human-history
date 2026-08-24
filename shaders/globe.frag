@@ -504,7 +504,7 @@ void coverMix(float h, float slope, float temp, float moist, float uplift, float
     for (int i = 0; i < NCOV; i++) v[i] = 0.0;
 
     // Trees vs open ground, then each split by climate.
-    float tree = smoothstep(0.36, 0.62, moist) * smoothstep(-3.0, 4.0, temp) * (0.45 + 0.55 * patchy);
+    float tree = smoothstep(0.30, 0.70, moist) * smoothstep(-3.0, 4.0, temp) * (0.45 + 0.55 * patchy);
     float wT = smoothstep(9.0, 3.0, temp);
     float wR = smoothstep(18.0, 23.0, temp) * smoothstep(0.6, 0.72, moist);
     float wF = max(1.0 - wT - wR, 0.0);
@@ -662,7 +662,7 @@ void main() {
         return;
     }
     if (uDebugMode == 2 || uDebugMode == 3) {
-        vec3 base = isWater ? vec3(0.05, 0.1, 0.25) : debugClassColor(uDebugMode, h, slopePhys, lat, w, upliftHere, nearRiverHere, 0.85 * smoothstep(0.45, 1.3, climSample(uClim2, n).a), derivedTempC(n, h), derivedMoist(n, w, h));
+        vec3 base = isWater ? vec3(0.05, 0.1, 0.25) : debugClassColor(uDebugMode, h, slopePhys, lat, w, upliftHere, nearRiverHere, 0.55 * smoothstep(0.5, 2.5, climSample(uClim2, n).a), derivedTempC(n, h), derivedMoist(n, w, h));
         fragColor = vec4(scaleBarOverlay(base * uDim), 1.0);
         return;
     }
@@ -697,7 +697,7 @@ void main() {
         albedo = mix(albedo, vec3(0.83, 0.88, 0.93), iceAt(n, h > 0.0 ? h : 0.0));
     }
     else {
-        float swampV = 0.85 * smoothstep(0.45, 1.3, climSample(uClim2, n).a);
+        float swampV = 0.55 * smoothstep(0.5, 2.5, climSample(uClim2, n).a);
         albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere, swampV,
                               derivedTempC(n, h), derivedMoist(n, w, h));
         albedo = mix(albedo, vec3(0.91, 0.93, 0.96), snowCoverAt(n, h)); // winter snow

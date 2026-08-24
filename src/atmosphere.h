@@ -357,6 +357,34 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             c.diurnal[si] /= (float)cnt[s];
         }
     }
+    // A mild Gaussian pass (sigma ~ one cell) over every field: transition
+    // width on the map is ramp width over gradient, so softening gradients
+    // widens the visible bands without erasing the coast/interior structure.
+    // Elevation is blurred identically so the lapse correction stays honest.
+    auto blur = [&](std::vector<float>& v, int bands) {
+        std::vector<float> t(v.size());
+        for (int b = 0; b < bands; b++)
+            for (int y = 0; y < H; y++)
+                for (int x = 0; x < W; x++) {
+                    double sum = 0, wsum = 0;
+                    for (int dy = -1; dy <= 1; dy++) {
+                        int yy = y + dy;
+                        if (yy < 0 || yy >= H) continue;
+                        for (int dx = -1; dx <= 1; dx++) {
+                            double wgt = (dx == 0 ? 2.0 : 1.0) * (dy == 0 ? 2.0 : 1.0);
+                            sum += wgt * v[b * W * H + yy * W + wrapX(x + dx)];
+                            wsum += wgt;
+                        }
+                    }
+                    t[b * W * H + y * W + x] = (float)(sum / wsum);
+                }
+        v = t;
+    };
+    for (auto* v : {&c.meanT, &c.rainMmDay, &c.snowMmDay, &c.rainProb, &c.windU, &c.windV,
+                    &c.cloud, &c.diurnal})
+        blur(*v, SEASONS);
+    blur(c.elev, 1);
+
     return c;
 }
 
@@ -443,9 +471,11 @@ inline float derivedMoisture(const Climatology& c, float latRad, float lonRad, t
 
 // Waterlogging 0..1 from the balance: the marsh pull in terrain::mixtureAt.
 inline float swampinessAt(const Climatology& c, float latRad, float lonRad) {
+    // Wide ramp and a modest cap: saturating to near-total marsh over a
+    // narrow window painted a hard dark ribbon along every wet edge.
     float b = annualBalanceAt(c, latRad, lonRad);
-    float x = std::clamp((b - 0.45f) / (1.3f - 0.45f), 0.0f, 1.0f);
-    return 0.85f * x * x * (3 - 2 * x);
+    float x = std::clamp((b - 0.5f) / (2.5f - 0.5f), 0.0f, 1.0f);
+    return 0.55f * x * x * (3 - 2 * x);
 }
 
 } // namespace atmosphere
