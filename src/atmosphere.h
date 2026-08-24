@@ -26,7 +26,7 @@ constexpr double OMEGA = 7.292e-5;       // rad/s
 
 // Energy budget (W/m^2, degC, J/K/m^2)
 constexpr double SOLAR = 1361.0;
-constexpr double OLR_A = 210.0, OLR_B = 2.0;    // outgoing = A + B*T (Budyko)
+constexpr double OLR_A = 202.0, OLR_B = 2.0;    // outgoing = A + B*T (Budyko); A tuned so the equator sits ~24 C
 constexpr double C_WATER = 1.0e8;               // ~25 m slab ocean
 constexpr double C_LAND = 3.0e6;                // thin soil; scaled by inertia
 // Winds: diagnostic Ekman-style balance r*u - f x u = -grad(P)/rho, solved
@@ -106,9 +106,9 @@ struct Model {
     // state
     std::vector<double> T, Wv, u, v;
     // scratch
-    std::vector<double> nT, nW, nu, nv, div, rainStep;
+    std::vector<double> nT, nW, nu, nv, div, rainStep, Tsl;
     // probe diagnostics (an equatorial cell): daily sums of the T budget terms
-    int probe = (H / 2) * W + W / 2;
+    int probe = 4 * W + W / 2; // south-polar cell for the current investigation
     double pSw = 0, pOlr = 0, pAdv = 0, pDif = 0;
 
     int idx(int x, int y) const { return y * W + x; }
@@ -165,6 +165,7 @@ struct Model {
         nT = T; nW = Wv; nu = u; nv = v;
         div.assign(W * H, 0.0);
         rainStep.assign(W * H, 0.0);
+        Tsl.assign(W * H, 0.0);
     }
 
     // One hour. doy in [0,365), hourOfDay in [0,24).
@@ -173,6 +174,14 @@ struct Model {
         double dx0 = 2 * 3.14159265 * R_EARTH / W;   // m at equator
         double dy = 3.14159265 * R_EARTH / H;
 
+        // Sea-level-equivalent temperature: radiation, diffusion, pressure,
+        // and the storm gradient all operate on it, so equilibrium surface
+        // temperature naturally sits 6.5 C/km below the lowlands and plateau
+        // cliffs create neither false mixing nor phantom storm tracks. The
+        // surface processes (evaporation, capacity, snow) use actual T.
+#pragma omp parallel for
+        for (int i = 0; i < W * H; i++) Tsl[i] = T[i] + 6.5 * elev[i] / 1000.0;
+
         // Pressure field from twice-smoothed T, then the balanced wind:
         // r*u - f v = -Px/rho ; f*u + r*v = -Py/rho.
 #pragma omp parallel for
@@ -180,8 +189,8 @@ struct Model {
             for (int x = 0; x < W; x++) {
                 int i = idx(x, y);
                 int yn = std::min(y + 1, H - 1), ys = std::max(y - 1, 0);
-                nT[i] = 0.5 * T[i] + 0.125 * (T[idx(wrapX(x + 1), y)] + T[idx(wrapX(x - 1), y)] +
-                                              T[idx(x, yn)] + T[idx(x, ys)]);
+                nT[i] = 0.5 * Tsl[i] + 0.125 * (Tsl[idx(wrapX(x + 1), y)] + Tsl[idx(wrapX(x - 1), y)] +
+                                                Tsl[idx(x, yn)] + Tsl[idx(x, ys)]);
             }
 #pragma omp parallel for
         for (int y = 0; y < H; y++)
@@ -240,11 +249,11 @@ struct Model {
                 double ha = 2 * 3.14159265 * (hour / 24.0 + (x + 0.5) / (double)W) + 3.14159265;
                 double cosz = std::sin(lat) * std::sin(dec) + std::cos(lat) * std::cos(dec) * std::cos(ha);
                 double sw = SOLAR * std::max(cosz, 0.0) * (1.0 - albedo[i]);
-                double olr = OLR_A + OLR_B * T[i];
+                double olr = OLR_A + OLR_B * Tsl[i];
                 // heat: radiation + diffusion only (see KT_DIFF note)
                 double uMax = 0.8 * dx / DT, vMax = 0.8 * dy / DT;
                 double ua = std::clamp(u[i], -uMax, uMax), va = std::clamp(v[i], -vMax, vMax);
-                double difT = ktx * (T[xe] + T[xw] - 2 * T[i]) + kty * (T[yn] + T[ys] - 2 * T[i]);
+                double difT = ktx * (Tsl[xe] + Tsl[xw] - 2 * Tsl[i]) + kty * (Tsl[yn] + Tsl[ys] - 2 * Tsl[i]);
                 nT[i] = std::clamp(T[i] + (sw - olr) / heatC[i] * DT + difT, -90.0, 65.0);
                 if (i == probe) { // one cell only: no write contention
                     pSw += sw / heatC[i] * DT;
@@ -260,7 +269,7 @@ struct Model {
                               std::clamp(0.3 + T[i] / 25.0, 0.0, 1.5); // cold seas barely evaporate
                 double rain = std::max(Wv[i] - RAIN_FRAC * cap, 0.0) * RAIN_RATE;
                 if (!water[i]) rain += Wv[i] * (DT / LAND_RAINOUT_TAU);
-                double gtx = (T[xe] - T[xw]) / (2 * dx), gty = (T[yn] - T[ys]) / (2 * dy);
+                double gtx = (Tsl[xe] - Tsl[xw]) / (2 * dx), gty = (Tsl[yn] - Tsl[ys]) / (2 * dy);
                 rain += K_STORM * std::sqrt(gtx * gtx + gty * gty) * Wv[i];
                 auto face = [&](double ur, double Wl, double Wr, double dd) {
                     double uc = std::clamp(ur, -0.8 * dd / DT, 0.8 * dd / DT);
@@ -278,12 +287,28 @@ struct Model {
                 (void)ua; (void)va;
             }
         }
-        // polar rows: relax toward neighbours
+        // polar rows: copy neighbours
         for (int x = 0; x < W; x++) {
             nT[idx(x, 0)] = nT[idx(x, 1)];
             nT[idx(x, H - 1)] = nT[idx(x, H - 2)];
             nW[idx(x, 0)] = nW[idx(x, 1)];
             nW[idx(x, H - 1)] = nW[idx(x, H - 2)];
+        }
+        // Polar filter: the shrinking cells near the poles go unstable
+        // otherwise (moisture spikes, temperature pinned at the clamp).
+        // Relax the polar rows toward their zonal means, strength fading
+        // with distance from the pole.
+        for (int y = 0; y < H; y++) {
+            int dPole = std::min(y, H - 1 - y);
+            if (dPole > 5) continue;
+            double f = 0.5 * (1.0 - dPole / 6.0);
+            double mT = 0, mW = 0;
+            for (int x = 0; x < W; x++) { mT += nT[idx(x, y)]; mW += nW[idx(x, y)]; }
+            mT /= W; mW /= W;
+            for (int x = 0; x < W; x++) {
+                nT[idx(x, y)] += f * (mT - nT[idx(x, y)]);
+                nW[idx(x, y)] += f * (mW - nW[idx(x, y)]);
+            }
         }
         std::swap(T, nT);
         std::swap(Wv, nW);
@@ -329,8 +354,9 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         if (progress && day % 15 == 0) progress(day, totalDays);
         if (verbose && day % 30 == 0) {
             fprintf(stderr,
-                    "  probe T %.1f  day-sums: sw %+.2f olr %+.2f dif %+.2f (K/day)%c",
-                    m.T[m.probe], m.pSw / 30, m.pOlr / 30, m.pDif / 30, 10);
+                    "  probe T %.1f  W %.2f rain/h %.4f  day-sums: sw %+.2f olr %+.2f dif %+.2f (K/day)%c",
+                    m.T[m.probe], m.Wv[m.probe], m.rainStep[m.probe], m.pSw / 30, m.pOlr / 30,
+                    m.pDif / 30, 10);
             m.pSw = m.pOlr = m.pAdv = m.pDif = 0;
             double tmin = 1e9, tmax = -1e9, umax = 0, wmax = 0;
             for (int i = 0; i < W * H; i++) {
