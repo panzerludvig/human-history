@@ -320,6 +320,14 @@ vec4 climAt(vec3 n) { return climSample(uClim, n); }
 // Seasonal snow cover 0..1 on land: the season's coarse temperature, lapse-
 // corrected to the local height, must be freezing, and some precipitation
 // must fall to supply the snow.
+// Ice factor 0..1 for water surfaces: seasonal local temperature below
+// freezing (soft edge). hLocal 0 for the sea.
+float iceAt(vec3 n, float hLocal) {
+    vec4 c2 = climSample(uClim2, n);
+    float tLoc = c2.r - 6.5 * (max(hLocal, 0.0) - c2.b) / 1000.0;
+    return smoothstep(-1.0, -4.0, tLoc);
+}
+
 float snowCoverAt(vec3 n, float h) {
     vec4 c2 = climSample(uClim2, n);
     float tLoc = c2.r - 6.5 * (max(h, 0.0) - c2.b) / 1000.0;
@@ -641,9 +649,13 @@ void main() {
     float bp = uHasHydro == 1 ? bandNear(n) : 0.0;
     if (sp > 0.0 && !isWater) albedo = vec3(0.55, 0.08, 0.05) * (0.75 + 0.25 * clamp(log(sp) / 11.0, 0.0, 1.0));
     else if (bp > 0.0) albedo = vec3(0.85, 0.55, 0.10); // bands: amber, even mid-crossing
-    else if (isRiver) albedo = vec3(0.10, 0.30, 0.48);
-    else if (isPond) albedo = vec3(0.14, 0.36, 0.50);
-    else if (isWater) albedo = waterColor(waterLevel - h, lat, w);
+    else if (isRiver) albedo = mix(vec3(0.10, 0.30, 0.48), vec3(0.80, 0.86, 0.92), iceAt(n, h));
+    else if (isPond) albedo = mix(vec3(0.14, 0.36, 0.50), vec3(0.80, 0.86, 0.92), iceAt(n, h));
+    else if (isWater) {
+        albedo = waterColor(waterLevel - h, lat, w);
+        // frozen lakes sit at altitude; the sea freezes at its own level
+        albedo = mix(albedo, vec3(0.83, 0.88, 0.93), iceAt(n, h > 0.0 ? h : 0.0));
+    }
     else {
         albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere);
         albedo = mix(albedo, vec3(0.91, 0.93, 0.96), snowCoverAt(n, h)); // winter snow

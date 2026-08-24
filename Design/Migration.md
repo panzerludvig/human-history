@@ -67,7 +67,7 @@ The band is the first instance of Delegate's Agents concept ([[Design/Core Conce
 
 ## Open Questions
 
-- Bands currently cross water as if it were maximally barren land (K = 0, stores drain): straits within store range are passable, oceans are lethal. A deliberate stand-in for rafts and fords until boats are a technology — revisit then.
+- ~~Bands currently cross water as if it were maximally barren land~~ Superseded by passability: unfrozen open water is crossed at half speed (the raft stand-in made explicit), **frozen** water — seasonal local temperature below −2 °C — is walked at full speed, and a major unfrozen river slows a band to fording pace. Stores still drain on water and ice (no forage), so range limits remain; winter is the crossing season, and ice-bridge migrations over northern straits are possible. Boats stay a future technology.
 
 - Exact harvest time-budget numbers, and whether the settled cap (90 days) should predate granary technology at all.
 - How knowledge ages: do rumours of a valley persist after the band that heard them settles?

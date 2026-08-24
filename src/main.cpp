@@ -1002,7 +1002,9 @@ static std::string describePoint(Vec3 n) {
     }
 
     if (h < 0) {
-        snprintf(buf, sizeof buf, "Sea, %s deep  |  %.0f C%s", fmtM(-h).c_str(), temp, climTxt);
+        bool frozen = sim::seasonalT(wd.clim, nf, 0.0f, wd.simTime) < sim::FROZEN_T;
+        snprintf(buf, sizeof buf, "Sea%s, %s deep  |  %.0f C%s", frozen ? " (frozen)" : "",
+                 fmtM(-h).c_str(), temp, climTxt);
         return buf;
     }
     // Lake: below the level of any adjacent lake cell (same rule as the shader).
@@ -1020,7 +1022,9 @@ static std::string describePoint(Vec3 n) {
                 lake = std::max(lake, wd.hydro.cells[yy * hydrology::W + hydrology::wrapX(cx + dx)].lakeLevel);
             }
         if (lake > hydrology::NO_LAKE + 1 && h < lake + 12.0f) {
-            snprintf(buf, sizeof buf, "Lake, %s deep  |  %.0f C%s", fmtM(lake + 12.0f - h).c_str(), temp, climTxt);
+            bool frozen = sim::seasonalT(wd.clim, nf, h, wd.simTime) < sim::FROZEN_T;
+            snprintf(buf, sizeof buf, "Lake%s, %s deep  |  %.0f C%s", frozen ? " (frozen)" : "",
+                     fmtM(lake + 12.0f - h).c_str(), temp, climTxt);
             return buf;
         }
     }
@@ -1209,7 +1213,7 @@ static void advanceDays(double days) {
     updateDateLabel();
     population::Field& pf = app.world.pop;
     if (pf.settlements.empty()) return;
-    bool any = sim::simulate(pf, app.world.tech, app.world.simTime);
+    bool any = sim::simulate(pf, app.world.tech, app.world.hydro, app.world.clim, app.world.simTime);
     if (any && app.popTex) uploadPopulation();
     refreshPanels();
 }

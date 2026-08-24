@@ -3,10 +3,37 @@
 // event can change the rates of the others. See Design/Migration.md.
 #pragma once
 #include "technology.h"
+#include "atmosphere.h"
 #include <cmath>
 #include <cstdio>
 
 namespace sim {
+
+// Passability (Design/Migration.md): nothing blocks outright. Unfrozen open
+// water is crossed at half speed (rafts); frozen water is walked at full
+// speed (winter is the crossing season -- ice-bridge migrations); a major
+// unfrozen river slows a band to fording pace for the cell it crosses.
+constexpr float FROZEN_T = -2.0f;         // degC, seasonal local temperature
+constexpr float RAFT_FACTOR = 0.5f;
+constexpr float RIVER_CROSS_FACTOR = 0.4f;
+constexpr float RIVER_MAJOR_KM2 = 40000.0f; // runoff-equivalent area
+
+// Season-interpolated local temperature: coarse climate mean, lapse-corrected
+// from the model's smoothed elevation to the local height.
+inline float seasonalT(const atmosphere::Climatology& c, terrain::V3 n, float hLocal, double now) {
+    using namespace atmosphere;
+    if (c.meanT.empty()) return 10.0f;
+    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
+    float lon = std::atan2(n.y, n.x);
+    int ax = (int)(((lon + 3.14159265f) / (2 * 3.14159265f)) * W) % W;
+    int ay = std::clamp((int)(((lat + 3.14159265f / 2) / 3.14159265f) * H), 0, H - 1);
+    double sf = std::fmod(now, 365.0) / 365.0 * 4.0 - 0.5;
+    int s0 = ((int)std::floor(sf) % 4 + 4) % 4, s1 = (s0 + 1) % 4;
+    float f = (float)(sf - std::floor(sf));
+    int i0 = s0 * W * H + ay * W + ax, i1 = s1 * W * H + ay * W + ax;
+    float t = c.meanT[i0] * (1 - f) + c.meanT[i1] * f;
+    return t - 6.5f * (std::max(hLocal, 0.0f) - c.elev[ay * W + ax]) / 1000.0f;
+}
 
 inline terrain::V3 cellCentre(int cell) {
     hydrology::V3orig d = hydrology::cellDir(cell % population::W, cell / population::W);
@@ -175,13 +202,16 @@ inline bool mergeBand(population::Field& pf, technology::WorldState& ws,
 
 // One band re-evaluation: integrate, move, then decide — rest, settle here,
 // arrive, re-target, or give up. Returns false if the band no longer exists.
-inline bool stepBand(population::Field& pf, technology::WorldState& ws, int bi, double now) {
+inline bool stepBand(population::Field& pf, technology::WorldState& ws,
+                     const hydrology::Result& hy, const atmosphere::Climatology& clim, int bi,
+                     double now) {
     using namespace population;
     Band& b = pf.bands[bi];
     terrain::V3 pos = {b.px, b.py, b.pz};
     double span = now - b.t;
     b.t = now;
-    float flow = pf.K[cellOf(pos)] * SUSTAIN_R; // 0 on water: crossings cost stores
+    int hereCell = cellOf(pos);
+    float flow = pf.K[hereCell] * SUSTAIN_R; // 0 on water: crossings cost stores
     integrateBand(b, flow, span, b.resting);
     if (b.P < BAND_MIN_P) {
         if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
@@ -190,7 +220,17 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws, int bi, 
     }
     terrain::V3 tgt = cellCentre(b.targetCell);
     if (!b.resting) {
-        pos = moveToward(pos, tgt, BAND_SPEED_KM_DAY * (float)span);
+        // Terrain under our feet sets the pace: rafting is slow, ice walks,
+        // a major unfrozen river means fording.
+        float speed = BAND_SPEED_KM_DAY;
+        bool water = hy.heightM[hereCell] <= 0 ||
+                     hy.cells[hereCell].lakeLevel > hydrology::NO_LAKE + 1;
+        float hHere = std::max(hy.heightM[hereCell], 0.0f);
+        bool frozen = seasonalT(clim, pos, hHere, now) < FROZEN_T;
+        if (water && !frozen) speed *= RAFT_FACTOR;
+        else if (!water && !frozen && hy.cells[hereCell].flow >= RIVER_MAJOR_KM2)
+            speed *= RIVER_CROSS_FACTOR;
+        pos = moveToward(pos, tgt, speed * (float)span);
         b.px = pos.x;
         b.py = pos.y;
         b.pz = pos.z;
@@ -276,7 +316,8 @@ inline void maybeSplit(population::Field& pf, technology::WorldState& ws, int si
 // Process every due event in chronological order: settlement re-evaluations
 // (with split checks), contact draws, the world invention clock, and band
 // steps. Order matters because each event changes the rates around it.
-inline bool simulate(population::Field& pf, technology::WorldState& ws, double now) {
+inline bool simulate(population::Field& pf, technology::WorldState& ws,
+                     const hydrology::Result& hy, const atmosphere::Climatology& clim, double now) {
     if (pf.settlements.empty()) return false;
     bool changed = false;
     while (true) {
@@ -310,7 +351,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, double n
             technology::scheduleInvention(pf, ws, t);
             changed = true;
         } else if (kind == 3) {
-            stepBand(pf, ws, idx, t);
+            stepBand(pf, ws, hy, clim, idx, t);
             changed = true;
         } else {
             if (!ws.fires) { technology::scheduleInvention(pf, ws, t); continue; }
