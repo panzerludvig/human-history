@@ -33,16 +33,9 @@ inline float prominenceM(const hydrology::Result& hy, const atmosphere::Climatol
 inline float seasonalT(const atmosphere::Climatology& c, terrain::V3 n, float hLocal, double now) {
     using namespace atmosphere;
     if (c.meanT.empty()) return 10.0f;
-    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
-    float lon = std::atan2(n.y, n.x);
-    int ax = (int)(((lon + 3.14159265f) / (2 * 3.14159265f)) * W) % W;
-    int ay = std::clamp((int)(((lat + 3.14159265f / 2) / 3.14159265f) * H), 0, H - 1);
-    double sf = std::fmod(now, 365.0) / 365.0 * 4.0 - 0.5;
-    int s0 = ((int)std::floor(sf) % 4 + 4) % 4, s1 = (s0 + 1) % 4;
-    float f = (float)(sf - std::floor(sf));
-    int i0 = s0 * W * H + ay * W + ax, i1 = s1 * W * H + ay * W + ax;
-    float t = c.meanT[i0] * (1 - f) + c.meanT[i1] * f;
-    return t - 6.5f * (std::max(hLocal, 0.0f) - c.elev[ay * W + ax]) / 1000.0f;
+    terrain::V3 nf = climFuzz(n);
+    float t = seasonalAt(c.meanT, nf, now);
+    return t - 6.5f * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), nf)) / 1000.0f;
 }
 
 inline terrain::V3 cellCentre(int cell) {

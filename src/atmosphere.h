@@ -72,6 +72,17 @@ struct Climatology {
     // [season][cell]
     std::vector<float> meanT, rainMmDay, snowMmDay, rainProb, windU, windV, cloud, diurnal;
     std::vector<float> elev; // [cell], the model's smoothed elevation (for lapse correction)
+    // elev has one band; bilinearAt/annualAt want [season][cell]. A repeated
+    // view is built once on demand.
+    mutable std::vector<float> elevRep;
+    const std::vector<float>& elev4() const {
+        if (elevRep.empty() && !elev.empty()) {
+            elevRep.resize(SEASONS * W * H);
+            for (int se = 0; se < SEASONS; se++)
+                std::copy(elev.begin(), elev.end(), elevRep.begin() + se * W * H);
+        }
+        return elevRep;
+    }
     Climatology() {
         for (auto* v : {&meanT, &rainMmDay, &snowMmDay, &rainProb, &windU, &windV, &cloud, &diurnal})
             v->assign(SEASONS * W * H, 0.0f);
@@ -349,16 +360,62 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
     return c;
 }
 
+inline terrain::V3 unitAt(float latRad, float lonRad) {
+    return {std::cos(latRad) * std::cos(lonRad), std::cos(latRad) * std::sin(lonRad),
+            std::sin(latRad)};
+}
+
+// The coarse climate grid shows through as straight bilinear creases if
+// sampled directly, so every climate lookup goes through a small noise warp
+// (~60 km) that turns grid lines into organic wiggles, plus bilinear
+// interpolation. Mirrored in the shader.
+inline terrain::V3 climFuzz(terrain::V3 n) {
+    terrain::V3 o = {terrain::fbm(n * 23.0f + 5.0f, 2, 0.5f),
+                     terrain::fbm(n * 23.0f + 11.0f, 2, 0.5f),
+                     terrain::fbm(n * 23.0f + 17.0f, 2, 0.5f)};
+    terrain::V3 r = n + o * 0.010f;
+    float l = std::sqrt(terrain::dot(r, r));
+    return {r.x / l, r.y / l, r.z / l};
+}
+
+// Bilinear sample of one season band of a climatology field at a (fuzzed)
+// unit-sphere position.
+inline float bilinearAt(const std::vector<float>& v, int season, terrain::V3 n) {
+    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
+    float lon = std::atan2(n.y, n.x);
+    float u = ((lon + 3.14159265f) / (2 * 3.14159265f)) * W - 0.5f;
+    float vv = ((lat + 3.14159265f / 2) / 3.14159265f) * H - 0.5f;
+    int x0 = (int)std::floor(u), y0 = (int)std::floor(vv);
+    float fx = u - x0, fy = vv - y0;
+    auto at = [&](int xx, int yy) {
+        xx = (xx % W + W) % W;
+        yy = std::clamp(yy, 0, H - 1);
+        return v[season * W * H + yy * W + xx];
+    };
+    return (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) +
+           (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy;
+}
+
+inline float annualAt(const std::vector<float>& v, terrain::V3 n) {
+    float t = 0;
+    for (int se = 0; se < SEASONS; se++) t += bilinearAt(v, se, n) / SEASONS;
+    return t;
+}
+
+// Season-interpolated field at a fuzzed position.
+inline float seasonalAt(const std::vector<float>& v, terrain::V3 n, double now) {
+    double sf = std::fmod(now, 365.0) / 365.0 * 4.0 - 0.5;
+    int s0 = ((int)std::floor(sf) % 4 + 4) % 4, s1 = (s0 + 1) % 4;
+    float f = (float)(sf - std::floor(sf));
+    return bilinearAt(v, s0, n) * (1 - f) + bilinearAt(v, s1, n) * f;
+}
+
 // Annual water balance (rain - PET, mm/day) at a lat/lon, nearest cell.
 inline float annualBalanceAt(const Climatology& c, float latRad, float lonRad) {
     if (c.rainMmDay.empty()) return 0.0f;
-    int ax = ((int)(((lonRad + 3.14159265f) / (2 * 3.14159265f)) * W) % W + W) % W;
-    int ay = std::clamp((int)(((latRad + 3.14159265f / 2) / 3.14159265f) * H), 0, H - 1);
-    float rain = 0, t = 0;
-    for (int se = 0; se < SEASONS; se++) {
-        rain += c.rainMmDay[se * W * H + ay * W + ax] / SEASONS;
-        t += c.meanT[se * W * H + ay * W + ax] / SEASONS;
-    }
+    terrain::V3 n = climFuzz(unitAt(latRad, lonRad));
+    float rain = annualAt(c.rainMmDay, n);
+    float t = annualAt(c.meanT, n);
     return rain - std::max(0.4f, 0.11f * (t + 8.0f));
 }
 
@@ -368,20 +425,16 @@ inline float annualBalanceAt(const Climatology& c, float latRad, float lonRad) {
 // (rain / potential evapotranspiration) with mirrored detail noise.
 inline float derivedTempC(const Climatology& c, float latRad, float lonRad, float hLocal) {
     if (c.meanT.empty()) return terrain::temperatureC(latRad, hLocal);
-    int ax = ((int)(((lonRad + 3.14159265f) / (2 * 3.14159265f)) * W) % W + W) % W;
-    int ay = std::clamp((int)(((latRad + 3.14159265f / 2) / 3.14159265f) * H), 0, H - 1);
-    float t = 0;
-    for (int se = 0; se < SEASONS; se++) t += c.meanT[se * W * H + ay * W + ax] / SEASONS;
-    return t - 6.5f * (std::max(hLocal, 0.0f) - c.elev[ay * W + ax]) / 1000.0f;
+    terrain::V3 n = climFuzz(unitAt(latRad, lonRad));
+    return annualAt(c.meanT, n) -
+           6.5f * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), n)) / 1000.0f;
 }
 
 inline float derivedMoisture(const Climatology& c, float latRad, float lonRad, terrain::V3 w,
                              float hLocal) {
     if (c.rainMmDay.empty()) return terrain::moistureAt(w, latRad);
-    int ax = ((int)(((lonRad + 3.14159265f) / (2 * 3.14159265f)) * W) % W + W) % W;
-    int ay = std::clamp((int)(((latRad + 3.14159265f / 2) / 3.14159265f) * H), 0, H - 1);
-    float rain = 0;
-    for (int se = 0; se < SEASONS; se++) rain += c.rainMmDay[se * W * H + ay * W + ax] / SEASONS;
+    terrain::V3 n = climFuzz(unitAt(latRad, lonRad));
+    float rain = annualAt(c.rainMmDay, n);
     float t = derivedTempC(c, latRad, lonRad, hLocal);
     float pet = std::max(0.4f, 0.11f * (t + 8.0f));
     float m = std::clamp(0.5f * rain / pet, 0.0f, 1.0f);

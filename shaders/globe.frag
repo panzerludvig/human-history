@@ -304,8 +304,17 @@ float bandNear(vec3 n) {
     return 0.0;
 }
 
+// Climate lookups are warped by a small noise (~60 km) so the coarse grid's
+// bilinear creases become organic wiggles. Mirrors atmosphere::climFuzz.
+vec3 climFuzz(vec3 n) {
+    vec3 o = vec3(fbm(n * 23.0 + 5.0, 2, 0.5), fbm(n * 23.0 + 11.0, 2, 0.5),
+                  fbm(n * 23.0 + 17.0, 2, 0.5));
+    return normalize(n + o * 0.010);
+}
+
 // Season-interpolated climatology sample at a surface point.
-vec4 climSample(sampler2D tex, vec3 n) {
+vec4 climSample(sampler2D tex, vec3 nRaw) {
+    vec3 n = climFuzz(nRaw);
     float lat = asin(clamp(n.z, -1.0, 1.0));
     float lon = atan(n.y, n.x);
     float cx = (lon + 3.14159265) / 6.2831853;
@@ -320,7 +329,8 @@ vec4 climSample(sampler2D tex, vec3 n) {
 vec4 climAt(vec3 n) { return climSample(uClim, n); }
 
 // Annual mean over the four season bands.
-vec4 climAnnual(sampler2D tex, vec3 n) {
+vec4 climAnnual(sampler2D tex, vec3 nRaw) {
+    vec3 n = climFuzz(nRaw);
     float lat = asin(clamp(n.z, -1.0, 1.0));
     float lon = atan(n.y, n.x);
     float cx = (lon + 3.14159265) / 6.2831853;
