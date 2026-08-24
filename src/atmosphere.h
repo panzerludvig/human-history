@@ -1,0 +1,333 @@
+// Atmosphere: a toy two-level circulation model run once at world generation,
+// distilled into a per-season climatology. Rules in Design/Weather.md.
+//
+// The low level is prognostic: surface temperature from an energy budget,
+// winds from thermal pressure gradients with Coriolis and drag, moisture with
+// temperature-dependent capacity. The upper level is implicit: mass
+// continuity turns low-level convergence into uplift (rain) and divergence
+// into subsidence (drying) — the return flow's effect without its state.
+#pragma once
+#include "terrain.h"
+#include "hydrology.h"
+#include <cmath>
+#include <cstdio>
+#include <vector>
+
+namespace atmosphere {
+
+constexpr int W = 192, H = 96;   // ~208 km cells at the equator
+constexpr int SEASONS = 4;       // DJF, MAM, JJA, SON
+
+constexpr double DT = 3600.0;            // s, one step per sim hour
+constexpr int SPINUP_DAYS = 365;         // discarded first year
+constexpr int STAT_YEARS = 2;            // averaged years after spin-up
+constexpr double R_EARTH = 6371000.0;    // m
+constexpr double OMEGA = 7.292e-5;       // rad/s
+
+// Energy budget (W/m^2, degC, J/K/m^2)
+constexpr double SOLAR = 1361.0;
+constexpr double OLR_A = 210.0, OLR_B = 2.0;    // outgoing = A + B*T (Budyko)
+constexpr double C_WATER = 1.0e8;               // ~25 m slab ocean
+constexpr double C_LAND = 3.0e6;                // thin soil; scaled by inertia
+// Winds: diagnostic Ekman-style balance r*u - f x u = -grad(P)/rho, solved
+// per cell. Integrating momentum at this grid and step is numerically
+// unstable; the balanced response keeps the same circulation (convergence on
+// heat lows, Coriolis deflection into trades and westerlies) with winds
+// bounded by construction.
+constexpr double P_PER_DEG = 120.0;             // Pa of thermal low per degC
+constexpr double FRICTION = 1.0 / (8.0 * 3600.0); // balance friction r
+constexpr double RHO = 1.2;
+constexpr double ADV_EFF = 1.0;                 // surface-wind moisture-advection efficiency
+// Moisture (kg/m^2 precipitable water)
+constexpr double CAP0 = 15.0, CAP_T0 = 15.0, CAP_SCALE = 14.4; // doubles per 10 C
+constexpr double EVAP_WATER = 0.20, EVAP_LAND = 0.05;          // kg/m^2 per h at full deficit
+constexpr double H_FLOW = 1500.0;               // m, depth of the inflow layer
+// Rain falls when moisture exceeds a fraction of the effective capacity.
+// Vertical motion modulates that capacity: uplift (convergence, windward
+// slopes) shrinks it -- adiabatic cooling -- and subsidence swells it, which
+// is what makes descent zones and lee sides dry.
+constexpr double RAIN_FRAC = 0.65;              // rain begins above this fraction of capacity
+constexpr double RAIN_RATE = 0.15;              // fraction of the excess per hour
+constexpr double DIV_CAP_SCALE = 0.05;          // m/s of uplift for a ~46% capacity swing
+constexpr double K_DIFF = 2.0e5;                // m^2/s eddy diffusion of moisture
+// Heat is transported by diffusion alone: the surface wind is the convergent
+// branch of an overturning cell, and advecting T with it refrigerates heat
+// lows (the upper return flow that closes the loop is not modelled). A large
+// eddy diffusivity stands in for the whole poleward heat transport, as in
+// Budyko-style energy-balance models.
+constexpr double KT_DIFF = 2.5e6;               // m^2/s eddy diffusion of heat
+
+struct Climatology {
+    // [season][cell]
+    std::vector<float> meanT, rainMmDay, rainProb, windU, windV, cloud, diurnal;
+    Climatology() {
+        for (auto* v : {&meanT, &rainMmDay, &rainProb, &windU, &windV, &cloud, &diurnal})
+            v->assign(SEASONS * W * H, 0.0f);
+    }
+    static int seasonOfDay(int doy) { // DJF=0 starting Dec 1 (day 334)
+        if (doy >= 334 || doy < 59) return 0;
+        if (doy < 151) return 1;
+        if (doy < 243) return 2;
+        return 3;
+    }
+};
+
+inline double capOf(double T) { return CAP0 * std::exp((T - CAP_T0) / CAP_SCALE); }
+
+inline int wrapX(int x) { return (x % W + W) % W; }
+
+struct Model {
+    // static per cell
+    std::vector<float> elev, albedo, heatC, latRad;
+    std::vector<unsigned char> water;
+    // state
+    std::vector<double> T, Wv, u, v;
+    // scratch
+    std::vector<double> nT, nW, nu, nv, div, rainStep;
+    // probe diagnostics (an equatorial cell): daily sums of the T budget terms
+    int probe = (H / 2) * W + W / 2;
+    double pSw = 0, pOlr = 0, pAdv = 0, pDif = 0;
+
+    int idx(int x, int y) const { return y * W + x; }
+
+    void init(const terrain::ContinentParams& cp, float seaLevel, const float rot[9],
+              terrain::V3 offset, const plates::Field& pf, const hydrology::Result& hy) {
+        elev.assign(W * H, 0.0f);
+        albedo.assign(W * H, 0.2f);
+        heatC.assign(W * H, (float)C_LAND);
+        latRad.assign(W * H, 0.0f);
+        water.assign(W * H, 0);
+        int bx = hydrology::W / W, by = hydrology::H / H;
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                int i = idx(x, y);
+                double hsum = 0, land = 0;
+                for (int yy = 0; yy < by; yy++)
+                    for (int xx = 0; xx < bx; xx++) {
+                        float h = hy.heightM[(y * by + yy) * hydrology::W + (x * bx + xx)];
+                        if (h > 0) { land++; hsum += h; }
+                    }
+                double landFrac = land / (bx * by);
+                water[i] = landFrac < 0.5 ? 1 : 0;
+                elev[i] = water[i] ? 0.0f : (float)(hsum / std::max(land, 1.0));
+                float lat = (float)((((y + 0.5) / H) - 0.5) * 3.14159265);
+                latRad[i] = lat;
+                // First-guess surface properties from the painted climate.
+                float lon = (float)((((x + 0.5) / W) * 2.0 - 1.0) * 3.14159265);
+                terrain::V3 n = {std::cos(lat) * std::cos(lon), std::cos(lat) * std::sin(lon),
+                                 std::sin(lat)};
+                terrain::V3 w = terrain::rotate(rot, n) + offset;
+                float temp = terrain::temperatureC(lat, elev[i]);
+                if (water[i]) {
+                    albedo[i] = temp < -8 ? 0.55f : 0.08f; // sea ice, crudely
+                    heatC[i] = (float)C_WATER;
+                } else {
+                    float moist = terrain::moistureAt(w, lat);
+                    terrain::Mixture m = terrain::mixtureAt(elev[i], 0.0f, temp, moist, 0.0f,
+                                                            false, terrain::patchNoise(w));
+                    float veg = m.cov[3] + m.cov[4] + m.cov[2];                 // forests
+                    float bare = m.cov[0] + m.cov[10] + m.cov[1] * 0.5f;       // bare/desert/tundra
+                    albedo[i] = temp < -10 ? 0.6f : 0.14f + 0.18f * bare - 0.03f * veg;
+                    heatC[i] = (float)(C_LAND * (1.0 + 2.0 * veg));
+                }
+            }
+        T.assign(W * H, 0.0);
+        Wv.assign(W * H, 0.0);
+        u.assign(W * H, 0.0);
+        v.assign(W * H, 0.0);
+        for (int i = 0; i < W * H; i++) {
+            T[i] = terrain::temperatureC(latRad[i], elev[i]);
+            Wv[i] = 0.5 * capOf(T[i]);
+        }
+        nT = T; nW = Wv; nu = u; nv = v;
+        div.assign(W * H, 0.0);
+        rainStep.assign(W * H, 0.0);
+    }
+
+    // One hour. doy in [0,365), hourOfDay in [0,24).
+    void step(double doy, double hour) {
+        double dec = 23.5 * 3.14159265 / 180.0 * std::cos(2 * 3.14159265 * (doy - 171.0) / 365.0);
+        double dx0 = 2 * 3.14159265 * R_EARTH / W;   // m at equator
+        double dy = 3.14159265 * R_EARTH / H;
+
+        // Pressure field from twice-smoothed T, then the balanced wind:
+        // r*u - f v = -Px/rho ; f*u + r*v = -Py/rho.
+#pragma omp parallel for
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                int i = idx(x, y);
+                int yn = std::min(y + 1, H - 1), ys = std::max(y - 1, 0);
+                nT[i] = 0.5 * T[i] + 0.125 * (T[idx(wrapX(x + 1), y)] + T[idx(wrapX(x - 1), y)] +
+                                              T[idx(x, yn)] + T[idx(x, ys)]);
+            }
+#pragma omp parallel for
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                int i = idx(x, y);
+                int yn = std::min(y + 1, H - 1), ys = std::max(y - 1, 0);
+                nW[i] = 0.5 * nT[i] + 0.125 * (nT[idx(wrapX(x + 1), y)] + nT[idx(wrapX(x - 1), y)] +
+                                               nT[idx(x, yn)] + nT[idx(x, ys)]);
+            }
+#pragma omp parallel for
+        for (int y = 1; y < H - 1; y++) {
+            double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.2);
+            double dx = dx0 * cosl;
+            for (int x = 0; x < W; x++) {
+                int i = idx(x, y);
+                double px = -P_PER_DEG * (nW[idx(wrapX(x + 1), y)] - nW[idx(wrapX(x - 1), y)]) / (2 * dx);
+                double py = -P_PER_DEG * (nW[idx(x, y + 1)] - nW[idx(x, y - 1)]) / (2 * dy);
+                double X = -px / RHO, Y = -py / RHO;
+                double f = 2 * OMEGA * std::sin(latRad[i]);
+                double r = FRICTION, den = r * r + f * f;
+                u[i] = (r * X + f * Y) / den;
+                v[i] = (-f * X + r * Y) / den;
+            }
+        }
+        for (int x = 0; x < W; x++) { u[idx(x, 0)] = v[idx(x, 0)] = u[idx(x, H - 1)] = v[idx(x, H - 1)] = 0; }
+
+        // Divergence -> uplift; orographic uplift from wind into slope.
+#pragma omp parallel for
+        for (int y = 1; y < H - 1; y++) {
+            double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.2);
+            double dx = dx0 * cosl;
+            for (int x = 0; x < W; x++) {
+                int i = idx(x, y);
+                double dudx = (u[idx(wrapX(x + 1), y)] - u[idx(wrapX(x - 1), y)]) / (2 * dx);
+                double dvdy = (v[idx(x, y + 1)] - v[idx(x, y - 1)]) / (2 * dy);
+                double wup = -(dudx + dvdy) * H_FLOW;
+                double oro = (u[i] * (elev[idx(wrapX(x + 1), y)] - elev[idx(wrapX(x - 1), y)]) / (2 * dx) +
+                              v[i] * (elev[idx(x, y + 1)] - elev[idx(x, y - 1)]) / (2 * dy));
+                div[i] = wup + std::max(oro, 0.0) - std::max(-oro, 0.0) * 0.5;
+            }
+        }
+
+        // Thermodynamics + moisture, upwind advection + diffusion.
+#pragma omp parallel for
+        for (int y = 1; y < H - 1; y++) {
+            double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.2);
+            double dx = dx0 * cosl;
+            double kx = std::min(K_DIFF * DT / (dx * dx), 0.2), ky = std::min(K_DIFF * DT / (dy * dy), 0.2);
+            double ktx = std::min(KT_DIFF * DT / (dx * dx), 0.22), kty = std::min(KT_DIFF * DT / (dy * dy), 0.22);
+            for (int x = 0; x < W; x++) {
+                int i = idx(x, y);
+                int xe = idx(wrapX(x + 1), y), xw = idx(wrapX(x - 1), y);
+                int yn = idx(x, y + 1), ys = idx(x, y - 1);
+                // solar
+                double lat = latRad[i];
+                double ha = 2 * 3.14159265 * (hour / 24.0 + (x + 0.5) / (double)W) + 3.14159265;
+                double cosz = std::sin(lat) * std::sin(dec) + std::cos(lat) * std::cos(dec) * std::cos(ha);
+                double sw = SOLAR * std::max(cosz, 0.0) * (1.0 - albedo[i]);
+                double olr = OLR_A + OLR_B * T[i];
+                // heat: radiation + diffusion only (see KT_DIFF note)
+                double uMax = 0.8 * dx / DT, vMax = 0.8 * dy / DT;
+                double ua = std::clamp(u[i], -uMax, uMax), va = std::clamp(v[i], -vMax, vMax);
+                double difT = ktx * (T[xe] + T[xw] - 2 * T[i]) + kty * (T[yn] + T[ys] - 2 * T[i]);
+                nT[i] = std::clamp(T[i] + (sw - olr) / heatC[i] * DT + difT, -90.0, 65.0);
+                if (i == probe) { // one cell only: no write contention
+                    pSw += sw / heatC[i] * DT;
+                    pOlr -= olr / heatC[i] * DT;
+                    pDif += difT;
+                }
+                // moisture: flux-form advection so convergence piles it up,
+                // rain from the excess over the motion-modulated capacity
+                double capMul = 1.0 - 0.5 * std::tanh(div[i] / DIV_CAP_SCALE);
+                double cap = capOf(T[i]) * capMul;
+                double evap = (water[i] ? EVAP_WATER : EVAP_LAND) *
+                              std::max(1.0 - Wv[i] / std::max(cap, 1.0), 0.0) *
+                              std::clamp(0.5 + T[i] / 40.0, 0.0, 1.5);
+                double rain = std::max(Wv[i] - RAIN_FRAC * cap, 0.0) * RAIN_RATE;
+                auto face = [&](double ur, double Wl, double Wr, double dd) {
+                    double uc = std::clamp(ur, -0.8 * dd / DT, 0.8 * dd / DT);
+                    return (uc > 0 ? Wl : Wr) * uc / dd;
+                };
+                double fe = face(0.5 * (u[i] + u[xe]), Wv[i], Wv[xe], dx);
+                double fw = face(0.5 * (u[xw] + u[i]), Wv[xw], Wv[i], dx);
+                double fn = face(0.5 * (v[i] + v[yn]), Wv[i], Wv[yn], dy);
+                double fs = face(0.5 * (v[ys] + v[i]), Wv[ys], Wv[i], dy);
+                double advW = ADV_EFF * (fe - fw + fn - fs);
+                double difW = kx * (Wv[xe] + Wv[xw] - 2 * Wv[i]) + ky * (Wv[yn] + Wv[ys] - 2 * Wv[i]);
+                rain = std::min(rain, Wv[i]);
+                nW[i] = std::clamp(Wv[i] + evap - rain - advW * DT + difW, 0.0, 90.0);
+                rainStep[i] = rain;
+                (void)ua; (void)va;
+            }
+        }
+        // polar rows: relax toward neighbours
+        for (int x = 0; x < W; x++) {
+            nT[idx(x, 0)] = nT[idx(x, 1)];
+            nT[idx(x, H - 1)] = nT[idx(x, H - 2)];
+            nW[idx(x, 0)] = nW[idx(x, 1)];
+            nW[idx(x, H - 1)] = nW[idx(x, H - 2)];
+        }
+        std::swap(T, nT);
+        std::swap(Wv, nW);
+    }
+};
+
+inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, const float rot[9],
+                         terrain::V3 offset, const plates::Field& pf, const hydrology::Result& hy,
+                         bool verbose = false) {
+    Model m;
+    m.init(cp, seaLevel, rot, offset, pf, hy);
+    Climatology c;
+    std::vector<double> dayMin(W * H), dayMax(W * H);
+    std::vector<double> cnt(SEASONS, 0.0);
+    int totalDays = SPINUP_DAYS + STAT_YEARS * 365;
+    for (int day = 0; day < totalDays; day++) {
+        int doy = day % 365;
+        int season = Climatology::seasonOfDay(doy);
+        bool stat = day >= SPINUP_DAYS;
+        std::fill(dayMin.begin(), dayMin.end(), 1e9);
+        std::fill(dayMax.begin(), dayMax.end(), -1e9);
+        for (int h = 0; h < 24; h++) {
+            m.step(doy, h + 0.5);
+            if (!stat) continue;
+            for (int i = 0; i < W * H; i++) {
+                dayMin[i] = std::min(dayMin[i], m.T[i]);
+                dayMax[i] = std::max(dayMax[i], m.T[i]);
+                int si = season * W * H + i;
+                c.meanT[si] += (float)m.T[i];
+                c.rainMmDay[si] += (float)(m.rainStep[i] * 24.0);      // kg/m2/h -> mm/day
+                c.rainProb[si] += m.rainStep[i] > 0.05 ? 1.0f : 0.0f;
+                c.windU[si] += (float)m.u[i];
+                c.windV[si] += (float)m.v[i];
+                c.cloud[si] += (float)std::clamp(m.Wv[i] / capOf(m.T[i]), 0.0, 1.0);
+            }
+        }
+        if (stat) {
+            for (int i = 0; i < W * H; i++) c.diurnal[season * W * H + i] += (float)(dayMax[i] - dayMin[i]);
+            cnt[season] += 1.0;
+        }
+        if (verbose && day % 30 == 0) {
+            fprintf(stderr,
+                    "  probe T %.1f  day-sums: sw %+.2f olr %+.2f dif %+.2f (K/day)%c",
+                    m.T[m.probe], m.pSw / 30, m.pOlr / 30, m.pDif / 30, 10);
+            m.pSw = m.pOlr = m.pAdv = m.pDif = 0;
+            double tmin = 1e9, tmax = -1e9, umax = 0, wmax = 0;
+            for (int i = 0; i < W * H; i++) {
+                tmin = std::min(tmin, m.T[i]);
+                tmax = std::max(tmax, m.T[i]);
+                umax = std::max(umax, std::fabs(m.u[i]) + std::fabs(m.v[i]));
+                wmax = std::max(wmax, m.Wv[i]);
+            }
+            fprintf(stderr, "atmo: day %d/%d  T [%.0f, %.0f]  |u|max %.0f  Wmax %.0f\n",
+                    day, totalDays, tmin, tmax, umax, wmax);
+        }
+    }
+    for (int s = 0; s < SEASONS; s++) {
+        double hours = cnt[s] * 24.0;
+        for (int i = 0; i < W * H; i++) {
+            int si = s * W * H + i;
+            c.meanT[si] /= (float)hours;
+            c.rainMmDay[si] /= (float)hours;
+            c.rainProb[si] /= (float)hours;
+            c.windU[si] /= (float)hours;
+            c.windV[si] /= (float)hours;
+            c.cloud[si] /= (float)hours;
+            c.diurnal[si] /= (float)cnt[s];
+        }
+    }
+    return c;
+}
+
+} // namespace atmosphere

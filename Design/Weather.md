@@ -1,10 +1,20 @@
 # Weather
 
-**Status:** Designed — see [[Meta/Status Vocabulary]]
+**Status:** Implemented — see [[Meta/Status Vocabulary]]
 
 Weather is a two-layer atmospheric model run **once, at world generation**, and stored as a climatology — a per-place, per-season probability function for rain, wind, cloud, and temperature swing. At runtime, weather is a pure function: climatology instantiated with seeded noise. Climate is the time-average of weather; since nothing perturbs it year over year, simulating it live would only re-derive the same statistics.
 
 ---
+
+## What implementation changed (lessons)
+
+Three deviations from the design as first written, each forced by the model blowing up or misbehaving:
+
+- **The upper layer is implicit, not prognostic.** Integrating momentum at this grid and step was numerically unstable; winds are now the *diagnostic* Ekman balance (friction + Coriolis + pressure gradient), bounded by construction. Convergence still lifts, divergence still sinks — the overturning survives as the design intended.
+- **Heat moves by diffusion only.** Advecting temperature with the surface wind refrigerated every heat low: the convergent branch imports cool air, and the upper return flow that closes the energy loop is not modelled. A large eddy diffusivity stands in for the whole poleward heat transport (Budyko-style). Moisture *is* advected by the winds — that is what shapes the rain map.
+- **Rain comes from a motion-modulated capacity.** Moisture piled up wherever air was cold (148 mm/day at a pole, 0.2 in the tropics). Fix: flux-form moisture transport plus an effective capacity that shrinks under uplift and swells under subsidence — convective and orographic rain where air converges or climbs, dry descent zones and lee sides.
+
+Accepted at: correct zonal structure (wet tropics ~3 mm/day, subtropical minimum, dry poles), monsoon-like seasonal migration of rain onto summer continents, wet tropical coasts with dry continental interiors, and an emergent Antarctica analogue (continental pole −54 °C vs oceanic pole −5 °C). Generation adds ~12 s (OpenMP) to world build.
 
 ## The generator: a two-layer atmosphere
 

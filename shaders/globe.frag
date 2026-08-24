@@ -26,6 +26,9 @@ uniform int uHasHydro;
 uniform sampler2D uPlates; // uplift, crust, km to nearest plate boundary
 uniform sampler2D uPop;    // carrying capacity K, settlement population, band population
 uniform vec3 uSun;         // world-space sun direction (day-night and seasons)
+uniform sampler2D uClim;   // climatology, 4 season bands: cloud, rain, wind u, wind v
+uniform float uDoy;        // day of year, 0..365
+uniform float uClock;      // sim days (mod 4096) for cloud drift
 uniform int uDebugMode;    // 0 normal, 1 plates, 2 substrate, 3 vegetation
 const float CRUST_WEIGHT = 0.2;
 uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 < 0 hides it
@@ -296,6 +299,38 @@ float bandNear(vec3 n) {
             if (dist < radiusKm) return p;
         }
     return 0.0;
+}
+
+// Season-interpolated climatology sample at a surface point.
+vec4 climAt(vec3 n) {
+    float lat = asin(clamp(n.z, -1.0, 1.0));
+    float lon = atan(n.y, n.x);
+    float cx = (lon + 3.14159265) / 6.2831853;
+    float cy = clamp((lat + 1.5707963) / 3.14159265, 0.02, 0.98);
+    float sf = uDoy / 365.0 * 4.0 - 0.5;
+    float s0 = mod(floor(sf), 4.0), f = fract(sf);
+    float s1 = mod(s0 + 1.0, 4.0);
+    vec4 a = texture(uClim, vec2(cx, (s0 + cy) * 0.25));
+    vec4 b = texture(uClim, vec2(cx, (s1 + cy) * 0.25));
+    return mix(a, b, f);
+}
+
+// Cloud cover at n: climatological cloudiness gates a drifting noise field.
+// Returns opacity 0..1; rain out-parameter darkens the veil beneath.
+float cloudsAt(vec3 n, out float rainV) {
+    vec4 cl = climAt(n);
+    // wind (m/s) -> angular drift; the local wind warps the noise domain
+    vec3 east = normalize(vec3(-n.y, n.x, 0.0));
+    vec3 north = normalize(cross(n, east));
+    vec3 drift = (east * cl.b + north * cl.w) * (86400.0 / 6371000.0) * uClock;
+    float n1 = fbm(n * 9.0 + drift * 0.35, 3, 0.5) * 0.5 + 0.5;
+    float n2 = fbm(n * 23.0 + drift * 0.5 + 11.7, 2, 0.5) * 0.5 + 0.5;
+    float field = 0.65 * n1 + 0.35 * n2;
+    float cov = clamp(cl.r, 0.0, 1.0);
+    float density = smoothstep(0.92 - 0.8 * cov, 1.12 - 0.8 * cov, field);
+    // rain where the cloud is thick and the climatology is wet
+    rainV = density * clamp(cl.g / 6.0, 0.0, 1.0);
+    return density * 0.75;
 }
 
 // Distance (in units of the sphere radius) from n to the segment a-b.
@@ -582,6 +617,15 @@ void main() {
         fragColor = vec4(scaleBarOverlay(base * uDim), 1.0);
         return;
     }
+    if (uDebugMode == 5) {
+        vec4 cl = climAt(n);
+        vec3 c = vec3(0.08, 0.07, 0.06);
+        if (h <= 0.0) c = vec3(0.05, 0.06, 0.10);
+        c += vec3(0.1, 0.5, 0.9) * clamp(cl.g / 8.0, 0.0, 1.0);   // rain
+        c += vec3(0.9, 0.9, 0.9) * cl.r * 0.25;                    // cloudiness
+        fragColor = vec4(scaleBarOverlay(c * uDim), 1.0);
+        return;
+    }
     float sp = uHasHydro == 1 ? settlementNear(n) : 0.0;
     float bp = uHasHydro == 1 ? bandNear(n) : 0.0;
     if (sp > 0.0 && !isWater) albedo = vec3(0.55, 0.08, 0.05) * (0.75 + 0.25 * clamp(log(sp) / 11.0, 0.0, 1.0));
@@ -599,6 +643,11 @@ void main() {
     float diff = max(dot(shadeN, sun), 0.0);
     float limb = pow(1.0 - max(dot(n, -dir), 0.0), 3.0);
     vec3 col = mix(albedo * vec3(0.045, 0.055, 0.10), albedo * (0.22 + 0.8 * diff), dayF);
+    float rainV;
+    float cloudA = cloudsAt(n, rainV);
+    col = mix(col, col * (1.0 - 0.35 * rainV), cloudA);            // rain veil darkens
+    vec3 cloudCol = vec3(1.0) * (0.06 + 0.9 * dayF * max(dot(n, normalize(uSun)), 0.15));
+    col = mix(col, cloudCol, cloudA);
     col += vec3(0.3, 0.5, 0.9) * limb * 0.35 * smoothstep(0.0, 0.6, length(uCamPos) - 1.0);
 
     col = pow(col, vec3(1.0 / 1.6)) * uDim;

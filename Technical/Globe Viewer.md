@@ -24,6 +24,10 @@ The sun is a world-space direction computed from the sim clock: it laps the glob
 
 For testing, a tenth argv parameter names a BMP file: the next rendered frame is saved from the back buffer with glReadPixels, which stays correct even when the window is occluded or the desktop is not compositing (PrintWindow can return white then).
 
+## Atmosphere and climatology
+
+`src/atmosphere.h`, rules and lessons in [[Design/Weather]]. Runs once inside `World::build` (~12 s, OpenMP): a 192×96 grid, hourly steps, one spin-up year plus two averaged years. Surface temperature from an energy budget (insolation with the sun's declination, Budyko OLR, per-cell albedo and thermal inertia from the painted first-guess cover); diagnostic Ekman-balanced winds from the thermal pressure field; flux-form moisture transport; rain from the excess over a capacity that doubles per 10 °C and is shrunk by uplift, swollen by subsidence. Distilled per season (DJF/MAM/JJA/SON) into cloud, rain, wind, mean and diurnal temperature. Uploaded as texture unit 3 (four season bands stacked; RGBA = cloud, rain, wind u, wind v); the shader interpolates seasons by day of year. Clouds are a noise field drifting with the stored wind and gated by cloudiness, lit by the sun, with a rain veil darkening beneath; the tooltip shows the season-interpolated rain rate; debug mode `climate` shows the rain and cloud fields. `src/test_atmo.cpp` is a standalone harness that dumps climatology maps as BMPs (compile line in its header) — the generator was tuned there. Nothing in the simulation consumes weather yet.
+
 ## Tectonic plates
 
 The first generation step (`src/plates.h`), before sea level and hydrology. Global information — which plate a point is on and what its neighbour is doing — so it is a layer, not part of the function; the function samples it.

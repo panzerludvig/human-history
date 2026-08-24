@@ -23,6 +23,7 @@
 #include "population.h"
 #include "technology.h"
 #include "sim.h"
+#include "atmosphere.h"
 
 // ---------------------------------------------------------------- GL loading
 
@@ -36,6 +37,7 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_TEXTURE0 0x84C0
 #define GL_TEXTURE1 0x84C1
 #define GL_TEXTURE2 0x84C2
+#define GL_TEXTURE3 0x84C3
 #define GL_RG32F 0x8230
 #define GL_RG 0x8227
 #define GL_CLAMP_TO_EDGE 0x812F
@@ -271,6 +273,7 @@ struct World {
     plates::Field plateField;
     population::Field pop;
     technology::WorldState tech;
+    atmosphere::Climatology clim;
 
     void derive() {
         std::mt19937 rng(seed);
@@ -298,6 +301,7 @@ struct World {
         plateField = plates::build(seed);
         seaLevel = terrain::seaLevelFor(landPercent / 100.0f, cp, rot, off, plateField);
         hydro = hydrology::build(cp, seaLevel, rot, off, /*riverThresholdKm2=*/12000.0f, plateField);
+        clim = atmosphere::build(cp, seaLevel, rot, off, plateField, hydro);
         pop = population::build(cp, seaLevel, rot, off, plateField, hydro);
         technology::init(pop, tech, seed, simTime);
     }
@@ -476,6 +480,7 @@ struct App {
     GLuint hydroTex = 0;
     GLuint plateTex = 0;
     GLuint popTex = 0;
+    GLuint climTex = 0;
     bool running = true;
     std::string shotPath; // when set, save the next rendered frame here (testing)
     int debugMode = 0; // 0 normal, 1 plates, 2 substrate, 3 vegetation
@@ -530,10 +535,37 @@ static void uploadPopulation() {
     glActiveTexture(GL_TEXTURE0);
 }
 
+// Climatology texture: four season bands stacked vertically, RGBA =
+// {cloud, rain mm/day, wind u, wind v}.
+static void uploadClimatology() {
+    glActiveTexture(GL_TEXTURE3);
+    if (!app.climTex) {
+        glGenTextures(1, &app.climTex);
+        glBindTexture(GL_TEXTURE_2D, app.climTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindTexture(GL_TEXTURE_2D, app.climTex);
+    const atmosphere::Climatology& c = app.world.clim;
+    int W = atmosphere::W, H = atmosphere::H, S = atmosphere::SEASONS;
+    std::vector<float> d(W * H * S * 4);
+    for (int i = 0; i < W * H * S; i++) {
+        d[i * 4 + 0] = c.cloud[i];
+        d[i * 4 + 1] = c.rainMmDay[i];
+        d[i * 4 + 2] = c.windU[i];
+        d[i * 4 + 3] = c.windV[i];
+    }
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, W, H * S, 0, GL_RGBA, GL_FLOAT, d.data());
+    glActiveTexture(GL_TEXTURE0);
+}
+
 // Push the world's hydrology table to the GPU as one RGBA32F texel per cell.
 static void uploadHydrology() {
     uploadPlates();
     uploadPopulation();
+    uploadClimatology();
     if (!app.hydroTex) {
         glGenTextures(1, &app.hydroTex);
         glBindTexture(GL_TEXTURE_2D, app.hydroTex);
@@ -932,7 +964,21 @@ static std::string describePoint(Vec3 n) {
             extra = b;
         }
     }
-    snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s%s", fmtM(h).c_str(), temp, describeMixture(m).c_str(), extra.c_str());
+    // Climatology at the cursor, season-interpolated.
+    char climTxt[48] = "";
+    if (!wd.clim.rainMmDay.empty()) {
+        int ax = (int)(((lon + PI) / (2 * PI)) * atmosphere::W) % atmosphere::W;
+        int ay = std::clamp((int)(((lat + PI / 2) / PI) * atmosphere::H), 0, atmosphere::H - 1);
+        double sf = fmod(wd.simTime, 365.0) / 365.0 * 4.0 - 0.5;
+        int s0 = ((int)std::floor(sf) % 4 + 4) % 4, s1 = (s0 + 1) % 4;
+        double f = sf - std::floor(sf);
+        int i0 = s0 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
+        int i1 = s1 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
+        double rain = wd.clim.rainMmDay[i0] * (1 - f) + wd.clim.rainMmDay[i1] * f;
+        snprintf(climTxt, sizeof climTxt, "  |  rain %.1f mm/d", rain);
+    }
+    snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s%s%s", fmtM(h).c_str(), temp, describeMixture(m).c_str(),
+             climTxt, extra.c_str());
     return buf;
 }
 
@@ -1280,6 +1326,9 @@ int main(int argc, char** argv) {
     glUniform1i(uHydro, 0);
     glUniform1i(glGetUniformLocation(app.program, "uPlates"), 1);
     glUniform1i(glGetUniformLocation(app.program, "uPop"), 2);
+    glUniform1i(glGetUniformLocation(app.program, "uClim"), 3);
+    GLint uDoy = glGetUniformLocation(app.program, "uDoy");
+    GLint uClock = glGetUniformLocation(app.program, "uClock");
 
     createControls();
     app.cam.clampAltitude();
@@ -1292,7 +1341,8 @@ int main(int argc, char** argv) {
         if (argc >= 7) app.world.concentration = (float)atof(argv[6]);
         if (argc >= 8) {
             std::string d = argv[7];
-            app.debugMode = d == "plates" ? 1 : d == "substrate" ? 2 : d == "vegetation" ? 3 : d == "population" ? 4 : 0;
+            app.debugMode = d == "plates" ? 1 : d == "substrate" ? 2 : d == "vegetation" ? 3
+                          : d == "population" ? 4 : d == "climate" ? 5 : 0;
         }
         app.world.build();
         uploadHydrology();
@@ -1337,6 +1387,8 @@ int main(int argc, char** argv) {
             app.octaves = octaves;
 
             glUniform3f(uCamPos, (float)p.x, (float)p.y, (float)p.z);
+            glUniform1f(uDoy, (float)fmod(app.world.simTime, 365.0));
+            glUniform1f(uClock, (float)fmod(app.world.simTime, 4096.0));
             {
                 // Subsolar point from the sim clock: one lap per day westward
                 // (solar noon at longitude 0 at 12:00), declination +-23.5 deg
