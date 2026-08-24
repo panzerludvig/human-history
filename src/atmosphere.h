@@ -266,7 +266,7 @@ struct Model {
 
 inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, const float rot[9],
                          terrain::V3 offset, const plates::Field& pf, const hydrology::Result& hy,
-                         bool verbose = false) {
+                         bool verbose = false, void (*progress)(int day, int totalDays) = nullptr) {
     Model m;
     m.init(cp, seaLevel, rot, offset, pf, hy);
     Climatology c;
@@ -298,6 +298,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             for (int i = 0; i < W * H; i++) c.diurnal[season * W * H + i] += (float)(dayMax[i] - dayMin[i]);
             cnt[season] += 1.0;
         }
+        if (progress && day % 15 == 0) progress(day, totalDays);
         if (verbose && day % 30 == 0) {
             fprintf(stderr,
                     "  probe T %.1f  day-sums: sw %+.2f olr %+.2f dif %+.2f (K/day)%c",

@@ -95,6 +95,10 @@ Sits at (lat, lon, altitude) above the surface and always looks at the globe's c
 - **Max zoom out:** altitude chosen so the full disc fits with a small margin — one side of the globe, not much more.
 - **Pan:** on mouse-down, the surface point under the cursor is recorded; on drag, the camera rotates so that point stays under the cursor. Off-globe drags fall back to a pixel-proportional rotation. Latitude is clamped to ±89° so the poles can't flip the camera.
 
+## Generation feedback
+
+World generation takes ~12 s (mostly the climate run), so `World::build` reports its stage on the menu status line — plates, sea level, rivers, "Simulating climate... year N of 3", settlements — repainted synchronously (the build runs on the UI thread, so the window is otherwise frozen). Stages are also logged to stderr for tests. PrintWindow cannot capture these mid-build paints (a blocked window serves it a stale surface); a live screen shows them.
+
 ## Menus and worlds
 
 Menus are native Win32 controls (buttons, a list box, static text) laid over the GL window and shown/hidden per screen. Zero dependencies, text rendering for free; they look like Windows, which is fine until the game has a visual identity.

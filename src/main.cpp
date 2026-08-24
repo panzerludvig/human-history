@@ -257,6 +257,10 @@ static GLuint buildProgram() {
 
 // ---------------------------------------------------------------- world
 
+// Generation-stage feedback on the menu status line. The build runs on the
+// UI thread, so the label is repainted synchronously.
+static void buildProgress(const char* stage);
+
 // A world is a seed plus where the camera was left. The seed rotates and
 // offsets the terrain noise so every seed is a different globe.
 struct World {
@@ -298,12 +302,23 @@ struct World {
     void build() {
         derive();
         terrain::V3 off = {(float)offset.x, (float)offset.y, (float)offset.z};
+        buildProgress("Shaping tectonic plates...");
         plateField = plates::build(seed);
+        buildProgress("Setting the sea level...");
         seaLevel = terrain::seaLevelFor(landPercent / 100.0f, cp, rot, off, plateField);
+        buildProgress("Tracing rivers and lakes...");
         hydro = hydrology::build(cp, seaLevel, rot, off, /*riverThresholdKm2=*/12000.0f, plateField);
-        clim = atmosphere::build(cp, seaLevel, rot, off, plateField, hydro);
+        clim = atmosphere::build(cp, seaLevel, rot, off, plateField, hydro, false,
+                                 [](int day, int total) {
+                                     char b[80];
+                                     snprintf(b, sizeof b, "Simulating climate... year %d of %d",
+                                              day / 365 + 1, (total + 364) / 365);
+                                     buildProgress(b);
+                                 });
+        buildProgress("Placing settlements...");
         pop = population::build(cp, seaLevel, rot, off, plateField, hydro);
         technology::init(pop, tech, seed, simTime);
+        buildProgress("");
     }
 };
 
@@ -589,6 +604,15 @@ static HWND control(int id) {
 }
 
 static void setStatus(const std::string& s) { SetWindowTextA(control(ID_STATUS), s.c_str()); }
+
+static void buildProgress(const char* stage) {
+    fprintf(stderr, "build: %s%c", stage, 10);
+    // Skip when the status line is not on screen (e.g. the argv test path).
+    HWND st = control(ID_STATUS);
+    if (!st || !IsWindowVisible(st)) return;
+    SetWindowTextA(st, stage);
+    UpdateWindow(st);
+}
 
 static void addControl(int id, const char* cls, const char* text, DWORD style) {
     HWND h = CreateWindowA(cls, text, WS_CHILD | style, 0, 0, 10, 10, app.hwnd, (HMENU)(INT_PTR)id,
