@@ -1447,6 +1447,8 @@ int main(int argc, char** argv) {
     GLint uClock = glGetUniformLocation(app.program, "uClock");
     GLint uAware = glGetUniformLocation(app.program, "uAware");
     GLint uAwareCount = glGetUniformLocation(app.program, "uAwareCount");
+    // One source of truth for the knowledge radius: the population constant.
+    glUniform1f(glGetUniformLocation(app.program, "uAwareKm"), population::KNOW_RADIUS_KM);
 
     createControls();
     app.cam.clampAltitude();
