@@ -18,6 +18,12 @@ There is no mesh. The fragment shader draws a full-screen triangle, casts a ray 
 - **Relief:** the shading normal comes from screen-space derivatives (`dFdx`/`dFdy`) of the surface point with height exaggerated 3×, so the height function is evaluated once per pixel. Rock colour uses the physical slope from the same derivatives plus an altitude tint. Sun is fixed relative to the camera so the visible side is always lit.
 - **Atmosphere:** limb brightening on the sphere and a thin glow just outside it.
 
+## Day-night and seasons
+
+The sun is a world-space direction computed from the sim clock: it laps the globe once per day westward (solar noon at longitude 0 at 12:00) and its declination swings +-23.5 degrees over the 365-day year, peaking at the June 21 solstice — so half the globe is always in night, the terminator is a soft band, the night side renders in dim blue, and the poles get midnight sun and polar night. Purely visual for now: nothing in the simulation reads the sun. With the clock paused the sun stands still; step time to move it.
+
+For testing, a tenth argv parameter names a BMP file: the next rendered frame is saved from the back buffer with glReadPixels, which stays correct even when the window is occluded or the desktop is not compositing (PrintWindow can return white then).
+
 ## Tectonic plates
 
 The first generation step (`src/plates.h`), before sea level and hydrology. Global information — which plate a point is on and what its neighbour is doing — so it is a layer, not part of the function; the function samples it.

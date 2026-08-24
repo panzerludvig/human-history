@@ -25,6 +25,7 @@ uniform sampler2D uHydro; // per-cell lake level, drainage area, flow direction,
 uniform int uHasHydro;
 uniform sampler2D uPlates; // uplift, crust, km to nearest plate boundary
 uniform sampler2D uPop;    // carrying capacity K, settlement population, band population
+uniform vec3 uSun;         // world-space sun direction (day-night and seasons)
 uniform int uDebugMode;    // 0 normal, 1 plates, 2 substrate, 3 vegetation
 const float CRUST_WEIGHT = 0.2;
 uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 < 0 hides it
@@ -590,11 +591,14 @@ void main() {
     else if (isWater) albedo = waterColor(waterLevel - h, lat, w);
     else albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere);
 
-    // Sun fixed relative to the camera so the visible side is always lit.
-    vec3 sun = normalize(-uForward * 0.45 + uRight * -0.6 + uUp * 0.65);
+    // The sun lives in world space: it circles the globe once per sim day
+    // and its declination swings +-23.5 deg over the year, so half the globe
+    // is always in night and the poles get their seasons.
+    vec3 sun = normalize(uSun);
+    float dayF = smoothstep(-0.10, 0.12, dot(n, sun));
     float diff = max(dot(shadeN, sun), 0.0);
     float limb = pow(1.0 - max(dot(n, -dir), 0.0), 3.0);
-    vec3 col = albedo * (0.25 + 0.8 * diff);
+    vec3 col = mix(albedo * vec3(0.045, 0.055, 0.10), albedo * (0.22 + 0.8 * diff), dayF);
     col += vec3(0.3, 0.5, 0.9) * limb * 0.35 * smoothstep(0.0, 0.6, length(uCamPos) - 1.0);
 
     col = pow(col, vec3(1.0 / 1.6)) * uDim;

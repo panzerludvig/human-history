@@ -477,6 +477,7 @@ struct App {
     GLuint plateTex = 0;
     GLuint popTex = 0;
     bool running = true;
+    std::string shotPath; // when set, save the next rendered frame here (testing)
     int debugMode = 0; // 0 normal, 1 plates, 2 substrate, 3 vegetation
     int octaves = 8;   // current level of detail, shared with the tooltip
     HWND hwnd = nullptr;
@@ -1256,6 +1257,7 @@ int main(int argc, char** argv) {
     glUseProgram(app.program);
 
     GLint uCamPos = glGetUniformLocation(app.program, "uCamPos");
+    GLint uSun = glGetUniformLocation(app.program, "uSun");
     GLint uForward = glGetUniformLocation(app.program, "uForward");
     GLint uRight = glGetUniformLocation(app.program, "uRight");
     GLint uUp = glGetUniformLocation(app.program, "uUp");
@@ -1300,6 +1302,7 @@ int main(int argc, char** argv) {
         app.cam.clampAltitude();
         setScreen(Screen::InGame);
         if (argc >= 9) advanceDays(atof(argv[8]) * 365.0); // fast-forward years
+        if (argc >= 10) app.shotPath = argv[9];            // save a frame, then keep running
     } else {
         setScreen(Screen::MainMenu);
     }
@@ -1334,6 +1337,16 @@ int main(int argc, char** argv) {
             app.octaves = octaves;
 
             glUniform3f(uCamPos, (float)p.x, (float)p.y, (float)p.z);
+            {
+                // Subsolar point from the sim clock: one lap per day westward
+                // (solar noon at longitude 0 at 12:00), declination +-23.5 deg
+                // peaking at the June 21 solstice (day 171 of the 365-day year).
+                double t = app.world.simTime;
+                double dec = 23.5 * PI / 180.0 * cos(2 * PI * (fmod(t, 365.0) - 171.0) / 365.0);
+                double hour = -2 * PI * fmod(t, 1.0) + PI;
+                glUniform3f(uSun, (float)(cos(dec) * cos(hour)), (float)(cos(dec) * sin(hour)),
+                            (float)sin(dec));
+            }
             glUniform3f(uForward, (float)f.x, (float)f.y, (float)f.z);
             glUniform3f(uRight, (float)rt.x, (float)rt.y, (float)rt.z);
             glUniform3f(uUp, (float)u.x, (float)u.y, (float)u.z);
@@ -1366,6 +1379,33 @@ int main(int argc, char** argv) {
             }
             glBindTexture(GL_TEXTURE_2D, app.hydroTex);
             glDrawArrays(GL_TRIANGLES, 0, 3);
+            // Self-screenshot from the back buffer: defined even when the
+            // window is occluded, unlike PrintWindow. Testing tooling.
+            if (!app.shotPath.empty()) {
+                int W = app.cam.width, H = app.cam.height;
+                std::vector<unsigned char> px(W * H * 3);
+                glReadPixels(0, 0, W, H, 0x80E0 /*GL_BGR*/, GL_UNSIGNED_BYTE, px.data());
+                int rowPad = (4 - (W * 3) % 4) % 4, stride = W * 3 + rowPad;
+                unsigned int imgSize = stride * H, fileSize = 54 + imgSize;
+                unsigned char hdr[54] = {'B', 'M'};
+                *(unsigned int*)(hdr + 2) = fileSize;
+                *(unsigned int*)(hdr + 10) = 54;
+                *(unsigned int*)(hdr + 14) = 40;
+                *(int*)(hdr + 18) = W;
+                *(int*)(hdr + 22) = H; // bottom-up, matching glReadPixels
+                *(unsigned short*)(hdr + 26) = 1;
+                *(unsigned short*)(hdr + 28) = 24;
+                *(unsigned int*)(hdr + 34) = imgSize;
+                std::ofstream f(app.shotPath, std::ios::binary);
+                f.write((char*)hdr, 54);
+                unsigned char pad[4] = {};
+                for (int yy = 0; yy < H; yy++) {
+                    f.write((char*)&px[yy * W * 3], W * 3);
+                    f.write((char*)pad, rowPad);
+                }
+                fprintf(stderr, "shot: %s\n", app.shotPath.c_str());
+                app.shotPath.clear();
+            }
         } else {
             glClearColor(8 / 255.f, 8 / 255.f, 16 / 255.f, 1);
             glClear(GL_COLOR_BUFFER_BIT);
