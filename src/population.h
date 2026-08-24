@@ -4,6 +4,7 @@
 #pragma once
 #include "terrain.h"
 #include "hydrology.h"
+#include "atmosphere.h"
 #include <cstdio>
 #include <vector>
 #include <algorithm>
@@ -144,7 +145,8 @@ inline float farmSuitability(const terrain::Mixture& m, float tempC) {
 }
 
 inline Field build(const terrain::ContinentParams& cp, float seaLevel, const float rot[9],
-                   terrain::V3 offset, const plates::Field& pf, const hydrology::Result& hy) {
+                   terrain::V3 offset, const plates::Field& pf, const hydrology::Result& hy,
+                   const atmosphere::Climatology* clim = nullptr) {
     Field f;
     f.K.assign(W * H, 0.0f);
     f.settlementAt.assign(W * H, -1);
@@ -170,8 +172,9 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         float cellKm = 2 * 3.14159265f * 6371.0f / W * std::max(std::cos(lat), 0.05f);
         float slope = std::sqrt(hx * hx + hyv * hyv) / (2000.0f * cellKm);
         float uplift = pf.sample({n.x, n.y, n.z}).uplift;
+        float swamp = clim ? atmosphere::swampinessAt(*clim, lat, std::atan2(n.y, n.x)) : 0.0f;
         terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift,
-                                                hy.cells[i].nearRiver > 0.5f, terrain::patchNoise(w));
+                                                hy.cells[i].nearRiver > 0.5f, terrain::patchNoise(w), swamp);
 
         // kFood is sustained yield; the pristine ceiling is higher. Water is
         // a physical daily supply and is not scaled (it rarely binds before

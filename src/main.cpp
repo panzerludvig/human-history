@@ -332,7 +332,7 @@ struct World {
             hydrology::reweight(hydro, annual, annualT, atmosphere::W, atmosphere::H, 12000.0f);
         }
         buildProgress("Placing settlements...");
-        pop = population::build(cp, seaLevel, rot, off, plateField, hydro);
+        pop = population::build(cp, seaLevel, rot, off, plateField, hydro, &clim);
         technology::init(pop, tech, seed, simTime);
         buildProgress("");
     }
@@ -1076,7 +1076,8 @@ static std::string describePoint(Vec3 n) {
     float moist = terrain::moistureAt(w, lat);
     float slope = terrain::slopeAt(nf, wd.cp, wd.seaLevel, std::min(app.octaves, 12), wd.plateField, wd.rot, off);
     float uplift = wd.plateField.sample({nf.x, nf.y, nf.z}).uplift;
-    terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift, nearRiver, terrain::patchNoise(w));
+    float swamp = atmosphere::swampinessAt(wd.clim, lat, lon);
+    terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift, nearRiver, terrain::patchNoise(w), swamp);
     std::string extra;
     if (!wd.pop.K.empty()) {
         int ci = cy * hydrology::W + cx;

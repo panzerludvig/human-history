@@ -264,13 +264,17 @@ inline void pullTo(float* v, int n, int k, float t) {
 
 inline float patchNoise(V3 w) { return fbm(w * 90.0f + 7.0f, 3, 0.5f) * 0.5f + 0.5f; }
 
-inline Mixture mixtureAt(float h, float slope, float temp, float moist, float uplift, bool nearRiver, float patch) {
+// `swamp` (0..1) is the climate's waterlogging: it pulls flat ground toward
+// mud, and marsh cover follows mud. 0 keeps the pre-climate behaviour.
+inline Mixture mixtureAt(float h, float slope, float temp, float moist, float uplift, bool nearRiver, float patch,
+                         float swamp = 0.0f) {
     Mixture m{};
     float* s = m.sub;
     s[0] = 1.0f;
     pullTo(s, NSUB, 1, smoothstep(0.3f, 0.18f, moist) * smoothstep(2.0f, 8.0f, temp));
     pullTo(s, NSUB, 4, nearRiver ? smoothstep(0.03f, 0.01f, slope) * smoothstep(900.0f, 600.0f, h) * 0.7f : 0.0f);
-    pullTo(s, NSUB, 5, smoothstep(0.7f, 0.85f, moist) * smoothstep(0.025f, 0.01f, slope) * smoothstep(400.0f, 200.0f, h));
+    pullTo(s, NSUB, 5, std::max(smoothstep(0.7f, 0.85f, moist) * smoothstep(0.025f, 0.01f, slope) * smoothstep(400.0f, 200.0f, h),
+                                swamp * smoothstep(0.035f, 0.015f, slope)));
     pullTo(s, NSUB, 3, smoothstep(0.12f, 0.22f, slope) * smoothstep(0.2f, 0.4f, uplift));
     pullTo(s, NSUB, 2, std::max(smoothstep(0.28f, 0.4f, slope), smoothstep(3200.0f, 3900.0f, h)));
     pullTo(s, NSUB, 6, smoothstep(-11.0f, -16.0f, temp + slope * 4.0f));

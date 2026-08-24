@@ -448,12 +448,13 @@ void pullSub(inout float s[NSUB], int k, float t) {
     s[k] += t;
 }
 
-void substrateMix(float h, float slope, float temp, float moist, float uplift, bool nearRiver, out float s[NSUB]) {
+void substrateMix(float h, float slope, float temp, float moist, float uplift, bool nearRiver, float swamp, out float s[NSUB]) {
     for (int i = 0; i < NSUB; i++) s[i] = 0.0;
     s[0] = 1.0;
     pullSub(s, 1, smoothstep(0.3, 0.18, moist) * smoothstep(2.0, 8.0, temp));
     pullSub(s, 4, nearRiver ? smoothstep(0.03, 0.01, slope) * smoothstep(900.0, 600.0, h) * 0.7 : 0.0);
-    pullSub(s, 5, smoothstep(0.7, 0.85, moist) * smoothstep(0.025, 0.01, slope) * smoothstep(400.0, 200.0, h));
+    pullSub(s, 5, max(smoothstep(0.7, 0.85, moist) * smoothstep(0.025, 0.01, slope) * smoothstep(400.0, 200.0, h),
+                      swamp * smoothstep(0.035, 0.015, slope)));
     pullSub(s, 3, smoothstep(0.12, 0.22, slope) * smoothstep(0.2, 0.4, uplift));
     pullSub(s, 2, max(smoothstep(0.28, 0.4, slope), smoothstep(3200.0, 3900.0, h)));
     pullSub(s, 6, smoothstep(-11.0, -16.0, temp + slope * 4.0));
@@ -493,12 +494,12 @@ void coverMix(float h, float slope, float temp, float moist, float uplift, float
 float patchNoise(vec3 w) { return fbm(w * 90.0 + 7.0, 3, 0.5) * 0.5 + 0.5; }
 
 // Rendered colour: substrate mixture underneath, cover mixture on top.
-vec3 terrainColor(vec3 w, float h, float slope, float lat, float uplift, bool nearRiver) {
+vec3 terrainColor(vec3 w, float h, float slope, float lat, float uplift, bool nearRiver, float swamp) {
     float temp = temperatureC(lat, h);
     float moist = moistureAt(w, lat);
     float s[NSUB];
     float v[NCOV];
-    substrateMix(h, slope, temp, moist, uplift, nearRiver, s);
+    substrateMix(h, slope, temp, moist, uplift, nearRiver, swamp, s);
     coverMix(h, slope, temp, moist, uplift, patchNoise(w), s, v);
     vec3 base = vec3(0.0);
     for (int i = 0; i < NSUB; i++) base += substrateColor(i) * s[i];
@@ -508,12 +509,12 @@ vec3 terrainColor(vec3 w, float h, float slope, float lat, float uplift, bool ne
 }
 
 // Debug: colour of the dominant member.
-vec3 debugClassColor(int mode, float h, float slope, float lat, vec3 w, float uplift, bool nearRiver) {
+vec3 debugClassColor(int mode, float h, float slope, float lat, vec3 w, float uplift, bool nearRiver, float swamp) {
     float temp = temperatureC(lat, h);
     float moist = moistureAt(w, lat);
     float s[NSUB];
     float v[NCOV];
-    substrateMix(h, slope, temp, moist, uplift, nearRiver, s);
+    substrateMix(h, slope, temp, moist, uplift, nearRiver, swamp, s);
     if (mode == 2) {
         int best = 0;
         for (int i = 1; i < NSUB; i++) if (s[i] > s[best]) best = i;
@@ -590,7 +591,7 @@ void main() {
         float pondField = fbm(w * 700.0 + 91.0, 3, 0.5);
         float flatness = 1.0 - smoothstep(0.0, 0.015, slopePhys);
         float wetness = smoothstep(-0.4, 0.8, climSample(uClim2, n).a);
-        if (pondField > 0.28 + 0.30 * (1.0 - wetness) && flatness > 0.3) { isWater = true; isPond = true; waterLevel = h + 3.0; }
+        if (pondField > 0.42 + 0.20 * (1.0 - wetness) && flatness > 0.3) { isWater = true; isPond = true; waterLevel = h + 3.0; }
     }
 
     // Relief from screen-space derivatives: one height evaluation per pixel.
@@ -624,7 +625,7 @@ void main() {
         return;
     }
     if (uDebugMode == 2 || uDebugMode == 3) {
-        vec3 base = isWater ? vec3(0.05, 0.1, 0.25) : debugClassColor(uDebugMode, h, slopePhys, lat, w, upliftHere, nearRiverHere);
+        vec3 base = isWater ? vec3(0.05, 0.1, 0.25) : debugClassColor(uDebugMode, h, slopePhys, lat, w, upliftHere, nearRiverHere, 0.85 * smoothstep(0.45, 1.3, climSample(uClim2, n).a));
         fragColor = vec4(scaleBarOverlay(base * uDim), 1.0);
         return;
     }
@@ -659,7 +660,8 @@ void main() {
         albedo = mix(albedo, vec3(0.83, 0.88, 0.93), iceAt(n, h > 0.0 ? h : 0.0));
     }
     else {
-        albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere);
+        float swampV = 0.85 * smoothstep(0.45, 1.3, climSample(uClim2, n).a);
+        albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere, swampV);
         albedo = mix(albedo, vec3(0.91, 0.93, 0.96), snowCoverAt(n, h)); // winter snow
     }
 
@@ -673,6 +675,8 @@ void main() {
     vec3 col = mix(albedo * vec3(0.045, 0.055, 0.10), albedo * (0.22 + 0.8 * diff), dayF);
     float rainV;
     float cloudA = cloudsAt(n, rainV);
+    // Clouds fade out at close zoom so they never hide the terrain being read.
+    cloudA *= smoothstep(0.15, 0.9, uKmPerPixel);
     col = mix(col, col * (1.0 - 0.35 * rainV), cloudA);            // rain veil darkens
     vec3 cloudCol = vec3(1.0) * (0.06 + 0.9 * dayF * max(dot(n, normalize(uSun)), 0.15));
     col = mix(col, cloudCol, cloudA);

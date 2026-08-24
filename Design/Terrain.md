@@ -37,6 +37,9 @@ The potential cover at a point is `cover(substrate, climate, patchiness)`. The a
 
 ---
 
+
+**Waterlogging**: the climate's water balance (rain minus evaporation) is an input to the mixture — waterlogged flat ground pulls toward mud substrate, and marsh cover follows. Bog country instead of endless ponds.
+
 ## Open Questions
 
 - Shape of a deviation: cells on a fine sparse grid (recommended — cheap to query, the GPU reads it like hydrology), polygons, or brush strokes?

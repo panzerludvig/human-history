@@ -343,4 +343,24 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
     return c;
 }
 
+// Annual water balance (rain - PET, mm/day) at a lat/lon, nearest cell.
+inline float annualBalanceAt(const Climatology& c, float latRad, float lonRad) {
+    if (c.rainMmDay.empty()) return 0.0f;
+    int ax = ((int)(((lonRad + 3.14159265f) / (2 * 3.14159265f)) * W) % W + W) % W;
+    int ay = std::clamp((int)(((latRad + 3.14159265f / 2) / 3.14159265f) * H), 0, H - 1);
+    float rain = 0, t = 0;
+    for (int se = 0; se < SEASONS; se++) {
+        rain += c.rainMmDay[se * W * H + ay * W + ax] / SEASONS;
+        t += c.meanT[se * W * H + ay * W + ax] / SEASONS;
+    }
+    return rain - std::max(0.4f, 0.11f * (t + 8.0f));
+}
+
+// Waterlogging 0..1 from the balance: the marsh pull in terrain::mixtureAt.
+inline float swampinessAt(const Climatology& c, float latRad, float lonRad) {
+    float b = annualBalanceAt(c, latRad, lonRad);
+    float x = std::clamp((b - 0.45f) / (1.3f - 0.45f), 0.0f, 1.0f);
+    return 0.85f * x * x * (3 - 2 * x);
+}
+
 } // namespace atmosphere
