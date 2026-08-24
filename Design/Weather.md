@@ -28,6 +28,7 @@ Integrated a couple of sim-years after spin-up, accumulating per cell (coarse gr
 - rain probability and mean intensity
 - prevailing wind vector (low level)
 - cloudiness
+- seasonal mean temperature
 - diurnal temperature swing amplitude
 
 Seasons interpolate; the diurnal cycle is applied analytically from the sun ([[Technical/Globe Viewer]]) and the stored swing amplitude — it needs no storage.
@@ -48,7 +49,14 @@ The climatology is a derived layer like hydrology: constant until something genu
 
 ## The unification prize (deferred)
 
-`moistureAt` is a painted noise field with a hardcoded subtropical dry band. Once the generated annual rainfall map is Earth-like, it replaces that field: vegetation, yields, and rivers then derive from rain the atmosphere actually delivered, and the desert belt exists because the circulation put it there. Not in v1 — validate the rain map first.
+Both painted climate fields retire once the generator's output is validated — as one milestone, because everything downstream consumes them as a pair:
+
+- **Moisture**: `moistureAt` is a painted noise field with a hardcoded subtropical dry band. The generated rainfall map replaces it: vegetation, yields, and rivers (runoff) then derive from rain the atmosphere actually delivered, and the desert belt exists because the circulation put it there.
+- **Temperature**: `temperatureC(lat, h)` is a hand-drawn stand-in for the energy balance the generator computes anyway (insolation, albedo, radiation, heat transport). The stored seasonal means replace its latitude curve — gaining continental vs maritime climates, wind-warmed and wind-chilled coasts, and seasons, which the static field cannot express at all. The **lapse rate stays analytic**: the climate grid cannot see individual mountains, so stored temperature is at the model's smoothed elevation and the −6.5 °C/km correction for local height is applied at sample time, mirrored CPU/GPU like the other derived textures.
+
+Two riders: vegetation ↔ albedo ↔ climate is a feedback loop — run the atmosphere against the painted fields as first guess, re-derive vegetation, run once more (doubles generation cost, converges fast). And a slab ocean gives maritime mildness but no currents — no Gulf Stream analogue, no anomalously warm high-latitude coasts; an honest limitation until ocean transport exists.
+
+The swap reorders the generation pipeline (climate before vegetation, hydrology, population) and is not v1 — validate the rain and temperature maps against the painted fields first.
 
 ---
 
