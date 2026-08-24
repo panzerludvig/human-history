@@ -1026,7 +1026,18 @@ static std::string describePoint(Vec3 n) {
     float lat = (float)std::asin(std::clamp(n.z, -1.0, 1.0));
     float lon = (float)std::atan2(n.y, n.x);
     terrain::V3 wDerive = terrain::rotate(wd.rot, nf) + off;
+    // Annual mean drives the mixture (biomes don't change by the hour);
+    // the displayed temperature is the current one: seasonal mean plus the
+    // diurnal swing phased to local solar time (peak ~14:00).
     float temp = atmosphere::derivedTempC(wd.clim, lat, lon, h);
+    float tempNow = temp;
+    if (!wd.clim.meanT.empty()) {
+        float tSeason = sim::seasonalT(wd.clim, nf, std::max(h, 0.0f), wd.simTime);
+        float amp = atmosphere::seasonalAt(wd.clim.diurnal, atmosphere::climFuzz(nf), wd.simTime);
+        double tod = fmod(wd.simTime, 1.0);
+        double hLoc = fmod(lon * (12.0 / PI) + 24.0 * tod + 48.0, 24.0);
+        tempNow = tSeason + 0.5f * amp * (float)cos(2 * PI * (hLoc - 14.0) / 24.0);
+    }
     char buf[240];
     auto fmtM = [](float m) {
         char b[32];
@@ -1054,7 +1065,7 @@ static std::string describePoint(Vec3 n) {
     if (h < 0) {
         bool frozen = sim::seasonalT(wd.clim, nf, 0.0f, wd.simTime) < sim::FROZEN_T;
         snprintf(buf, sizeof buf, "Sea%s, %s deep  |  %.0f C%s", frozen ? " (frozen)" : "",
-                 fmtM(-h).c_str(), temp, climTxt);
+                 fmtM(-h).c_str(), tempNow, climTxt);
         return buf;
     }
     // Lake: below the level of any adjacent lake cell (same rule as the shader).
@@ -1074,7 +1085,7 @@ static std::string describePoint(Vec3 n) {
         if (lake > hydrology::NO_LAKE + 1 && h < lake + 12.0f) {
             bool frozen = sim::seasonalT(wd.clim, nf, h, wd.simTime) < sim::FROZEN_T;
             snprintf(buf, sizeof buf, "Lake%s, %s deep  |  %.0f C%s", frozen ? " (frozen)" : "",
-                     fmtM(lake + 12.0f - h).c_str(), temp, climTxt);
+                     fmtM(lake + 12.0f - h).c_str(), tempNow, climTxt);
             return buf;
         }
     }
@@ -1093,7 +1104,7 @@ static std::string describePoint(Vec3 n) {
             extra = b;
         }
     }
-    snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s%s%s", fmtM(h).c_str(), temp, describeMixture(m).c_str(),
+    snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s%s%s", fmtM(h).c_str(), tempNow, describeMixture(m).c_str(),
              climTxt, extra.c_str());
     return buf;
 }
