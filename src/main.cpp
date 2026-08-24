@@ -21,6 +21,7 @@
 #include "terrain.h"
 #include "hydrology.h"
 #include "population.h"
+#include "technology.h"
 
 // ---------------------------------------------------------------- GL loading
 
@@ -268,6 +269,7 @@ struct World {
     double simTime = 0; // sim days
     plates::Field plateField;
     population::Field pop;
+    technology::WorldState tech;
 
     void derive() {
         std::mt19937 rng(seed);
@@ -296,6 +298,7 @@ struct World {
         seaLevel = terrain::seaLevelFor(landPercent / 100.0f, cp, rot, off, plateField);
         hydro = hydrology::build(cp, seaLevel, rot, off, /*riverThresholdKm2=*/12000.0f, plateField);
         pop = population::build(cp, seaLevel, rot, off, plateField, hydro);
+        technology::init(pop, tech, seed, simTime);
     }
 };
 
@@ -306,7 +309,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 2\n";
+    f << "version 3\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -315,7 +318,9 @@ static bool saveWorld(const World& w, const Camera& c) {
     f << "lon " << c.lon << "\n";
     f << "altitude " << c.altitude << "\n";
     for (const population::Settlement& s : w.pop.settlements)
-        f << "settlement " << s.cell << " " << s.P << " " << s.R << "\n";
+        f << "settlement " << s.cell << " " << s.P << " " << s.R << " "
+          << (int)s.aware << " " << (int)s.practising << " " << s.practiceT << "\n";
+    f << "techrng " << w.tech.rng << "\n";
     return (bool)f;
 }
 
@@ -324,15 +329,20 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     if (!f) return false;
     w = World{};
     w.name = name;
-    std::vector<std::array<double, 3>> savedSettlements;
+    std::vector<std::array<double, 6>> savedSettlements;
     double savedTime = 0;
+    int version = 1;
+    uint64_t savedTechRng = 0;
     std::string key;
     while (f >> key) {
-        if (key == "seed") f >> w.seed;
+        if (key == "version") f >> version;
+        else if (key == "seed") f >> w.seed;
         else if (key == "time") f >> savedTime;
+        else if (key == "techrng") f >> savedTechRng;
         else if (key == "settlement") {
-            std::array<double, 3> sv{};
+            std::array<double, 6> sv{};
             f >> sv[0] >> sv[1] >> sv[2];
+            if (version >= 3) f >> sv[3] >> sv[4] >> sv[5];
             savedSettlements.push_back(sv);
         }
         else if (key == "land") f >> w.landPercent;
@@ -343,18 +353,34 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         else { std::string skip; f >> skip; }
     }
     w.build();
-    // Restore the saved population on top of the regenerated field.
+    // Restore the saved population on top of the regenerated field. Placement
+    // is seed-deterministic, so saved settlements match the rebuilt ones cell
+    // for cell; local properties are copied over from the rebuilt twin.
     if (!savedSettlements.empty()) {
+        std::vector<population::Settlement> built = w.pop.settlements;
         w.pop.settlements.clear();
         std::fill(w.pop.settlementAt.begin(), w.pop.settlementAt.end(), -1);
         for (auto& sv : savedSettlements) {
             int cell = (int)sv[0];
             if (cell < 0 || cell >= population::W * population::H) continue;
+            population::Settlement st{cell, (float)sv[1], (float)sv[2], savedTime, savedTime};
+            for (const population::Settlement& b : built)
+                if (b.cell == cell) { st.kFoodP = b.kFoodP; st.kWater = b.kWater; st.sFarm = b.sFarm; break; }
+            st.aware = sv[3] > 0.5;
+            st.practising = sv[4] > 0.5;
+            st.practiceT = sv[5];
             w.pop.settlementAt[cell] = (int)w.pop.settlements.size();
-            w.pop.settlements.push_back({cell, (float)sv[1], (float)sv[2], savedTime, savedTime});
+            w.pop.settlements.push_back(st);
         }
+        population::computeNeighbours(w.pop);
     }
     w.simTime = savedTime;
+    if (savedTechRng) w.tech.rng = savedTechRng;
+    // Contact draws and the invention clock are exponential (memoryless), so
+    // redrawing them on load is statistically exact.
+    for (int i = 0; i < (int)w.pop.settlements.size(); i++)
+        technology::redraw(w.pop, i, w.tech, savedTime);
+    technology::scheduleInvention(w.pop, w.tech, savedTime);
     c.clampAltitude();
     return true;
 }
@@ -800,7 +826,7 @@ static std::string describePoint(Vec3 n) {
                                     wd.plateField, wd.rot);
     float lat = (float)std::asin(std::clamp(n.z, -1.0, 1.0));
     float temp = terrain::temperatureC(lat, h);
-    char buf[160];
+    char buf[240];
     auto fmtM = [](float m) {
         char b[32];
         snprintf(b, sizeof b, "%d m", (int)std::lround(m));
@@ -845,9 +871,15 @@ static std::string describePoint(Vec3 n) {
                 int si = wd.pop.settlementAt[yy * hydrology::W + hydrology::wrapX(cx + dx)];
                 if (si >= 0 && extra.empty()) {
                     const population::Settlement& st = wd.pop.settlements[si];
-                    char b[80];
-                    snprintf(b, sizeof b, "  |  settlement: %d people (capacity %d)", (int)st.P,
-                             (int)(wd.pop.K[st.cell] * population::SUSTAIN_R));
+                    char techTxt[40] = "";
+                    if (st.practising)
+                        snprintf(techTxt, sizeof techTxt, ", farming %d%%",
+                                 (int)std::lround(technology::expertise(st, wd.simTime) * 100));
+                    else if (st.aware)
+                        snprintf(techTxt, sizeof techTxt, ", knows farming");
+                    char b[120];
+                    snprintf(b, sizeof b, "  |  settlement: %d people (capacity %d)%s", (int)st.P,
+                             (int)(technology::effectiveK(st, wd.simTime) * population::SUSTAIN_R), techTxt);
                     extra = b;
                 }
             }
@@ -902,20 +934,12 @@ static void advanceDays(double days) {
     updateDateLabel();
     population::Field& pf = app.world.pop;
     if (pf.settlements.empty()) return;
-    bool any = false, again = true;
-    while (again) {
-        again = false;
-        for (population::Settlement& s : pf.settlements)
-            if (s.nextUpdate <= app.world.simTime) {
-                any |= population::advance(s, pf.K[s.cell], app.world.simTime);
-                again = true;
-            }
-    }
+    bool any = technology::simulate(pf, app.world.tech, app.world.simTime);
     if (any && app.popTex) {
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, app.popTex);
         for (const population::Settlement& s : pf.settlements) {
-            float texel[2] = {pf.K[s.cell], std::max(s.P, 1.0f)};
+            float texel[2] = {technology::effectiveK(s, app.world.simTime), std::max(s.P, 1.0f)};
             glTexSubImage2D(GL_TEXTURE_2D, 0, s.cell % population::W, s.cell / population::W,
                             1, 1, GL_RG, GL_FLOAT, texel);
         }
@@ -1086,7 +1110,8 @@ int main(int argc, char** argv) {
     createControls();
     app.cam.clampAltitude();
 
-    // Testing shortcut: ironblood <latDeg> <lonDeg> [altitudeKm] [seed] [land%] [concentration%]
+    // Testing shortcut:
+    // ironblood <latDeg> <lonDeg> [altitudeKm] [seed] [land%] [conc%] [debugmode] [fastForwardYears]
     if (argc >= 3) {
         app.world.seed = argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0;
         if (argc >= 6) app.world.landPercent = (float)atof(argv[5]);
@@ -1102,6 +1127,7 @@ int main(int argc, char** argv) {
         if (argc >= 4) app.cam.altitude = atof(argv[3]) / EARTH_RADIUS_KM;
         app.cam.clampAltitude();
         setScreen(Screen::InGame);
+        if (argc >= 9) advanceDays(atof(argv[8]) * 365.0); // fast-forward years
     } else {
         setScreen(Screen::MainMenu);
     }

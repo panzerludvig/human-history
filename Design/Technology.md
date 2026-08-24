@@ -1,6 +1,6 @@
 # Technology
 
-**Status:** Concept — see [[Meta/Status Vocabulary]]
+**Status:** Implemented — see [[Meta/Status Vocabulary]]
 
 How settlements learn to do new things. The core ideas are inherited from Delegate's Tech Tree ([[Meta/Inherited from Delegate]]) — this is the first Delegate design concept re-examined and adopted. The first technology is farming.
 
@@ -51,7 +51,7 @@ Knowing a technology is separate from being good at it (kept from Delegate). Eac
 
 **Terrain suitability s** (used by both discovery weight and adoption rate): the grass-like share of the surrounding cover mixture — grassland + savanna + steppe, with marsh at half credit (the real cradles were river floodplains) — times the farming climate window (warmth and moisture). Cereal agriculture came from wild grasses; you can't domesticate what doesn't grow around you. Grassland river valleys become the world's invention hotspots; tundra stays foraging country.
 
-Farming raises food yield where s allows — with the multiplier scaled by expertise. Irrigation will later multiply water use, so rivers start deciding where the large settlements are, through the same min() in [[Design/Population]].
+Farming multiplies the *food* side of the capacity min() by **1 + 4·s·expertise** — up to ×5 on prime grassland at full expertise, conservative for agriculture historically but right for its early form. Water is not multiplied, so where farming succeeds, water genuinely starts to bind — rivers begin deciding where the large settlements are. Irrigation will later multiply water use, so rivers start deciding where the large settlements are, through the same min() in [[Design/Population]].
 
 Represented as an entry in a technology table, not a hardcoded flag, so herding and fishing slot in beside it.
 
@@ -62,14 +62,13 @@ Represented as an entry in a technology table, not a hardcoded flag, so herding 
 These were part of Delegate's Tech Tree design. Each is deferred because its prerequisite doesn't exist yet, not because it was rejected:
 
 - **Investment** — the player lever: accelerating a technology's development by directing resources at it. Deferred until there is a player (or any deciding agent) to pull the lever. When guidance/autonomy arrives, this is the natural first point of contact between the player and technology.
-- **Stages (theoretical → developed → improved)** — a technology's life as a state machine. For now the expertise scalar covers the same ground with one number; the staged model becomes worth its weight when technologies gain distinct practical applications that unlock partway (e.g. a theoretical technology that can be invested in before it works). Revisit together with investment.
+- **Stages (theoretical → developed → improved)** — a technology's life as a state machine. The adopted model already covers the same ground informally: aware ≈ theoretical, practising ≈ developed, and expertise stands in for improvements (with unaware made explicit, which Delegate never had). The full staged model becomes worth its weight when technologies gain distinct practical applications that unlock partway (e.g. a theoretical technology that can be invested in before it works). Revisit together with investment.
 - **Soft probability graph** — developing one technology shifts the discovery probability of related ones, giving a fuzzy graph rather than a fixed tree (and enabling Delegate's focus-area and catch-up-via-conflict effects). Meaningful once there are roughly ten technologies; with one it is pure overhead. The technology-table representation keeps the door open.
 
 ---
 
 ## Open Questions
 
-- How large is farming's yield multiplier at full expertise, and what exactly is the climate window?
 - Does expertise decay if a technology goes unused (a collapsed settlement's knowledge)?
 - Does farming change the map — cleared fields as terrain deviations ([[Design/Terrain]])?
 - The world-clock model means a harsher world does not discover sooner — pacing is fixed by design. Revisit if that ever feels wrong in play.

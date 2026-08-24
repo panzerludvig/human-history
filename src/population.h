@@ -37,13 +37,45 @@ struct Settlement {
     float R;           // land condition 0..1
     double t;          // sim day at which P and R are valid
     double nextUpdate; // sim day of the next scheduled re-evaluation
+    // Fixed local properties (from the terrain at the cell):
+    float kFoodP = 0;  // pristine food capacity (already / SUSTAIN_R)
+    float kWater = 0;  // water-supply capacity
+    float sFarm = 0;   // farming suitability 0..1 (grass-like cover, warm enough)
+    // Technology state (see technology.h / Design/Technology.md):
+    bool aware = false;      // knows farming exists
+    bool practising = false; // farms; implies aware
+    double practiceT = 0;    // sim day practice began (expertise grows from here)
+    double nextTech = 1e18;  // next contact draw or resample moment
+    bool techFires = false;  // whether nextTech is a real transition
 };
 
 struct Field {
     std::vector<float> K;          // carrying capacity per cell (people), 0 on water
     std::vector<int> settlementAt; // settlement index per cell, -1 none
     std::vector<Settlement> settlements;
+    std::vector<std::vector<int>> neighbours; // settlements within contact range
 };
+
+constexpr float CONTACT_KM = 160.0f; // twice the minimum settlement spacing
+
+inline void computeNeighbours(Field& f) {
+    auto cellN = [](int cell) {
+        hydrology::V3orig d = hydrology::cellDir(cell % W, cell / W);
+        return terrain::V3{d.x, d.y, d.z};
+    };
+    int n = (int)f.settlements.size();
+    f.neighbours.assign(n, {});
+    for (int i = 0; i < n; i++)
+        for (int j = i + 1; j < n; j++) {
+            float d = std::acos(std::clamp(terrain::dot(cellN(f.settlements[i].cell),
+                                                        cellN(f.settlements[j].cell)),
+                                           -1.0f, 1.0f)) * 6371.0f;
+            if (d <= CONTACT_KM) {
+                f.neighbours[i].push_back(j);
+                f.neighbours[j].push_back(i);
+            }
+        }
+}
 
 // Natural food yield, people per km^2 at land condition R = 1, by cover class:
 // bare, tundra, taiga, forest, rainforest, grass, steppe, savanna, shrub, marsh, desert.
@@ -54,6 +86,14 @@ inline float coverYield(const terrain::Mixture& m) {
     return d;
 }
 
+// Farming suitability: the grass-like share of the cover (grass, steppe,
+// savanna, marsh at half credit -- the real cradles were river floodplains)
+// times a warmth window. You can't domesticate what doesn't grow around you.
+inline float farmSuitability(const terrain::Mixture& m, float tempC) {
+    float grassy = m.cov[5] + m.cov[6] + m.cov[7] + 0.5f * m.cov[9];
+    return grassy * std::clamp(tempC / 8.0f, 0.0f, 1.0f);
+}
+
 inline Field build(const terrain::ContinentParams& cp, float seaLevel, const float rot[9],
                    terrain::V3 offset, const plates::Field& pf, const hydrology::Result& hy) {
     Field f;
@@ -61,37 +101,46 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
     f.settlementAt.assign(W * H, -1);
     const std::vector<float>& hm = hy.heightM;
 
+    // Everything the population model needs to know about one cell.
+    auto evalCell = [&](int x, int y, float& kFoodP, float& kWater, float& sFarm) {
+        int i = y * W + x;
+        kFoodP = kWater = sFarm = 0;
+        float h = hm[i];
+        if (h <= 0) return;                                           // land only
+        if (hy.cells[i].lakeLevel > hydrology::NO_LAKE + 1 && h < hy.cells[i].lakeLevel) return;
+
+        hydrology::V3orig cd = hydrology::cellDir(x, y);
+        terrain::V3 n = {cd.x, cd.y, cd.z};
+        terrain::V3 w = terrain::rotate(rot, n) + offset;
+        float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
+        float temp = terrain::temperatureC(lat, h);
+        float moist = terrain::moistureAt(w, lat);
+        // Coarse slope from neighbouring cell heights.
+        float hx = hm[y * W + hydrology::wrapX(x + 1)] - hm[y * W + hydrology::wrapX(x - 1)];
+        float hyv = hm[std::min(y + 1, H - 1) * W + x] - hm[std::max(y - 1, 0) * W + x];
+        float cellKm = 2 * 3.14159265f * 6371.0f / W * std::max(std::cos(lat), 0.05f);
+        float slope = std::sqrt(hx * hx + hyv * hyv) / (2000.0f * cellKm);
+        float uplift = pf.sample({n.x, n.y, n.z}).uplift;
+        terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift,
+                                                hy.cells[i].nearRiver > 0.5f, terrain::patchNoise(w));
+
+        // kFood is sustained yield; the pristine ceiling is higher. Water is
+        // a physical daily supply and is not scaled (it rarely binds before
+        // farming and irrigation).
+        kFoodP = coverYield(m) * FORAGE_KM2 / SUSTAIN_R;
+        // Water within reach: discharge from the drainage area through this
+        // cell, with runoff set by the moisture field.
+        float runoffMmYr = 20.0f + 580.0f * moist * moist;
+        float litresPerDay = hy.accKm2[i] * runoffMmYr * 1.0e6f / 365.0f;
+        kWater = litresPerDay * USABLE_WATER / WATER_L_PER_PERSON;
+        sFarm = farmSuitability(m, temp);
+    };
+
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
-            int i = y * W + x;
-            float h = hm[i];
-            if (h <= 0) continue;                                     // land only
-            if (hy.cells[i].lakeLevel > hydrology::NO_LAKE + 1 && h < hy.cells[i].lakeLevel) continue;
-
-            hydrology::V3orig cd = hydrology::cellDir(x, y);
-            terrain::V3 n = {cd.x, cd.y, cd.z};
-            terrain::V3 w = terrain::rotate(rot, n) + offset;
-            float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
-            float temp = terrain::temperatureC(lat, h);
-            float moist = terrain::moistureAt(w, lat);
-            // Coarse slope from neighbouring cell heights.
-            float hx = hm[y * W + hydrology::wrapX(x + 1)] - hm[y * W + hydrology::wrapX(x - 1)];
-            float hyv = hm[std::min(y + 1, H - 1) * W + x] - hm[std::max(y - 1, 0) * W + x];
-            float cellKm = 2 * 3.14159265f * 6371.0f / W * std::max(std::cos(lat), 0.05f);
-            float slope = std::sqrt(hx * hx + hyv * hyv) / (2000.0f * cellKm);
-            float uplift = pf.sample({n.x, n.y, n.z}).uplift;
-            terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift,
-                                                    hy.cells[i].nearRiver > 0.5f, terrain::patchNoise(w));
-
-            float kFood = coverYield(m) * FORAGE_KM2;
-            // Water within reach: discharge from the drainage area through this
-            // cell, with runoff set by the moisture field.
-            float runoffMmYr = 20.0f + 580.0f * moist * moist;
-            float litresPerDay = hy.accKm2[i] * runoffMmYr * 1.0e6f / 365.0f;
-            float kWater = litresPerDay * USABLE_WATER / WATER_L_PER_PERSON;
-            // kFood is sustained yield; the pristine ceiling is higher. Water
-            // is a physical daily supply and is not scaled (it never binds yet).
-            f.K[i] = std::min(kFood / SUSTAIN_R, kWater);
+            float kFoodP, kWater, sFarm;
+            evalCell(x, y, kFoodP, kWater, sFarm);
+            f.K[y * W + x] = std::min(kFoodP, kWater);
         }
 
     // Settlements at local maxima of K, best first, spaced at least ~80 km.
@@ -123,8 +172,11 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         }
         if (!clear) continue;
         f.settlementAt[c.cell] = (int)f.settlements.size();
-        f.settlements.push_back({c.cell, c.k * SUSTAIN_R * 0.5f, 1.0f, 0.0, 0.0});
+        Settlement s{c.cell, c.k * SUSTAIN_R * 0.5f, 1.0f, 0.0, 0.0};
+        evalCell(c.cell % W, c.cell / W, s.kFoodP, s.kWater, s.sFarm);
+        f.settlements.push_back(s);
     }
+    computeNeighbours(f);
     // Startup listing for testing: where the first settlements are.
     for (int i = 0; i < (int)f.settlements.size() && i < 5; i++) {
         int cx = f.settlements[i].cell % W, cy = f.settlements[i].cell / W;
