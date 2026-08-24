@@ -44,7 +44,7 @@ No ticks. Each settlement integrates its own P and R forward at scheduled re-eva
 ## Deferred
 
 - Farming, herding, fishing: raise yield at the cost of labour (10 h/person/day, currently unspent). How they are discovered is [[Design/Technology]].
-- Splitting and migration: when R runs out, leaving is rational — the split rule for actors.
+- Splitting and migration: designed in [[Design/Migration]], along with storage — which will rewrite this note's decline dynamics (recalibration required).
 - Named individuals: actors of size 1, instantiated on prominence.
 - Fresh vs salt lakes; irrigation.
 
