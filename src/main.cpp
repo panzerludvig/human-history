@@ -22,6 +22,7 @@
 #include "hydrology.h"
 #include "population.h"
 #include "technology.h"
+#include "sim.h"
 
 // ---------------------------------------------------------------- GL loading
 
@@ -309,7 +310,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 3\n";
+    f << "version 4\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -319,7 +320,12 @@ static bool saveWorld(const World& w, const Camera& c) {
     f << "altitude " << c.altitude << "\n";
     for (const population::Settlement& s : w.pop.settlements)
         f << "settlement " << s.cell << " " << s.P << " " << s.R << " "
-          << (int)s.aware << " " << (int)s.practising << " " << s.practiceT << "\n";
+          << (int)s.aware << " " << (int)s.practising << " " << s.practiceT << " "
+          << s.S << " " << s.scarceSince << "\n";
+    for (const population::Band& b : w.pop.bands)
+        f << "band " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
+          << b.targetCell << " " << (int)b.resting << " " << b.restStart << " "
+          << (int)b.aware << " " << (int)b.practising << " " << b.practiceT << "\n";
     f << "techrng " << w.tech.rng << "\n";
     return (bool)f;
 }
@@ -329,7 +335,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     if (!f) return false;
     w = World{};
     w.name = name;
-    std::vector<std::array<double, 6>> savedSettlements;
+    std::vector<std::array<double, 8>> savedSettlements;
+    std::vector<std::array<double, 11>> savedBands;
     double savedTime = 0;
     int version = 1;
     uint64_t savedTechRng = 0;
@@ -340,10 +347,18 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         else if (key == "time") f >> savedTime;
         else if (key == "techrng") f >> savedTechRng;
         else if (key == "settlement") {
-            std::array<double, 6> sv{};
+            std::array<double, 8> sv{};
+            sv[7] = -1; // scarceSince default
             f >> sv[0] >> sv[1] >> sv[2];
             if (version >= 3) f >> sv[3] >> sv[4] >> sv[5];
+            if (version >= 4) f >> sv[6] >> sv[7];
+            else sv[6] = 0.5 * population::CAP_DAYS_SETTLED * sv[1];
             savedSettlements.push_back(sv);
+        }
+        else if (key == "band") {
+            std::array<double, 11> bv{};
+            for (double& v : bv) f >> v;
+            savedBands.push_back(bv);
         }
         else if (key == "land") f >> w.landPercent;
         else if (key == "concentration") f >> w.concentration;
@@ -353,24 +368,42 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         else { std::string skip; f >> skip; }
     }
     w.build();
-    // Restore the saved population on top of the regenerated field. Placement
-    // is seed-deterministic, so saved settlements match the rebuilt ones cell
-    // for cell; local properties are copied over from the rebuilt twin.
+    // Restore the saved population on top of the regenerated field; local
+    // properties come from the per-cell maps, so founded settlements restore
+    // the same way as original ones.
     if (!savedSettlements.empty()) {
-        std::vector<population::Settlement> built = w.pop.settlements;
         w.pop.settlements.clear();
+        w.pop.bands.clear();
         std::fill(w.pop.settlementAt.begin(), w.pop.settlementAt.end(), -1);
         for (auto& sv : savedSettlements) {
             int cell = (int)sv[0];
             if (cell < 0 || cell >= population::W * population::H) continue;
             population::Settlement st{cell, (float)sv[1], (float)sv[2], savedTime, savedTime};
-            for (const population::Settlement& b : built)
-                if (b.cell == cell) { st.kFoodP = b.kFoodP; st.kWater = b.kWater; st.sFarm = b.sFarm; break; }
+            st.kFoodP = w.pop.kFoodPMap[cell];
+            st.kWater = w.pop.kWaterMap[cell];
+            st.sFarm = w.pop.sFarmMap[cell];
             st.aware = sv[3] > 0.5;
             st.practising = sv[4] > 0.5;
             st.practiceT = sv[5];
+            st.S = (float)sv[6];
+            st.scarceSince = sv[7];
             w.pop.settlementAt[cell] = (int)w.pop.settlements.size();
             w.pop.settlements.push_back(st);
+        }
+        for (auto& bv : savedBands) {
+            population::Band b{};
+            b.px = (float)bv[0]; b.py = (float)bv[1]; b.pz = (float)bv[2];
+            b.P = (float)bv[3]; b.S = (float)bv[4];
+            b.targetCell = (int)bv[5];
+            b.resting = bv[6] > 0.5;
+            b.restStart = bv[7];
+            b.aware = bv[8] > 0.5;
+            b.practising = bv[9] > 0.5;
+            b.practiceT = bv[10];
+            b.t = savedTime;
+            b.nextUpdate = savedTime;
+            if (b.targetCell >= 0 && b.targetCell < population::W * population::H)
+                w.pop.bands.push_back(b);
         }
         population::computeNeighbours(w.pop);
     }
@@ -455,10 +488,14 @@ static void uploadPlates() {
 }
 
 static std::vector<float> popTexData() {
-    std::vector<float> d(population::W * population::H * 2, 0.0f);
+    std::vector<float> d(population::W * population::H * 4, 0.0f);
     const population::Field& pf = app.world.pop;
-    for (int i = 0; i < population::W * population::H; i++) d[i * 2] = pf.K[i];
-    for (const population::Settlement& s : pf.settlements) d[s.cell * 2 + 1] = std::max(s.P, 1.0f);
+    for (int i = 0; i < population::W * population::H; i++) d[i * 4] = pf.K[i];
+    for (const population::Settlement& s : pf.settlements) d[s.cell * 4 + 1] = std::max(s.P, 1.0f);
+    for (const population::Band& b : pf.bands) {
+        int cell = sim::cellOf({b.px, b.py, b.pz});
+        d[cell * 4 + 2] += std::max(b.P, 1.0f);
+    }
     return d;
 }
 
@@ -472,7 +509,7 @@ static void uploadPopulation() {
     }
     glBindTexture(GL_TEXTURE_2D, app.popTex);
     std::vector<float> d = popTexData();
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, population::W, population::H, 0, GL_RG, GL_FLOAT, d.data());
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, population::W, population::H, 0, GL_RGBA, GL_FLOAT, d.data());
     glActiveTexture(GL_TEXTURE0);
 }
 
@@ -877,12 +914,25 @@ static std::string describePoint(Vec3 n) {
                                  (int)std::lround(technology::expertise(st, wd.simTime) * 100));
                     else if (st.aware)
                         snprintf(techTxt, sizeof techTxt, ", knows farming");
-                    char b[120];
-                    snprintf(b, sizeof b, "  |  settlement: %d people (capacity %d)%s", (int)st.P,
-                             (int)(technology::effectiveK(st, wd.simTime) * population::SUSTAIN_R), techTxt);
+                    char b[140];
+                    snprintf(b, sizeof b, "  |  settlement: %d people (capacity %d, stores %d d)%s",
+                             (int)st.P,
+                             (int)(technology::effectiveK(st, wd.simTime) * population::SUSTAIN_R),
+                             (int)(st.S / std::max(st.P, 1.0f)), techTxt);
                     extra = b;
                 }
             }
+        if (extra.empty()) {
+            float radius = (float)std::clamp(app.cam.kmPerPixel() * 5.0, 4.0, 18.0);
+            for (const population::Band& bd : wd.pop.bands)
+                if (sim::distKm({nf.x, nf.y, nf.z}, {bd.px, bd.py, bd.pz}) < radius) {
+                    char b[80];
+                    snprintf(b, sizeof b, "  |  band: %d people (%s)", (int)bd.P,
+                             bd.resting ? "resting" : "moving");
+                    extra = b;
+                    break;
+                }
+        }
         if (extra.empty() && wd.pop.K[ci] > 0) {
             char b[48];
             snprintf(b, sizeof b, "  |  capacity %d", (int)(wd.pop.K[ci] * population::SUSTAIN_R));
@@ -934,17 +984,8 @@ static void advanceDays(double days) {
     updateDateLabel();
     population::Field& pf = app.world.pop;
     if (pf.settlements.empty()) return;
-    bool any = technology::simulate(pf, app.world.tech, app.world.simTime);
-    if (any && app.popTex) {
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, app.popTex);
-        for (const population::Settlement& s : pf.settlements) {
-            float texel[2] = {technology::effectiveK(s, app.world.simTime), std::max(s.P, 1.0f)};
-            glTexSubImage2D(GL_TEXTURE_2D, 0, s.cell % population::W, s.cell / population::W,
-                            1, 1, GL_RG, GL_FLOAT, texel);
-        }
-        glActiveTexture(GL_TEXTURE0);
-    }
+    bool any = sim::simulate(pf, app.world.tech, app.world.simTime);
+    if (any && app.popTex) uploadPopulation();
 }
 
 static void applyDrag(int x, int y) {

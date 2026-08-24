@@ -27,7 +27,7 @@ Mechanics built on the core concepts, each with its own note:
 | [[Design/Terrain]] | Layered terrain: height, substrate, climate, vegetation; only deviations are stored | Concept |
 | [[Design/Population]] | A carrying-capacity field; settlements as sparse actors with overshoot dynamics | Concept |
 | [[Design/Technology]] | Dark, shared, automatic discovery driven by need; expertise; farming first | Implemented |
-| [[Design/Migration]] | Bands as moving settlements; storage; emergent nomadism; the first agent | Designed |
+| [[Design/Migration]] | Bands as moving settlements; storage; emergent nomadism; the first agent | Implemented |
 
 ---
 

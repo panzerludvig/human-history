@@ -29,7 +29,32 @@ constexpr float R_DEPLETE_YEARS = 22.0f;      // land depletion at P = K
 // stored in K is table / R*; displayed capacity is K * R*.
 constexpr float SUSTAIN_R = 0.5486f;
 constexpr float MIN_SETTLEMENT_K = 150.0f;
-constexpr int MAX_SETTLEMENTS = 400;
+constexpr int MAX_SETTLEMENTS = 400;        // initial placement
+constexpr int MAX_TOTAL_SETTLEMENTS = 8000; // founding stops at geography, not here
+
+// Storage and famine (Design/Migration.md). The land offers a flow (K*R
+// rations/day); the group holds a stock S of harvested rations. Famine is not
+// a hard breakpoint: hoarding excludes people from low stores before they
+// empty, so deaths = STARVE_MAX * excluded share * harvest shortfall.
+constexpr float GATHER_SETTLED = 1.5f;   // rations/person/day gatherable settled
+constexpr float GATHER_MOVING = 0.5f;    // a moving band forages on a third of its time
+constexpr float CAP_DAYS_SETTLED = 90.0f;
+constexpr float CAP_DAYS_BAND = 10.0f;
+constexpr float HOARD_FILL = 0.25f;      // famine sets in below this fill fraction
+constexpr float STARVE_MAX = 0.02f;      // /day at full exclusion and total shortfall
+
+// Splitting and bands (Design/Migration.md).
+// Just under the phi = 1 equilibrium: the overshoot decline glides at
+// phi ~ 0.97-0.99, so a deeper threshold would never fire.
+constexpr float SPLIT_PHI = 0.99f;
+constexpr double SPLIT_AFTER_DAYS = 730.0;
+constexpr float SPLIT_MIN_P = 50.0f;
+constexpr float SPLIT_SHARE = 1.0f / 3.0f;
+constexpr float BAND_MIN_P = 20.0f;
+constexpr float BAND_SPEED_KM_DAY = 15.0f;
+constexpr float KNOW_RADIUS_KM = 400.0f;
+constexpr double BAND_STEP_DAYS = 5.0;
+constexpr int MAX_BANDS = 200;
 
 struct Settlement {
     int cell;
@@ -37,6 +62,8 @@ struct Settlement {
     float R;           // land condition 0..1
     double t;          // sim day at which P and R are valid
     double nextUpdate; // sim day of the next scheduled re-evaluation
+    float S = 0;               // food store, rations (person-days)
+    double scarceSince = -1;   // sim day scarcity began, -1 if fed (split rule)
     // Fixed local properties (from the terrain at the cell):
     float kFoodP = 0;  // pristine food capacity (already / SUSTAIN_R)
     float kWater = 0;  // water-supply capacity
@@ -49,11 +76,31 @@ struct Settlement {
     bool techFires = false;  // whether nextTech is a real transition
 };
 
+// A migrating group: a settlement with velocity (Design/Migration.md). It
+// forages the cell it stands on with a reduced time budget, carries a small
+// store, and re-evaluates every few days. The first agent.
+struct Band {
+    float px, py, pz;        // unit-sphere position
+    float P = 0;             // people
+    float S = 0;             // food store, rations
+    int targetCell = -1;     // rough destination (a rumour, re-checked up close)
+    bool resting = false;    // stopped to refill the store
+    double restStart = 0;
+    double t = 0;            // sim day at which the state is valid
+    double nextUpdate = 0;
+    // Technology carried (demic diffusion):
+    bool aware = false, practising = false;
+    double practiceT = 0;
+};
+
 struct Field {
     std::vector<float> K;          // carrying capacity per cell (people), 0 on water
     std::vector<int> settlementAt; // settlement index per cell, -1 none
     std::vector<Settlement> settlements;
     std::vector<std::vector<int>> neighbours; // settlements within contact range
+    std::vector<Band> bands;
+    // Per-cell local properties, kept for founding settlements at runtime:
+    std::vector<float> kFoodPMap, kWaterMap, sFarmMap;
 };
 
 constexpr float CONTACT_KM = 160.0f; // twice the minimum settlement spacing
@@ -136,11 +183,14 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         sFarm = farmSuitability(m, temp);
     };
 
+    f.kFoodPMap.assign(W * H, 0.0f);
+    f.kWaterMap.assign(W * H, 0.0f);
+    f.sFarmMap.assign(W * H, 0.0f);
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
-            float kFoodP, kWater, sFarm;
-            evalCell(x, y, kFoodP, kWater, sFarm);
-            f.K[y * W + x] = std::min(kFoodP, kWater);
+            int i = y * W + x;
+            evalCell(x, y, f.kFoodPMap[i], f.kWaterMap[i], f.sFarmMap[i]);
+            f.K[i] = std::min(f.kFoodPMap[i], f.kWaterMap[i]);
         }
 
     // Settlements at local maxima of K, best first, spaced at least ~80 km.
@@ -173,7 +223,10 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         if (!clear) continue;
         f.settlementAt[c.cell] = (int)f.settlements.size();
         Settlement s{c.cell, c.k * SUSTAIN_R * 0.5f, 1.0f, 0.0, 0.0};
-        evalCell(c.cell % W, c.cell / W, s.kFoodP, s.kWater, s.sFarm);
+        s.kFoodP = f.kFoodPMap[c.cell];
+        s.kWater = f.kWaterMap[c.cell];
+        s.sFarm = f.sFarmMap[c.cell];
+        s.S = 0.5f * CAP_DAYS_SETTLED * s.P;
         f.settlements.push_back(s);
     }
     computeNeighbours(f);
@@ -186,42 +239,56 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
     return f;
 }
 
-inline void derivatives(float P, float R, float K, float& dP, float& dR) {
-    float supply = K * R;
-    float phi = P > 1 ? supply / P : 2.0f;
-    float g = phi >= 1 ? GROWTH_MAX * std::min((phi - 1) / 0.11f, 1.0f)
-                       : -DECLINE_MAX * std::min((1 - phi) / 0.22f, 1.0f);
-    dP = P * g / 365.0f;
+// Growth runs when the land's flow covers everyone; decline is famine:
+// deaths need both low stores (hoarding excludes the bottom of the group) and
+// an inadequate harvest flow. Calibrated offline to preserve the ~18%
+// overshoot at year ~33 and settling at the sustained capacity.
+inline void derivatives(float P, float R, float S, float K, float& dP, float& dR, float& dS) {
+    float flow = K * R;                                   // rations/day offered
+    float H = std::min(flow, GATHER_SETTLED * P);         // limited by land and time
+    float cap = CAP_DAYS_SETTLED * std::max(P, 1.0f);
+    float fill = std::clamp(S / cap, 0.0f, 1.0f);
+    float excl = std::clamp(1.0f - fill / HOARD_FILL, 0.0f, 1.0f);
+    float shortfall = P > 0 ? std::clamp(1.0f - H / P, 0.0f, 1.0f) : 0.0f;
+    float phi = P > 1 ? flow / P : 2.0f;
+    float g = phi >= 1 ? GROWTH_MAX / 365.0f * std::min((phi - 1) / 0.11f, 1.0f) : 0.0f;
+    dP = P * g - STARVE_MAX * P * excl * shortfall;
     dR = (1 - R) / (R_REGEN_YEARS * 365) - (P / std::max(K, 1.0f)) * R / (R_DEPLETE_YEARS * 365);
+    dS = H - P;
 }
 
 // Integrate a settlement from its valid time to `now` and schedule the next
-// re-evaluation at the moment its state will have drifted about 5%.
+// re-evaluation at the moment its state will have drifted about 5%. Famine
+// can move at percent-per-day, so steps stay short and the horizon also
+// watches for the store crossing the hoarding threshold.
 inline bool advance(Settlement& s, float K, double now) {
     if (K <= 0) { s.t = now; s.nextUpdate = now + 3650; return false; }
-    float P = s.P, R = s.R;
+    float P = s.P, R = s.R, S = s.S;
     double span = now - s.t;
-    int steps = std::clamp((int)(span / 90.0), 1, 12);
+    int steps = std::clamp((int)(span / 5.0) + 1, 1, 500);
     float hstep = (float)(span / steps);
     for (int k = 0; k < steps && hstep > 0; k++) {
-        float d1P, d1R, d2P, d2R, d3P, d3R, d4P, d4R;
-        derivatives(P, R, K, d1P, d1R);
-        derivatives(P + d1P * hstep / 2, R + d1R * hstep / 2, K, d2P, d2R);
-        derivatives(P + d2P * hstep / 2, R + d2R * hstep / 2, K, d3P, d3R);
-        derivatives(P + d3P * hstep, R + d3R * hstep, K, d4P, d4R);
-        P += hstep / 6 * (d1P + 2 * d2P + 2 * d3P + d4P);
-        R += hstep / 6 * (d1R + 2 * d2R + 2 * d3R + d4R);
+        float dP, dR, dS;
+        derivatives(P, R, S, K, dP, dR, dS);
+        P = std::max(P + dP * hstep, 0.0f);
+        R = std::clamp(R + dR * hstep, 0.0f, 1.0f);
+        S = std::clamp(S + dS * hstep, 0.0f, CAP_DAYS_SETTLED * std::max(P, 1.0f));
     }
     bool changed = std::fabs(P - s.P) > 0.5f || std::fabs(R - s.R) > 0.002f;
-    s.P = std::max(P, 0.0f);
-    s.R = std::clamp(R, 0.0f, 1.0f);
+    s.P = P;
+    s.R = R;
+    s.S = S;
     s.t = now;
-    float dP, dR;
-    derivatives(s.P, s.R, K, dP, dR);
+    float dP, dR, dS;
+    derivatives(s.P, s.R, s.S, K, dP, dR, dS);
     double horizon = 1800;
     if (std::fabs(dP) > 1e-9) horizon = std::min(horizon, 0.05 * std::max(s.P, 50.0f) / std::fabs(dP));
     if (std::fabs(dR) > 1e-9) horizon = std::min(horizon, 0.05 * std::max(s.R, 0.1f) / std::fabs(dR));
-    s.nextUpdate = now + std::max(horizon, 30.0);
+    if (dS < -1e-9) {
+        double toHoard = (s.S - HOARD_FILL * CAP_DAYS_SETTLED * s.P) / -dS;
+        if (toHoard > 0) horizon = std::min(horizon, std::max(toHoard, 15.0));
+    }
+    s.nextUpdate = now + std::max(horizon, 5.0);
     return changed;
 }
 

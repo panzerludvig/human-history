@@ -24,7 +24,7 @@ uniform float uSeaLevel; // field value at the coastline, chosen on the CPU
 uniform sampler2D uHydro; // per-cell lake level, drainage area, flow direction, height
 uniform int uHasHydro;
 uniform sampler2D uPlates; // uplift, crust, km to nearest plate boundary
-uniform sampler2D uPop;    // carrying capacity K, settlement population
+uniform sampler2D uPop;    // carrying capacity K, settlement population, band population
 uniform int uDebugMode;    // 0 normal, 1 plates, 2 substrate, 3 vegetation
 const float CRUST_WEIGHT = 0.2;
 uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 < 0 hides it
@@ -274,6 +274,22 @@ float settlementNear(vec3 n) {
             ivec2 c = c0 + ivec2(dx, dy);
             ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
             float p = texelFetch(uPop, cw, 0).g;
+            if (p <= 0.0) continue;
+            float dist = length(n - cellCentre(cw)) * 6371.0;
+            if (dist < radiusKm) return p;
+        }
+    return 0.0;
+}
+
+// Population of a migrating band whose marker covers n, else 0.
+float bandNear(vec3 n) {
+    ivec2 c0 = hydroCell(n);
+    float radiusKm = clamp(uKmPerPixel * 4.0, 3.0, 14.0);
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 c = c0 + ivec2(dx, dy);
+            ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
+            float p = texelFetch(uPop, cw, 0).b;
             if (p <= 0.0) continue;
             float dist = length(n - cellCentre(cw)) * 6371.0;
             if (dist < radiusKm) return p;
@@ -566,7 +582,9 @@ void main() {
         return;
     }
     float sp = uHasHydro == 1 ? settlementNear(n) : 0.0;
+    float bp = uHasHydro == 1 ? bandNear(n) : 0.0;
     if (sp > 0.0 && !isWater) albedo = vec3(0.55, 0.08, 0.05) * (0.75 + 0.25 * clamp(log(sp) / 11.0, 0.0, 1.0));
+    else if (bp > 0.0) albedo = vec3(0.85, 0.55, 0.10); // bands: amber, even mid-crossing
     else if (isRiver) albedo = vec3(0.10, 0.30, 0.48);
     else if (isPond) albedo = vec3(0.14, 0.36, 0.50);
     else if (isWater) albedo = waterColor(waterLevel - h, lat, w);

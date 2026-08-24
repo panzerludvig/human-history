@@ -1,6 +1,6 @@
 # Migration
 
-**Status:** Designed — see [[Meta/Status Vocabulary]]
+**Status:** Implemented — see [[Meta/Status Vocabulary]]
 
 How people leave, move, and settle anew. The central idea: a migrating band is a settlement with velocity, and "settled" is an outcome, not a type. This note also introduces **storage** (the food a group has already harvested, as distinct from what the land offers) and the project's first **agent** — the band.
 
@@ -40,7 +40,7 @@ A group knows its surroundings out to a range, with accuracy decaying over dista
 
 ## Splitting and the band's journey
 
-When a settlement's food per head φ stays below ~0.95 and P ≥ ~50, about a third of the people leave as a band, inheriting the settlement's current knowledge and technology (aware/practising state and expertise travel — demic diffusion, historically the dominant way farming spread, and the mechanism that carries technology across gaps wider than the contact radius in [[Design/Technology]]).
+When a settlement's food per head φ stays below 0.99 (just under the equilibrium point — the overshoot decline never dips much deeper) for two years and P ≥ ~50, about a third of the people leave as a band, inheriting the settlement's current knowledge and technology (aware/practising state and expertise travel — demic diffusion, historically the dominant way farming spread, and the mechanism that carries technology across gaps wider than the contact radius in [[Design/Technology]]).
 
 The band:
 
@@ -66,6 +66,8 @@ The band is the first instance of Delegate's Agents concept ([[Design/Core Conce
 ---
 
 ## Open Questions
+
+- Bands currently cross water as if it were maximally barren land (K = 0, stores drain): straits within store range are passable, oceans are lethal. A deliberate stand-in for rafts and fords until boats are a technology — revisit then.
 
 - Exact harvest time-budget numbers, and whether the settled cap (90 days) should predate granary technology at all.
 - How knowledge ages: do rumours of a valley persist after the band that heard them settles?
