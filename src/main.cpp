@@ -445,7 +445,7 @@ enum : int {
     ID_GEN_SEED_LABEL, ID_GEN_SEED, ID_GEN_RANDOM, ID_GEN_LAND_LABEL, ID_GEN_LAND,
     ID_GEN_CONC_LABEL, ID_GEN_CONC, ID_GEN_HINT, ID_GEN_CREATE, ID_GEN_BACK,
     ID_SCALE_LABEL, ID_TOOLTIP,
-    ID_TIME_MIN, ID_TIME_HOUR, ID_TIME_DAY, ID_TIME_MONTH, ID_TIME_YEAR, ID_DATE_LABEL,
+    ID_TIME_STEP, ID_TIME_GO, ID_DATE_LABEL,
 };
 
 struct App {
@@ -577,11 +577,14 @@ static void createControls() {
     addControl(ID_SCALE_LABEL, "STATIC", "", SS_LEFT);
     addControl(ID_TOOLTIP, "STATIC", "", SS_LEFT | SS_NOPREFIX);
     addControl(ID_DATE_LABEL, "STATIC", "", SS_RIGHT);
-    addControl(ID_TIME_MIN, "BUTTON", "+1 min", BS_PUSHBUTTON);
-    addControl(ID_TIME_HOUR, "BUTTON", "+1 hour", BS_PUSHBUTTON);
-    addControl(ID_TIME_DAY, "BUTTON", "+1 day", BS_PUSHBUTTON);
-    addControl(ID_TIME_MONTH, "BUTTON", "+1 month", BS_PUSHBUTTON);
-    addControl(ID_TIME_YEAR, "BUTTON", "+1 year", BS_PUSHBUTTON);
+    addControl(ID_TIME_STEP, "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL);
+    addControl(ID_TIME_GO, "BUTTON", "Advance", BS_PUSHBUTTON);
+    {
+        HWND cb = control(ID_TIME_STEP);
+        for (const char* it : {"1 minute", "1 hour", "1 day", "1 month", "1 year", "10 years", "100 years"})
+            SendMessageA(cb, CB_ADDSTRING, 0, (LPARAM)it);
+        SendMessageA(cb, CB_SETCURSEL, 2, 0); // default: 1 day
+    }
 }
 
 // Map scale bar: a 1/2/5 x 10^n distance whose bar is close to a target
@@ -667,15 +670,14 @@ static void layoutControls() {
     }
     case Screen::InGame: {
         place(ID_SCALE_LABEL, SCALE_MARGIN, H - SCALE_MARGIN - 44, 110, 26);
-        // Time-stepping buttons, top right. Temporary evaluation tooling:
-        // the simulation is paused unless stepped.
-        int tw = 80, th = 32, tg = 6;
-        place(ID_DATE_LABEL, W - 5 * (tw + tg) - 160, 16, 150, 24);
-        place(ID_TIME_MIN, W - 5 * (tw + tg), 10, tw, th);
-        place(ID_TIME_HOUR, W - 4 * (tw + tg), 10, tw, th);
-        place(ID_TIME_DAY, W - 3 * (tw + tg), 10, tw, th);
-        place(ID_TIME_MONTH, W - 2 * (tw + tg), 10, tw, th);
-        place(ID_TIME_YEAR, W - (tw + tg), 10, tw, th);
+        // Time stepping, top right: a step-size dropdown and one Advance
+        // button. Temporary evaluation tooling: the simulation is paused
+        // unless stepped. The dropdown's height is the room its open list
+        // gets, not the closed control's height.
+        int cw = 130, bw = 100, th = 32, tg = 6;
+        place(ID_DATE_LABEL, W - cw - bw - 2 * tg - 160, 16, 150, 24);
+        place(ID_TIME_STEP, W - cw - bw - 2 * tg, 12, cw, 220);
+        place(ID_TIME_GO, W - bw - tg, 10, bw, th);
         break;
     }
     }
@@ -821,11 +823,13 @@ static void onCommand(int id) {
         setStatus(saveWorld(app.world, app.cam) ? "Saved as " + name : "Save failed");
         break;
     }
-    case ID_TIME_MIN: advanceDays(1.0 / 1440.0); SetFocus(app.hwnd); break;
-    case ID_TIME_HOUR: advanceDays(1.0 / 24.0); SetFocus(app.hwnd); break;
-    case ID_TIME_DAY: advanceDays(1); SetFocus(app.hwnd); break;
-    case ID_TIME_MONTH: advanceDays(30); SetFocus(app.hwnd); break;
-    case ID_TIME_YEAR: advanceDays(365); SetFocus(app.hwnd); break;
+    case ID_TIME_GO: {
+        static const double stepDays[] = {1.0 / 1440.0, 1.0 / 24.0, 1.0, 30.0, 365.0, 3650.0, 36500.0};
+        int sel = (int)SendMessageA(control(ID_TIME_STEP), CB_GETCURSEL, 0, 0);
+        if (sel >= 0 && sel < 7) advanceDays(stepDays[sel]);
+        SetFocus(app.hwnd);
+        break;
+    }
     case ID_MAIN_MENU:
         setStatus("");
         setScreen(Screen::MainMenu);
