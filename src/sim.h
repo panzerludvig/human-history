@@ -126,7 +126,9 @@ inline population::SeasonCtx seasonCtx(const population::Settlement& s,
     ctx.clim = &clim;
     ctx.n = cellCentre(s.cell);
     ctx.h = std::max(hy.heightM[s.cell], 0.0f);
-    ctx.farmMult = 1.0f + technology::FARM_YIELD_GAIN * s.sFarm * technology::expertise(s, now);
+    ctx.farmMult = 1.0f + technology::FARM_YIELD_GAIN * s.sFarm *
+                       technology::expertise(s.tech[population::TECH_FARMING], now);
+    ctx.husbExp = technology::expertise(s.tech[population::TECH_HUSBANDRY], now);
     return ctx;
 }
 
@@ -164,10 +166,10 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     s.kFoodP = pf.kFoodPMap[cell];
     s.kWater = pf.kWaterMap[cell];
     s.sFarm = pf.sFarmMap[cell];
+    s.pasture = pf.pastureMap[cell];
     s.S = std::min(b.S, CAP_DAYS_SETTLED * b.P);
-    s.aware = b.aware;
-    s.practising = b.practising;
-    s.practiceT = b.practiceT;
+    for (int t = 0; t < NTECH; t++) s.tech[t] = b.tech[t];
+    if (s.tech[TECH_HUSBANDRY].practising) s.herd = technology::HERD_SEED;
     atmosphere::seasonMeans(clim, cellCentre(cell), std::max(hy.heightM[cell], 0.0f), s.meanF,
                             s.meanG2);
     int idx = (int)pf.settlements.size();
@@ -180,9 +182,11 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
             pf.neighbours[idx].push_back(j);
             pf.neighbours[j].push_back(idx);
         }
-    technology::redraw(pf, idx, ws, now);
-    for (int j : pf.neighbours[idx]) technology::redraw(pf, j, ws, now);
-    technology::scheduleInvention(pf, ws, now);
+    for (int t = 0; t < NTECH; t++) {
+        technology::redraw(pf, idx, ws, t, now);
+        for (int j : pf.neighbours[idx]) technology::redraw(pf, j, ws, t, now);
+        technology::scheduleInvention(pf, ws, t, now);
+    }
     logAt("founded settlement", idx, n, b.P, now);
 }
 
@@ -202,19 +206,22 @@ inline bool mergeBand(population::Field& pf, technology::WorldState& ws,
     Settlement& t = pf.settlements[ti];
     t.P += b.P;
     t.S = std::min(t.S + b.S, CAP_DAYS_SETTLED * t.P);
-    if (b.aware && !t.aware) {
-        t.aware = true;
-        technology::redraw(pf, ti, ws, now);
-        for (int j : pf.neighbours[ti])
-            if (!pf.settlements[j].aware) technology::redraw(pf, j, ws, now);
-        technology::scheduleInvention(pf, ws, now);
-    }
-    if (b.practising && !t.practising) {
-        t.practising = true;
-        t.practiceT = b.practiceT;
-        t.nextTech = 1e18;
-        for (int j : pf.neighbours[ti]) technology::redraw(pf, j, ws, now);
-        technology::scheduleInvention(pf, ws, now);
+    for (int tc = 0; tc < NTECH; tc++) {
+        if (b.tech[tc].aware && !t.tech[tc].aware) {
+            t.tech[tc].aware = true;
+            technology::redraw(pf, ti, ws, tc, now);
+            for (int j : pf.neighbours[ti])
+                if (!pf.settlements[j].tech[tc].aware) technology::redraw(pf, j, ws, tc, now);
+            technology::scheduleInvention(pf, ws, tc, now);
+        }
+        if (b.tech[tc].practising && !t.tech[tc].practising) {
+            t.tech[tc].practising = true;
+            t.tech[tc].practiceT = b.tech[tc].practiceT;
+            t.nextTech[tc] = 1e18;
+            if (tc == TECH_HUSBANDRY && t.herd <= 0) t.herd = technology::HERD_SEED;
+            for (int j : pf.neighbours[ti]) technology::redraw(pf, j, ws, tc, now);
+            technology::scheduleInvention(pf, ws, tc, now);
+        }
     }
     logAt("merged into settlement", ti, n, b.P, now);
     return true;
@@ -331,9 +338,7 @@ inline void maybeSplit(population::Field& pf, technology::WorldState& ws,
     b.targetCell = tgt;
     b.t = now;
     b.nextUpdate = now + BAND_STEP_DAYS;
-    b.aware = s.aware;
-    b.practising = s.practising;
-    b.practiceT = s.practiceT;
+    for (int t = 0; t < NTECH; t++) b.tech[t] = s.tech[t];
     s.P -= b.P;
     s.S -= b.S;
     pf.bands.push_back(b);
@@ -348,12 +353,15 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
     if (pf.settlements.empty()) return false;
     bool changed = false;
     while (true) {
-        double t = ws.nextEvent;
-        int kind = 0, idx = -1;
+        double t = 1e18;
+        int kind = 0, idx = -1, tech = 0;
+        for (int tc = 0; tc < population::NTECH; tc++)
+            if (ws.nextEvent[tc] < t) { t = ws.nextEvent[tc]; kind = 0; tech = tc; }
         for (int i = 0; i < (int)pf.settlements.size(); i++) {
             const population::Settlement& s = pf.settlements[i];
             if (s.nextUpdate < t) { t = s.nextUpdate; kind = 1; idx = i; }
-            if (s.nextTech < t) { t = s.nextTech; kind = 2; idx = i; }
+            for (int tc = 0; tc < population::NTECH; tc++)
+                if (s.nextTech[tc] < t) { t = s.nextTech[tc]; kind = 2; idx = i; tech = tc; }
         }
         for (int i = 0; i < (int)pf.bands.size(); i++)
             if (pf.bands[i].nextUpdate < t) { t = pf.bands[i].nextUpdate; kind = 3; idx = i; }
@@ -365,31 +373,34 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
             maybeSplit(pf, ws, hy, clim, idx, t);
         } else if (kind == 2) {
             population::Settlement& s = pf.settlements[idx];
-            if (!s.techFires) { technology::redraw(pf, idx, ws, t); continue; }
-            if (!s.aware) {
-                s.aware = true;
-                fprintf(stderr, "tech: settlement %d aware of farming, day %.0f\n", idx, t);
-                technology::redraw(pf, idx, ws, t);
+            if (!s.techFires[tech]) { technology::redraw(pf, idx, ws, tech, t); continue; }
+            if (!s.tech[tech].aware) {
+                s.tech[tech].aware = true;
+                fprintf(stderr, "tech: settlement %d aware of %s, day %.0f\n", idx,
+                        technology::techName(tech), t);
+                technology::redraw(pf, idx, ws, tech, t);
                 for (int j : pf.neighbours[idx])
-                    if (!pf.settlements[j].aware) technology::redraw(pf, j, ws, t);
+                    if (!pf.settlements[j].tech[tech].aware) technology::redraw(pf, j, ws, tech, t);
             } else {
-                technology::startPractising(pf, idx, ws, t);
-                fprintf(stderr, "tech: settlement %d starts farming, day %.0f\n", idx, t);
+                technology::startPractising(pf, idx, ws, tech, t);
+                fprintf(stderr, "tech: settlement %d starts %s, day %.0f\n", idx,
+                        technology::techName(tech), t);
             }
-            technology::scheduleInvention(pf, ws, t);
+            technology::scheduleInvention(pf, ws, tech, t);
             changed = true;
         } else if (kind == 3) {
             stepBand(pf, ws, hy, clim, idx, t);
             changed = true;
         } else {
-            if (!ws.fires) { technology::scheduleInvention(pf, ws, t); continue; }
-            int wi = technology::pickInventor(pf, ws, t);
+            if (!ws.fires[tech]) { technology::scheduleInvention(pf, ws, tech, t); continue; }
+            int wi = technology::pickInventor(pf, ws, tech, t);
             if (wi >= 0) {
-                technology::startPractising(pf, wi, ws, t);
-                fprintf(stderr, "tech: farming invented at settlement %d, day %.0f\n", wi, t);
+                technology::startPractising(pf, wi, ws, tech, t);
+                fprintf(stderr, "tech: %s invented at settlement %d, day %.0f\n",
+                        technology::techName(tech), wi, t);
                 changed = true;
             }
-            technology::scheduleInvention(pf, ws, t);
+            technology::scheduleInvention(pf, ws, tech, t);
         }
     }
     // Catch-up: bring every settlement and band current to `now`, whatever

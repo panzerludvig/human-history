@@ -47,13 +47,49 @@ Knowing a technology is separate from being good at it (kept from Delegate). Eac
 
 ---
 
+## The roster
+
+Decided (2026-08-25). Tools, fire, stone weapons, and clothing are **not
+technologies**: they are 100,000+-year-old universals for anatomically modern
+foragers, already priced into the yield table, the winter hunting floor, and
+cold survival.
+
+| Technology | At start | Means | Effect |
+|---|---|---|---|
+| Farming | undiscovered | suitable land (sFarm) | food multiplier, harvest season |
+| Animal husbandry | undiscovered | herd (living stock) | pasture-scaled flow, winter-proof |
+| Fishing | known, expertise local | water access | food from water (planned) |
+| Boats | known, expertise local | built boats | water movement, offshore fishing (planned) |
+| Archery | known, low expertise | made bows | hunting/winter floor (planned) |
+| Pottery | undiscovered | made pots | portable storage (planned) |
+| Granaries | undiscovered | built granaries | settlement storage (planned) |
+
+The general pattern: **benefit = knowledge x means**, where the means is
+environmental (fishing, farming), made things (boats, bows, pots, granaries
+-- Delegate's Items concept arriving in aggregate: equipment levels that are
+built by labour, decay, and can be lost), or living stock (herds). Archery's
+start-known status is a deliberate compression, recorded as such.
+
 ## Farming (the first technology)
 
 **Terrain suitability s** (used by both discovery weight and adoption rate): the grass-like share of the surrounding cover mixture — grassland + savanna + steppe, with marsh at half credit (the real cradles were river floodplains) — times the farming climate window (warmth and moisture). Cereal agriculture came from wild grasses; you can't domesticate what doesn't grow around you. Grassland river valleys become the world's invention hotspots; tundra stays foraging country.
 
 Farming multiplies the *food* side of the capacity min() by **1 + 4·s·expertise** — up to ×5 on prime grassland at full expertise, conservative for agriculture historically but right for its early form. Water is not multiplied, so where farming succeeds, water genuinely starts to bind — rivers begin deciding where the large settlements are. Irrigation will later multiply water use, so rivers start deciding where the large settlements are, through the same min() in [[Design/Population]].
 
-Represented as an entry in a technology table, not a hardcoded flag, so herding and fishing slot in beside it.
+Represented as an entry in a technology table (generalized when husbandry arrived), so the rest of the roster slots in beside it.
+
+## Animal husbandry (the second technology)
+
+One technology covers the household cow and the steppe flock: the scale is
+emergent from the **pasture cap** (grass, steppe, savanna, some shrub and
+tundra cover -- no warmth gate; reindeer are real). The herd is living stock
+in people-fed units: seeded small at practice start (bred from wild capture),
+growing logistically (~25%/yr) toward pasture x expertise, providing a food
+flow that barely dips in winter -- **animals are walking stores**, which is
+why pastoralism owns seasonal grassland. A small pasture-free farmyard bonus
+covers scavenger animals (chickens, pigs). Discovery is weighted by pasture
+and scarcity. Deferred: band-owned herds (pastoral nomadism proper),
+overgrazing feedback on R.
 
 ---
 

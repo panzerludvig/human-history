@@ -348,7 +348,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 6\n";
+    f << "version 7\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -356,14 +356,21 @@ static bool saveWorld(const World& w, const Camera& c) {
     f << "lat " << c.lat << "\n";
     f << "lon " << c.lon << "\n";
     f << "altitude " << c.altitude << "\n";
-    for (const population::Settlement& s : w.pop.settlements)
-        f << "settlement " << s.cell << " " << s.P << " " << s.R << " "
-          << (int)s.aware << " " << (int)s.practising << " " << s.practiceT << " "
-          << s.S << " " << s.scarceSince << " " << s.founded << "\n";
-    for (const population::Band& b : w.pop.bands)
+    for (const population::Settlement& s : w.pop.settlements) {
+        f << "settlement " << s.cell << " " << s.P << " " << s.R << " ";
+        for (int t = 0; t < population::NTECH; t++)
+            f << (int)s.tech[t].aware << " " << (int)s.tech[t].practising << " "
+              << s.tech[t].practiceT << " ";
+        f << s.S << " " << s.scarceSince << " " << s.founded << " " << s.herd << "\n";
+    }
+    for (const population::Band& b : w.pop.bands) {
         f << "band " << b.id << " " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
-          << b.targetCell << " " << (int)b.resting << " " << b.restStart << " "
-          << (int)b.aware << " " << (int)b.practising << " " << b.practiceT << "\n";
+          << b.targetCell << " " << (int)b.resting << " " << b.restStart;
+        for (int t = 0; t < population::NTECH; t++)
+            f << " " << (int)b.tech[t].aware << " " << (int)b.tech[t].practising << " "
+              << b.tech[t].practiceT;
+        f << "\n";
+    }
     f << "techrng " << w.tech.rng << "\n";
     return (bool)f;
 }
@@ -373,8 +380,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     if (!f) return false;
     w = World{};
     w.name = name;
-    std::vector<std::array<double, 9>> savedSettlements;
-    std::vector<std::array<double, 12>> savedBands;
+    std::vector<std::array<double, 13>> savedSettlements;
+    std::vector<std::array<double, 15>> savedBands;
     double savedTime = 0;
     int version = 1;
     uint64_t savedTechRng = 0;
@@ -385,19 +392,29 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         else if (key == "time") f >> savedTime;
         else if (key == "techrng") f >> savedTechRng;
         else if (key == "settlement") {
-            std::array<double, 9> sv{};
-            sv[7] = -1; // scarceSince default
+            // layout: cell P R [aware practising practiceT]xNTECH S scarce founded herd
+            std::array<double, 13> sv{};
+            sv[9] = -1; // scarceSince default
             f >> sv[0] >> sv[1] >> sv[2];
-            if (version >= 3) f >> sv[3] >> sv[4] >> sv[5];
-            if (version >= 4) f >> sv[6] >> sv[7];
-            else sv[6] = 0.5 * population::CAP_DAYS_SETTLED * sv[1];
-            if (version >= 6) f >> sv[8];
+            if (version >= 7) {
+                for (int t = 0; t < 6; t++) f >> sv[3 + t];
+                f >> sv[9 - 1] >> sv[9] >> sv[10] >> sv[11];
+            } else {
+                if (version >= 3) f >> sv[3] >> sv[4] >> sv[5];
+                if (version >= 4) f >> sv[8] >> sv[9];
+                else sv[8] = 0.5 * population::CAP_DAYS_SETTLED * sv[1];
+                if (version >= 6) f >> sv[10];
+            }
             savedSettlements.push_back(sv);
         }
         else if (key == "band") {
-            std::array<double, 12> bv{};
-            int i0 = version >= 5 ? 0 : 1; // v4 bands had no id
-            for (int i = i0; i < 12; i++) f >> bv[i];
+            std::array<double, 15> bv{};
+            if (version >= 7) {
+                for (int i = 0; i < 15; i++) f >> bv[i];
+            } else {
+                int i0 = version >= 5 ? 0 : 1;
+                for (int i = i0; i < 12; i++) f >> bv[i];
+            }
             savedBands.push_back(bv);
         }
         else if (key == "land") f >> w.landPercent;
@@ -422,12 +439,18 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.kFoodP = w.pop.kFoodPMap[cell];
             st.kWater = w.pop.kWaterMap[cell];
             st.sFarm = w.pop.sFarmMap[cell];
-            st.aware = sv[3] > 0.5;
-            st.practising = sv[4] > 0.5;
-            st.practiceT = sv[5];
-            st.S = (float)sv[6];
-            st.scarceSince = sv[7];
-            st.founded = sv[8];
+            st.pasture = w.pop.pastureMap[cell];
+            for (int t = 0; t < population::NTECH; t++) {
+                st.tech[t].aware = sv[3 + t * 3] > 0.5;
+                st.tech[t].practising = sv[4 + t * 3] > 0.5;
+                st.tech[t].practiceT = sv[5 + t * 3];
+            }
+            st.S = (float)sv[8];
+            st.scarceSince = sv[9];
+            st.founded = sv[10];
+            st.herd = (float)sv[11];
+            if (st.tech[population::TECH_HUSBANDRY].practising && st.herd <= 0)
+                st.herd = technology::HERD_SEED;
             atmosphere::seasonMeans(w.clim, sim::cellCentre(cell),
                                     std::max(w.hydro.heightM[cell], 0.0f), st.meanF, st.meanG2);
             w.pop.settlementAt[cell] = (int)w.pop.settlements.size();
@@ -443,9 +466,11 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             b.targetCell = (int)bv[6];
             b.resting = bv[7] > 0.5;
             b.restStart = bv[8];
-            b.aware = bv[9] > 0.5;
-            b.practising = bv[10] > 0.5;
-            b.practiceT = bv[11];
+            for (int t = 0; t < population::NTECH; t++) {
+                b.tech[t].aware = bv[9 + t * 3] > 0.5;
+                b.tech[t].practising = bv[10 + t * 3] > 0.5;
+                b.tech[t].practiceT = bv[11 + t * 3];
+            }
             b.t = savedTime;
             b.nextUpdate = savedTime;
             if (b.targetCell >= 0 && b.targetCell < population::W * population::H)
@@ -457,9 +482,11 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     if (savedTechRng) w.tech.rng = savedTechRng;
     // Contact draws and the invention clock are exponential (memoryless), so
     // redrawing them on load is statistically exact.
-    for (int i = 0; i < (int)w.pop.settlements.size(); i++)
-        technology::redraw(w.pop, i, w.tech, savedTime);
-    technology::scheduleInvention(w.pop, w.tech, savedTime);
+    for (int t = 0; t < population::NTECH; t++) {
+        for (int i = 0; i < (int)w.pop.settlements.size(); i++)
+            technology::redraw(w.pop, i, w.tech, t, savedTime);
+        technology::scheduleInvention(w.pop, w.tech, t, savedTime);
+    }
     c.clampAltitude();
     return true;
 }
@@ -1132,14 +1159,13 @@ static void updateTooltip(int x, int y) {
 static std::string panelText(const Panel& pn) {
     const World& wd = app.world;
     char buf[400];
-    auto techLine = [&](bool aware, bool practising, double practiceT) {
-        if (!practising) return std::string(aware ? "Farming: known, not practised" : "Farming: unknown");
-        population::Settlement tmp{};
-        tmp.practising = true;
-        tmp.practiceT = practiceT;
+    auto techLine = [&](const population::TechState& ts, int techId) {
+        const char* name = techId == population::TECH_FARMING ? "Farming" : "Husbandry";
+        if (!ts.practising)
+            return std::string(name) + (ts.aware ? ": known, not practised" : ": unknown");
         char b[64];
-        snprintf(b, sizeof b, "Farming: practising, expertise %d%%",
-                 (int)std::lround(technology::expertise(tmp, wd.simTime) * 100));
+        snprintf(b, sizeof b, "%s: practising, expertise %d%%", name,
+                 (int)std::lround(technology::expertise(ts, wd.simTime) * 100));
         return std::string(b);
     };
     if (pn.kind == 0) {
@@ -1149,14 +1175,18 @@ static std::string panelText(const Panel& pn) {
         float lon = std::atan2(n.y, n.x) * 180.0f / 3.14159265f;
         float awareKm = population::settlementAwareKm(
             wd.simTime - st.founded, sim::prominenceM(wd.hydro, wd.clim, st.cell));
+        char herdTxt[48] = "";
+        if (st.herd > 0.5f)
+            snprintf(herdTxt, sizeof herdTxt, "\nLivestock: feeds %d", (int)st.herd);
         snprintf(buf, sizeof buf,
                  "Settlement %d\n%.1f%c  %.1f%c\nPeople: %d (capacity %d)\nStores: %d days\n"
-                 "Land condition: %d%%\n%s\nFarm suitability: %d%%\nAwareness: %d km",
+                 "Land condition: %d%%\n%s\n%s%s\nAwareness: %d km",
                  pn.index, std::fabs(lat), lat >= 0 ? 'N' : 'S', std::fabs(lon), lon >= 0 ? 'E' : 'W',
                  (int)st.P, (int)(technology::effectiveK(st, wd.simTime) * population::SUSTAIN_R),
                  (int)(st.S / std::max(st.P, 1.0f)), (int)std::lround(st.R * 100),
-                 techLine(st.aware, st.practising, st.practiceT).c_str(),
-                 (int)std::lround(st.sFarm * 100), (int)awareKm);
+                 techLine(st.tech[population::TECH_FARMING], population::TECH_FARMING).c_str(),
+                 techLine(st.tech[population::TECH_HUSBANDRY], population::TECH_HUSBANDRY).c_str(),
+                 herdTxt, (int)awareKm);
         return buf;
     }
     for (const population::Band& bd : wd.pop.bands)
@@ -1166,11 +1196,13 @@ static std::string panelText(const Panel& pn) {
             float awareKm = population::bandAwareKm(
                 rest, sim::prominenceM(wd.hydro, wd.clim, sim::cellOf({bd.px, bd.py, bd.pz})));
             snprintf(buf, sizeof buf,
-                     "Band %u\nPeople: %d\nStores: %d days\nState: %s\nTarget: %d km away\n%s\n"
+                     "Band %u\nPeople: %d\nStores: %d days\nState: %s\nTarget: %d km away\n%s\n%s\n"
                      "Awareness: %d km",
                      bd.id, (int)bd.P, (int)(bd.S / std::max(bd.P, 1.0f)),
                      bd.resting ? "resting" : "moving", (int)away,
-                     techLine(bd.aware, bd.practising, bd.practiceT).c_str(), (int)awareKm);
+                     techLine(bd.tech[population::TECH_FARMING], population::TECH_FARMING).c_str(),
+                     techLine(bd.tech[population::TECH_HUSBANDRY], population::TECH_HUSBANDRY).c_str(),
+                     (int)awareKm);
             return buf;
         }
     snprintf(buf, sizeof buf, "Band %u\n\nNo longer on the move:\nsettled, merged, or perished.",

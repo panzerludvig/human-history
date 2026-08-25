@@ -77,6 +77,18 @@ inline float bandAwareKm(double restDays, float promM) {
     return std::min(r + vantageKm(promM), AWARE_CAP_KM);
 }
 constexpr int MAX_BANDS = 200;
+constexpr float FARMYARD_SHARE_POP = 0.05f; // household animals, no pasture needed
+constexpr float HERD_GROWTH_YR = 0.25f;     // logistic growth rate
+constexpr float HERD_PASTURE_K = 2.0f;      // people/km2 on pure pasture at full expertise
+
+// The technology table (Design/Technology.md): per-settlement state for each
+// technology. Farming's original fields generalized when husbandry arrived.
+enum : int { TECH_FARMING = 0, TECH_HUSBANDRY = 1, NTECH = 2 };
+struct TechState {
+    bool aware = false;
+    bool practising = false; // implies aware
+    double practiceT = 0;    // sim day practice began (expertise grows from here)
+};
 
 struct Settlement {
     int cell;
@@ -93,12 +105,12 @@ struct Settlement {
     float meanG2 = 1;  // annual mean squared growing activity (farming shape)
     float kWater = 0;  // water-supply capacity
     float sFarm = 0;   // farming suitability 0..1 (grass-like cover, warm enough)
+    float pasture = 0; // grazing suitability 0..1 (grass, steppe, savanna, some tundra)
+    float herd = 0;    // livestock, in people-fed-per-day units (husbandry)
     // Technology state (see technology.h / Design/Technology.md):
-    bool aware = false;      // knows farming exists
-    bool practising = false; // farms; implies aware
-    double practiceT = 0;    // sim day practice began (expertise grows from here)
-    double nextTech = 1e18;  // next contact draw or resample moment
-    bool techFires = false;  // whether nextTech is a real transition
+    TechState tech[NTECH];
+    double nextTech[NTECH] = {1e18, 1e18}; // next contact draw or resample moment
+    bool techFires[NTECH] = {false, false};
 };
 
 // A migrating group: a settlement with velocity (Design/Migration.md). It
@@ -115,8 +127,7 @@ struct Band {
     double t = 0;            // sim day at which the state is valid
     double nextUpdate = 0;
     // Technology carried (demic diffusion):
-    bool aware = false, practising = false;
-    double practiceT = 0;
+    TechState tech[NTECH];
 };
 
 struct Field {
@@ -127,7 +138,7 @@ struct Field {
     std::vector<Band> bands;
     uint32_t nextBandId = 1;
     // Per-cell local properties, kept for founding settlements at runtime:
-    std::vector<float> kFoodPMap, kWaterMap, sFarmMap;
+    std::vector<float> kFoodPMap, kWaterMap, sFarmMap, pastureMap;
 };
 
 constexpr float CONTACT_KM = 160.0f; // twice the minimum settlement spacing
@@ -168,6 +179,12 @@ inline float farmSuitability(const terrain::Mixture& m, float tempC) {
     return grassy * std::clamp(tempC / 8.0f, 0.0f, 1.0f);
 }
 
+// Grazing suitability: what herds can eat. No warmth gate -- cold-steppe and
+// tundra herding (reindeer) are real.
+inline float pastureSuitability(const terrain::Mixture& m) {
+    return std::min(m.cov[5] + m.cov[6] + m.cov[7] + 0.4f * m.cov[8] + 0.3f * m.cov[1], 1.0f);
+}
+
 inline Field build(const terrain::ContinentParams& cp, float seaLevel, const float rot[9],
                    terrain::V3 offset, const plates::Field& pf, const hydrology::Result& hy,
                    const atmosphere::Climatology* clim = nullptr) {
@@ -177,9 +194,9 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
     const std::vector<float>& hm = hy.heightM;
 
     // Everything the population model needs to know about one cell.
-    auto evalCell = [&](int x, int y, float& kFoodP, float& kWater, float& sFarm) {
+    auto evalCell = [&](int x, int y, float& kFoodP, float& kWater, float& sFarm, float& pasture) {
         int i = y * W + x;
-        kFoodP = kWater = sFarm = 0;
+        kFoodP = kWater = sFarm = pasture = 0;
         float h = hm[i];
         if (h <= 0) return;                                           // land only
         if (hy.cells[i].lakeLevel > hydrology::NO_LAKE + 1 && h < hy.cells[i].lakeLevel) return;
@@ -215,16 +232,18 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         float litresPerDay = hy.accKm2[i] * hydrology::REF_RUNOFF_MM_YR * 1.0e6f / 365.0f;
         kWater = litresPerDay * USABLE_WATER / WATER_L_PER_PERSON;
         sFarm = farmSuitability(m, temp);
+        pasture = pastureSuitability(m);
     };
 
     f.kFoodPMap.assign(W * H, 0.0f);
     f.kWaterMap.assign(W * H, 0.0f);
     f.sFarmMap.assign(W * H, 0.0f);
+    f.pastureMap.assign(W * H, 0.0f);
 #pragma omp parallel for
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
             int i = y * W + x;
-            evalCell(x, y, f.kFoodPMap[i], f.kWaterMap[i], f.sFarmMap[i]);
+            evalCell(x, y, f.kFoodPMap[i], f.kWaterMap[i], f.sFarmMap[i], f.pastureMap[i]);
             f.K[i] = std::min(f.kFoodPMap[i], f.kWaterMap[i]);
         }
 
@@ -261,6 +280,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         s.kFoodP = f.kFoodPMap[c.cell];
         s.kWater = f.kWaterMap[c.cell];
         s.sFarm = f.sFarmMap[c.cell];
+        s.pasture = f.pastureMap[c.cell];
         s.S = 0.5f * CAP_DAYS_SETTLED * s.P;
         if (clim) atmosphere::seasonMeans(*clim, cellN(c.cell),
                                           std::max(hy.heightM[c.cell], 0.0f), s.meanF, s.meanG2);
@@ -305,6 +325,7 @@ struct SeasonCtx {
     terrain::V3 n{};
     float h = 0;
     float farmMult = 1; // 1 + gain*s*expertise, from technology
+    float husbExp = 0;  // husbandry expertise
 };
 
 inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double t) {
@@ -316,7 +337,12 @@ inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double
         float g = atmosphere::growthActivity(tC);
         fG2 = g * g / std::max(s.meanG2, 0.05f);
     }
-    return std::min((forage * fF + farm * fG2) * R, s.kWater);
+    // Husbandry: the herd is a walking store -- its flow barely dips in
+    // winter (fodder and slaughter). Plus the pasture-free farmyard animals.
+    float gNow = std::clamp((fF - 0.12f) / 0.88f, 0.0f, 1.0f);
+    float husb = (s.herd * (0.7f + 0.3f * gNow) +
+                  FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp) * R;
+    return std::min((forage * fF + farm * fG2) * R + husb, s.kWater);
 }
 
 // Integrate a settlement from its valid time to `now` and schedule the next
@@ -326,6 +352,8 @@ inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double
 inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     if (K <= 0) { s.t = now; s.nextUpdate = now + 3650; return false; }
     float capDays = CAP_DAYS_SETTLED * (2.0f - 1.0f / std::max(ctx.farmMult, 1.0f)); // granaries
+    float herdCap = s.pasture * FORAGE_KM2 * HERD_PASTURE_K / SUSTAIN_R *
+                    (0.3f + 0.7f * ctx.husbExp);
     float P = s.P, R = s.R, S = s.S;
     double span = now - s.t;
     int steps = std::clamp((int)(span / 5.0) + 1, 1, 800);
@@ -337,6 +365,12 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
         P = std::max(P + dP * hstep, 0.0f);
         R = std::clamp(R + dR * hstep, 0.0f, 1.0f);
         S = std::clamp(S + dS * hstep, 0.0f, capDays * std::max(P, 1.0f));
+        if (s.herd > 0 && herdCap > 0)
+            s.herd = std::clamp(s.herd + HERD_GROWTH_YR / 365.0f * s.herd *
+                                             (1.0f - s.herd / herdCap) * hstep,
+                                0.0f, herdCap * 1.05f);
+        else if (herdCap <= 0)
+            s.herd = 0;
     }
     bool changed = std::fabs(P - s.P) > 0.5f || std::fabs(R - s.R) > 0.002f;
     s.P = P;
