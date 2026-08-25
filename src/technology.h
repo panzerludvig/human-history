@@ -30,9 +30,16 @@ inline const char* techName(int t) {
 }
 
 struct WorldState {
+    // The simulate loop registers a sink so rescheduled clocks and contact
+    // draws land in its priority queue instead of requiring O(N) scans.
+    struct Sink {
+        virtual void techEvent(int idx, int tech, double when) = 0;
+        virtual void clockEvent(int tech, double when) = 0;
+    };
     uint64_t rng = 0;
     double nextEvent[population::NTECH] = {INF_T, INF_T}; // fire or resample moment
     bool fires[population::NTECH] = {false, false};
+    Sink* sink = nullptr;
 };
 
 // splitmix64, uniform in (0,1]
@@ -78,6 +85,7 @@ inline void redraw(population::Field& pf, int i, WorldState& ws, int tech, doubl
         if (!knowing) { s.nextTech[tech] = INF_T; return; }
         s.nextTech[tech] = now + expDraw(ws.rng, AWARE_MEAN_YEARS * YEAR / knowing);
         s.techFires[tech] = true;
+        if (ws.sink) ws.sink->techEvent(i, tech, s.nextTech[tech]);
     } else {
         float esum = 0;
         for (int j : pf.neighbours[i]) esum += expertise(pf.settlements[j].tech[tech], now);
@@ -86,6 +94,7 @@ inline void redraw(population::Field& pf, int i, WorldState& ws, int tech, doubl
         double dt = expDraw(ws.rng, 1.0 / rate);
         s.techFires[tech] = dt <= RESAMPLE;
         s.nextTech[tech] = now + std::min(dt, RESAMPLE);
+        if (ws.sink) ws.sink->techEvent(i, tech, s.nextTech[tech]);
     }
 }
 
@@ -102,6 +111,7 @@ inline void scheduleInvention(population::Field& pf, WorldState& ws, int tech, d
     double dt = expDraw(ws.rng, 1.0 / rate);
     ws.fires[tech] = dt <= RESAMPLE;
     ws.nextEvent[tech] = now + std::min(dt, RESAMPLE);
+    if (ws.sink) ws.sink->clockEvent(tech, ws.nextEvent[tech]);
 }
 
 inline void startPractising(population::Field& pf, int i, WorldState& ws, int tech, double now) {

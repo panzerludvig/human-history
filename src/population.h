@@ -103,6 +103,7 @@ struct Settlement {
     float kFoodP = 0;  // pristine food capacity (already / SUSTAIN_R)
     float meanF = 1;   // annual mean forage factor (seasonal climate)
     float meanG2 = 1;  // annual mean squared growing activity (farming shape)
+    float tSeason[4] = {15, 15, 15, 15}; // season temps at the site (cached)
     float kWater = 0;  // water-supply capacity
     float sFarm = 0;   // farming suitability 0..1 (grass-like cover, warm enough)
     float pasture = 0; // grazing suitability 0..1 (grass, steppe, savanna, some tundra)
@@ -282,8 +283,9 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         s.sFarm = f.sFarmMap[c.cell];
         s.pasture = f.pastureMap[c.cell];
         s.S = 0.5f * CAP_DAYS_SETTLED * s.P;
-        if (clim) atmosphere::seasonMeans(*clim, cellN(c.cell),
-                                          std::max(hy.heightM[c.cell], 0.0f), s.meanF, s.meanG2);
+        if (clim) atmosphere::seasonProfile(*clim, cellN(c.cell),
+                                            std::max(hy.heightM[c.cell], 0.0f), s.tSeason,
+                                            s.meanF, s.meanG2);
         f.settlements.push_back(s);
     }
     computeNeighbours(f);
@@ -328,11 +330,19 @@ struct SeasonCtx {
     float husbExp = 0;  // husbandry expertise
 };
 
+// The season-interpolated site temperature from the cached profile.
+inline float cachedSeasonT(const Settlement& s, double t) {
+    double sf = std::fmod(t, 365.0) / 365.0 * 4.0 - 0.5;
+    int s0 = ((int)std::floor(sf) % 4 + 4) % 4, s1 = (s0 + 1) % 4;
+    float f = (float)(sf - std::floor(sf));
+    return s.tSeason[s0] * (1 - f) + s.tSeason[s1] * f;
+}
+
 inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double t) {
     float forage = s.kFoodP, farm = s.kFoodP * (ctx.farmMult - 1.0f);
     float fF = s.meanF, fG2 = 1.0f;
     if (ctx.clim) {
-        float tC = atmosphere::seasonalTempC(*ctx.clim, ctx.n, ctx.h, t);
+        float tC = cachedSeasonT(s, t);
         fF = atmosphere::forageFactor(tC);
         float g = atmosphere::growthActivity(tC);
         fG2 = g * g / std::max(s.meanG2, 0.05f);

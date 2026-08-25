@@ -6,6 +6,7 @@
 #include "atmosphere.h"
 #include <cmath>
 #include <cstdio>
+#include <queue>
 
 namespace sim {
 
@@ -102,21 +103,39 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
     float dLat = radiusKm / 6371.0f;
     int y0 = std::max((int)(((lat0 - dLat) + 3.14159265f / 2) / 3.14159265f * H), 1);
     int y1 = std::min((int)(((lat0 + dLat) + 3.14159265f / 2) / 3.14159265f * H) + 1, H - 2);
-    int best = -1;
-    float bestScore = 0;
+    // Cheap scoring pass (chord distance, no spacing checks), then the
+    // expensive spacing check only on the best few in score order.
+    struct Cand { float est; int cell; };
+    Cand top[24];
+    int nTop = 0;
     for (int y = y0; y <= y1; y += 2)
         for (int x = 0; x < W; x += 2) {
             int cell = y * W + x;
             if (pf.K[cell] < MIN_SETTLEMENT_K) continue;
             terrain::V3 n = cellCentre(cell);
-            float d = distKm(from, n);
+            float dot = terrain::dot(from, n);
+            float d = 6371.0f * std::sqrt(std::max(2.0f - 2.0f * dot, 0.0f)); // chord ~ arc
             if (d > radiusKm || d < 80.0f) continue;
-            if (!spacingOK(pf, n)) continue;
             float noise = ((float)technology::urand(rng) * 2.0f - 1.0f) * 0.6f * (d / radiusKm);
             float est = pf.K[cell] * (1.0f + noise);
-            if (est > bestScore) { bestScore = est; best = cell; }
+            if (nTop < 24) {
+                top[nTop++] = {est, cell};
+            } else {
+                int worst = 0;
+                for (int k = 1; k < 24; k++)
+                    if (top[k].est < top[worst].est) worst = k;
+                if (est > top[worst].est) top[worst] = {est, cell};
+            }
         }
-    return best;
+    while (nTop > 0) {
+        int bi = 0;
+        for (int k = 1; k < nTop; k++)
+            if (top[k].est > top[bi].est) bi = k;
+        int cell = top[bi].cell;
+        if (spacingOK(pf, cellCentre(cell))) return cell;
+        top[bi] = top[--nTop];
+    }
+    return -1;
 }
 
 inline population::SeasonCtx seasonCtx(const population::Settlement& s,
@@ -170,8 +189,8 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     s.S = std::min(b.S, CAP_DAYS_SETTLED * b.P);
     for (int t = 0; t < NTECH; t++) s.tech[t] = b.tech[t];
     if (s.tech[TECH_HUSBANDRY].practising) s.herd = technology::HERD_SEED;
-    atmosphere::seasonMeans(clim, cellCentre(cell), std::max(hy.heightM[cell], 0.0f), s.meanF,
-                            s.meanG2);
+    atmosphere::seasonProfile(clim, cellCentre(cell), std::max(hy.heightM[cell], 0.0f), s.tSeason,
+                              s.meanF, s.meanG2);
     int idx = (int)pf.settlements.size();
     pf.settlementAt[cell] = idx;
     pf.settlements.push_back(s);
@@ -348,66 +367,112 @@ inline void maybeSplit(population::Field& pf, technology::WorldState& ws,
 // Process every due event in chronological order: settlement re-evaluations
 // (with split checks), contact draws, the world invention clock, and band
 // steps. Order matters because each event changes the rates around it.
+// Process every due event in chronological order through a lazy priority
+// queue: entries are (time, kind, id); each pop is validated against the
+// authoritative next-time and stale entries are skipped. Kinds: 0 world
+// invention clock (id = tech), 1 settlement wake, 2 settlement contact draw
+// (idx, tech), 3 band step (id = band id, stable across erases). After the
+// loop, a catch-up pass brings every settlement and band current to `now` --
+// any step size leaves the whole world exact at the displayed moment.
 inline bool simulate(population::Field& pf, technology::WorldState& ws,
                      const hydrology::Result& hy, const atmosphere::Climatology& clim, double now) {
+    using namespace population;
     if (pf.settlements.empty()) return false;
     bool changed = false;
-    while (true) {
-        double t = 1e18;
-        int kind = 0, idx = -1, tech = 0;
-        for (int tc = 0; tc < population::NTECH; tc++)
-            if (ws.nextEvent[tc] < t) { t = ws.nextEvent[tc]; kind = 0; tech = tc; }
-        for (int i = 0; i < (int)pf.settlements.size(); i++) {
-            const population::Settlement& s = pf.settlements[i];
-            if (s.nextUpdate < t) { t = s.nextUpdate; kind = 1; idx = i; }
-            for (int tc = 0; tc < population::NTECH; tc++)
-                if (s.nextTech[tc] < t) { t = s.nextTech[tc]; kind = 2; idx = i; tech = tc; }
+
+    struct Ev {
+        double t;
+        int kind, idx, tech;
+        bool operator<(const Ev& o) const { return t > o.t; } // min-heap
+    };
+    std::priority_queue<Ev> q;
+
+    struct HeapSink : technology::WorldState::Sink {
+        std::priority_queue<Ev>* q;
+        void techEvent(int idx, int tech, double when) override {
+            if (when < 1e17) q->push({when, 2, idx, tech});
         }
-        for (int i = 0; i < (int)pf.bands.size(); i++)
-            if (pf.bands[i].nextUpdate < t) { t = pf.bands[i].nextUpdate; kind = 3; idx = i; }
-        if (t > now) break;
-        if (kind == 1) {
-            population::Settlement& s = pf.settlements[idx];
-            changed |= population::advance(s, technology::effectiveK(s, t),
-                                           seasonCtx(s, hy, clim, t), t);
-            maybeSplit(pf, ws, hy, clim, idx, t);
-        } else if (kind == 2) {
-            population::Settlement& s = pf.settlements[idx];
-            if (!s.techFires[tech]) { technology::redraw(pf, idx, ws, tech, t); continue; }
-            if (!s.tech[tech].aware) {
-                s.tech[tech].aware = true;
-                fprintf(stderr, "tech: settlement %d aware of %s, day %.0f\n", idx,
-                        technology::techName(tech), t);
-                technology::redraw(pf, idx, ws, tech, t);
-                for (int j : pf.neighbours[idx])
-                    if (!pf.settlements[j].tech[tech].aware) technology::redraw(pf, j, ws, tech, t);
-            } else {
-                technology::startPractising(pf, idx, ws, tech, t);
-                fprintf(stderr, "tech: settlement %d starts %s, day %.0f\n", idx,
-                        technology::techName(tech), t);
-            }
-            technology::scheduleInvention(pf, ws, tech, t);
-            changed = true;
-        } else if (kind == 3) {
-            stepBand(pf, ws, hy, clim, idx, t);
-            changed = true;
-        } else {
-            if (!ws.fires[tech]) { technology::scheduleInvention(pf, ws, tech, t); continue; }
-            int wi = technology::pickInventor(pf, ws, tech, t);
+        void clockEvent(int tech, double when) override {
+            if (when < 1e17) q->push({when, 0, 0, tech});
+        }
+    } sink;
+    sink.q = &q;
+    ws.sink = &sink;
+
+    auto pushSettlement = [&](int i) {
+        const Settlement& s = pf.settlements[i];
+        if (s.nextUpdate < 1e17) q.push({s.nextUpdate, 1, i, 0});
+        for (int t = 0; t < NTECH; t++)
+            if (s.nextTech[t] < 1e17) q.push({s.nextTech[t], 2, i, t});
+    };
+    auto pushBand = [&](const Band& b) { q.push({b.nextUpdate, 3, (int)b.id, 0}); };
+    for (int i = 0; i < (int)pf.settlements.size(); i++) pushSettlement(i);
+    for (const Band& b : pf.bands) pushBand(b);
+    for (int t = 0; t < NTECH; t++)
+        if (ws.nextEvent[t] < 1e17) q.push({ws.nextEvent[t], 0, 0, t});
+
+    while (!q.empty() && q.top().t <= now) {
+        Ev ev = q.top();
+        q.pop();
+        double t = ev.t;
+        if (ev.kind == 0) {
+            if (t != ws.nextEvent[ev.tech]) continue; // stale
+            if (!ws.fires[ev.tech]) { technology::scheduleInvention(pf, ws, ev.tech, t); continue; }
+            int wi = technology::pickInventor(pf, ws, ev.tech, t);
             if (wi >= 0) {
-                technology::startPractising(pf, wi, ws, tech, t);
+                technology::startPractising(pf, wi, ws, ev.tech, t);
                 fprintf(stderr, "tech: %s invented at settlement %d, day %.0f\n",
-                        technology::techName(tech), wi, t);
+                        technology::techName(ev.tech), wi, t);
                 changed = true;
             }
-            technology::scheduleInvention(pf, ws, tech, t);
+            technology::scheduleInvention(pf, ws, ev.tech, t);
+        } else if (ev.kind == 1) {
+            Settlement& s = pf.settlements[ev.idx];
+            if (t != s.nextUpdate) continue;
+            changed |= population::advance(s, technology::effectiveK(s, t),
+                                           seasonCtx(s, hy, clim, t), t);
+            if (s.nextUpdate < 1e17) q.push({s.nextUpdate, 1, ev.idx, 0});
+            size_t bandsBefore = pf.bands.size();
+            maybeSplit(pf, ws, hy, clim, ev.idx, t);
+            for (size_t b = bandsBefore; b < pf.bands.size(); b++) pushBand(pf.bands[b]);
+        } else if (ev.kind == 2) {
+            Settlement& s = pf.settlements[ev.idx];
+            if (t != s.nextTech[ev.tech]) continue;
+            if (!s.techFires[ev.tech]) { technology::redraw(pf, ev.idx, ws, ev.tech, t); continue; }
+            if (!s.tech[ev.tech].aware) {
+                s.tech[ev.tech].aware = true;
+                fprintf(stderr, "tech: settlement %d aware of %s, day %.0f\n", ev.idx,
+                        technology::techName(ev.tech), t);
+                technology::redraw(pf, ev.idx, ws, ev.tech, t);
+                for (int j : pf.neighbours[ev.idx])
+                    if (!pf.settlements[j].tech[ev.tech].aware)
+                        technology::redraw(pf, j, ws, ev.tech, t);
+            } else {
+                technology::startPractising(pf, ev.idx, ws, ev.tech, t);
+                fprintf(stderr, "tech: settlement %d starts %s, day %.0f\n", ev.idx,
+                        technology::techName(ev.tech), t);
+            }
+            technology::scheduleInvention(pf, ws, ev.tech, t);
+            changed = true;
+        } else {
+            int bi = -1;
+            for (int i = 0; i < (int)pf.bands.size(); i++)
+                if ((int)pf.bands[i].id == ev.idx) { bi = i; break; }
+            if (bi < 0 || t != pf.bands[bi].nextUpdate) continue;
+            size_t settsBefore = pf.settlements.size();
+            bool alive = stepBand(pf, ws, hy, clim, bi, t);
+            if (alive) pushBand(pf.bands[bi]);
+            for (size_t i = settsBefore; i < pf.settlements.size(); i++) pushSettlement((int)i);
+            changed = true;
         }
     }
+    ws.sink = nullptr;
+
     // Catch-up: bring every settlement and band current to `now`, whatever
     // the step size -- minute steps show the world in full detail, big steps
     // aggregate through the event loop above first (Design/Event-Driven).
     for (int i = 0; i < (int)pf.settlements.size(); i++) {
-        population::Settlement& s = pf.settlements[i];
+        Settlement& s = pf.settlements[i];
         if (s.t < now - 1e-9) {
             changed |= population::advance(s, technology::effectiveK(s, now),
                                            seasonCtx(s, hy, clim, now), now);

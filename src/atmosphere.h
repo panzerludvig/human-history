@@ -523,10 +523,15 @@ inline float forageFactor(float tC) { return 0.12f + 0.88f * growthActivity(tC);
 
 // Annual means of the forage factor and squared activity (the farming shape),
 // from the four season bands at a settlement's site.
-inline void seasonMeans(const Climatology& c, terrain::V3 nRaw, float hLocal, float& meanF,
-                        float& meanG2) {
+// The full seasonal profile at a fixed site: the four season temperatures
+// (cached per settlement -- their site never moves, so the expensive fuzz
+// and bilinear sampling happens once, not per integration substep) plus the
+// annual means derived from them.
+inline void seasonProfile(const Climatology& c, terrain::V3 nRaw, float hLocal, float tOut[4],
+                          float& meanF, float& meanG2) {
     meanF = 1.0f;
     meanG2 = 1.0f;
+    for (int se = 0; se < SEASONS; se++) tOut[se] = 15.0f;
     if (c.meanT.empty()) return;
     terrain::V3 nf = climFuzz(nRaw);
     float lapse = 6.5f * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), nf)) / 1000.0f;
@@ -534,6 +539,7 @@ inline void seasonMeans(const Climatology& c, terrain::V3 nRaw, float hLocal, fl
     meanG2 = 0;
     for (int se = 0; se < SEASONS; se++) {
         float t = bilinearAt(c.meanT, se, nf) - lapse;
+        tOut[se] = t;
         float g = growthActivity(t);
         meanF += forageFactor(t) / SEASONS;
         meanG2 += g * g / SEASONS;

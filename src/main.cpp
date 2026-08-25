@@ -451,8 +451,9 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.herd = (float)sv[11];
             if (st.tech[population::TECH_HUSBANDRY].practising && st.herd <= 0)
                 st.herd = technology::HERD_SEED;
-            atmosphere::seasonMeans(w.clim, sim::cellCentre(cell),
-                                    std::max(w.hydro.heightM[cell], 0.0f), st.meanF, st.meanG2);
+            atmosphere::seasonProfile(w.clim, sim::cellCentre(cell),
+                                      std::max(w.hydro.heightM[cell], 0.0f), st.tSeason,
+                                      st.meanF, st.meanG2);
             w.pop.settlementAt[cell] = (int)w.pop.settlements.size();
             w.pop.settlements.push_back(st);
         }
