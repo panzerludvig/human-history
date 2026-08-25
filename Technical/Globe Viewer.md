@@ -81,7 +81,13 @@ Sustained scarcity (φ < 0.99 for 2 years, P ≥ 50) splits a third of a settlem
 
 ## Technology table
 
-Per-settlement (and band) tech state is an array (`population::TechState tech[NTECH]`, currently farming and animal husbandry) with per-technology world invention clocks, contact spread, suitability gates (sFarm / pasture), and expertise. Husbandry adds a herd (people-fed units) growing logistically toward pasture x expertise inside `population::advance`, a winter-resistant flow in `foodFlow`, and a farmyard bonus; panels show per-tech status and "Livestock: feeds N". Save format v7 carries the tech array and herd.
+Per-settlement (and band) tech state is an array (`population::TechState tech[NTECH]`, currently farming, animal husbandry, and granary building) with per-technology world invention clocks, contact spread, suitability gates (sFarm / pasture / practises-farming), and expertise. Husbandry adds a herd (people-fed units) growing logistically toward pasture x expertise inside `population::advance`, a winter-resistant flow in `foodFlow`, and a farmyard bonus; panels show per-tech status and "Livestock: feeds N". Save format v7 carries the tech array and herd.
+
+## Buildings (granaries)
+
+The first buildings on the map. Each settlement tracks completed `granaries`, the current build project (`buildWork` man-days remaining, integrated inside `population::advance` at the same substeps as P/R/S, so step invariance holds), and the annual fill cycle (`fillLo`/`fillHi`/`cycleT`) that decides when a new build starts (design in [[Design/Technology]]). Build pace scales with granary expertise and the per-cell `buildMat` (timber + bare rock from the cover mixture, floor 0.15). Storage: `storageCapDays` = 90 days + 10,000 rations per granary — this replaced the old farm-multiplier storage stand-in.
+
+Rendering: the population texture's alpha channel carries the granary count at the settlement's cell; the shader draws up to 8 straw-coloured markers on a golden-angle ring 6.5 km around the cell centre, visible only when zoomed right in (uKmPerPixel < 2.5). Marker positions are defined ONCE in `sim::granaryPos` and mirrored exactly in the shader's `granaryNear` (integer per-cell phase, so CPU and GPU cannot drift); the tooltip uses the same positions to prepend "Granary" when the cursor is over one, with the same draw-radius-plus-3px pick slop as markers. Granaries are not selectable. Save format v8 carries granaries, buildWork, and the fill cycle. For testing, an argv seed of `@name` loads `worlds\name.ibw` instead of generating, and the post-fast-forward stderr summary reports granary totals.
 
 ## Tooltip
 

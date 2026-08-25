@@ -62,7 +62,7 @@ cold survival.
 | Boats | known, expertise local | built boats | water movement, offshore fishing (planned) |
 | Archery | known, low expertise | made bows | hunting/winter floor (planned) |
 | Pottery | undiscovered | made pots | portable storage (planned) |
-| Granaries | undiscovered | built granaries | settlement storage (planned) |
+| Granaries | undiscovered | built granaries | settlement storage |
 
 The general pattern: **benefit = knowledge x means**, where the means is
 environmental (fishing, farming), made things (boats, bows, pots, granaries
@@ -90,6 +90,38 @@ why pastoralism owns seasonal grassland. A small pasture-free farmyard bonus
 covers scavenger animals (chickens, pigs). Discovery is weighted by pasture
 and scarcity. Deferred: band-owned herds (pastoral nomadism proper),
 overgrazing feedback on R.
+
+## Granaries (the third technology; the first building)
+
+Granaries follow the plough: the technology can only be invented or taken up
+by a settlement that practises farming (its suitability gate). The granary
+itself is the project's first **building** — a structure that exists on the
+map at the settlement, visible when zoomed right in, identified by the
+tooltip, and acting as a local modifier: each one banks a fixed absolute
+store (10,000 rations), so its worth in days shrinks as people multiply and
+granary count naturally tracks population.
+
+**Demand is measured, not planned**, from the annual fill cycle. A build
+starts only when, over the past year, the settlement both *filled* its
+existing capacity (the fat season had more to bank) and then *nearly drained
+it* (fill fell below 35% — the buffer binds, famine was near). Once capacity
+comfortably covers the winter drawdown the low mark stays high and building
+stops; growth deepens the drawdown and reopens demand. Both sides of the
+gate matter: a settlement that cannot fill what it already has gains nothing
+from more, so it never builds more. Mild-climate foragers essentially never
+qualify — their year has no deep lean season.
+
+**Building**: a fixed work total (1,000 man-days — the total never changes),
+delivered by ~2% of the people, at a pace set by granary expertise and by
+local materials (standing timber, else bare rock; never zero — driftwood and
+fieldstone exist everywhere, just slowly). Only the fed build: work pauses
+when stores fall to the hoarding threshold. A skilled, wooded village raises
+one in a season or two; a novice one on bare steppe takes years.
+
+Storage capacity replaced the old farming-expertise stand-in (cap was 90–180
+days via the farm multiplier; it is now 90 days + built granaries).
+Deferred to a follow-up: maintenance and decay (abandoned granaries should
+crumble back to ruin).
 
 ---
 

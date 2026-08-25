@@ -25,7 +25,7 @@ constexpr float HERD_SEED = 1.0f;             // bred from wild capture at pract
 constexpr double RESAMPLE = 50.0 * YEAR;
 
 inline const char* techName(int t) {
-    static const char* names[population::NTECH] = {"farming", "husbandry"};
+    static const char* names[population::NTECH] = {"farming", "husbandry", "granaries"};
     return names[t];
 }
 
@@ -37,8 +37,8 @@ struct WorldState {
         virtual void clockEvent(int tech, double when) = 0;
     };
     uint64_t rng = 0;
-    double nextEvent[population::NTECH] = {INF_T, INF_T}; // fire or resample moment
-    bool fires[population::NTECH] = {false, false};
+    double nextEvent[population::NTECH] = {INF_T, INF_T, INF_T}; // fire or resample moment
+    bool fires[population::NTECH] = {false, false, false};
     Sink* sink = nullptr;
 };
 
@@ -59,8 +59,12 @@ inline float expertise(const population::TechState& ts, double now) {
 }
 
 // The suitability gate for practising a technology at a settlement's site.
+// Granaries follow the plough: only a farming settlement has a harvest pulse
+// worth banking, so only farmers invent or take up granary building.
 inline float suitability(const population::Settlement& s, int tech) {
-    return tech == population::TECH_FARMING ? s.sFarm : s.pasture;
+    if (tech == population::TECH_FARMING) return s.sFarm;
+    if (tech == population::TECH_HUSBANDRY) return s.pasture;
+    return s.tech[population::TECH_FARMING].practising ? 1.0f : 0.0f;
 }
 
 // Annual food capacity: foraging scaled by the seasonal mean, farming's
@@ -122,6 +126,9 @@ inline void startPractising(population::Field& pf, int i, WorldState& ws, int te
     s.tech[tech].practiceT = now;
     s.nextTech[tech] = INF_T;
     if (tech == TECH_HUSBANDRY) s.herd = std::max(s.herd, HERD_SEED); // bred from capture
+    // Taking up farming opens the granary gate: re-arm that clock too, since
+    // its suitability was 0 (and its draw parked at infinity) until now.
+    if (tech == TECH_FARMING) redraw(pf, i, ws, TECH_GRANARY, now);
     for (int j : pf.neighbours[i]) redraw(pf, j, ws, tech, now);
 }
 

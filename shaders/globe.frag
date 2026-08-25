@@ -304,6 +304,33 @@ float bandNear(vec3 n) {
     return 0.0;
 }
 
+// Granary markers: a ring of small structures around the settlement's cell
+// centre, visible only zoomed right in. Mirrors sim::granaryPos EXACTLY
+// (golden-angle ring, integer per-cell phase, 6.5 km radius) so the tooltip
+// and the drawing can never drift apart.
+float granaryNear(vec3 n) {
+    if (uKmPerPixel > 2.5) return 0.0;
+    float rad = clamp(uKmPerPixel * 2.0, 0.6, 2.5);
+    ivec2 c0 = hydroCell(n);
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 c = c0 + ivec2(dx, dy);
+            ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
+            int g = int(texelFetch(uPop, cw, 0).a + 0.5);
+            if (g <= 0) continue;
+            vec3 cc = cellCentre(cw);
+            vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
+            vec3 north = cross(cc, east);
+            int cell = cw.y * HW + cw.x;
+            for (int k = 0; k < g && k < 8; k++) {
+                float a = 2.39996 * float(k) + float(cell % 628) * 0.01;
+                vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (6.5 / 6371.0));
+                if (length(n - p) * 6371.0 < rad) return 1.0;
+            }
+        }
+    return 0.0;
+}
+
 // Climate lookups are warped by a small noise (~60 km) so the coarse grid's
 // bilinear creases become organic wiggles. Mirrors atmosphere::climFuzz.
 vec3 climFuzz(vec3 n) {
@@ -710,6 +737,8 @@ void main() {
     float bp = uHasHydro == 1 ? bandNear(n) : 0.0;
     if (sp > 0.0 && !isWater) albedo = vec3(0.55, 0.08, 0.05) * (0.75 + 0.25 * clamp(log(sp) / 11.0, 0.0, 1.0));
     else if (bp > 0.0) albedo = vec3(0.85, 0.55, 0.10); // bands: amber, even mid-crossing
+    else if (uHasHydro == 1 && !isWater && granaryNear(n) > 0.0)
+        albedo = vec3(0.80, 0.64, 0.26); // granaries: straw-coloured stores
     else if (isRiver) albedo = mix(vec3(0.10, 0.30, 0.48), vec3(0.80, 0.86, 0.92), iceAt(n, h));
     else if (isPond) albedo = mix(vec3(0.14, 0.36, 0.50), vec3(0.80, 0.86, 0.92), iceAt(n, h));
     else if (isWater) {

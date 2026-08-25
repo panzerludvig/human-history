@@ -148,7 +148,23 @@ inline population::SeasonCtx seasonCtx(const population::Settlement& s,
     ctx.farmMult = 1.0f + technology::FARM_YIELD_GAIN * s.sFarm *
                        technology::expertise(s.tech[population::TECH_FARMING], now);
     ctx.husbExp = technology::expertise(s.tech[population::TECH_HUSBANDRY], now);
+    ctx.granExp = technology::expertise(s.tech[population::TECH_GRANARY], now);
     return ctx;
+}
+
+// Granary marker positions: a ring of small structures around the
+// settlement's cell centre, spaced by the golden angle with a per-cell
+// integer phase. Defined ONCE here and mirrored exactly in
+// shaders/globe.frag (granaryNear) so drawing and the tooltip cannot drift.
+constexpr float GRANARY_RING_KM = 6.5f;
+inline terrain::V3 granaryPos(int cell, int k) {
+    terrain::V3 c = cellCentre(cell);
+    terrain::V3 east = norm3({-c.y, c.x, 0.0f});
+    terrain::V3 north = {c.y * east.z - c.z * east.y, c.z * east.x - c.x * east.z,
+                         c.x * east.y - c.y * east.x};
+    float a = 2.39996f * k + (float)(cell % 628) * 0.01f;
+    float r = GRANARY_RING_KM / 6371.0f;
+    return norm3(c + (east * std::cos(a) + north * std::sin(a)) * r);
 }
 
 // A band forages the cell it stands on: same famine rule as a settlement, but
@@ -186,6 +202,8 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     s.kWater = pf.kWaterMap[cell];
     s.sFarm = pf.sFarmMap[cell];
     s.pasture = pf.pastureMap[cell];
+    s.buildMat = pf.buildMatMap[cell];
+    s.cycleT = now; // the fill cycle starts with the settlement
     s.S = std::min(b.S, CAP_DAYS_SETTLED * b.P);
     for (int t = 0; t < NTECH; t++) s.tech[t] = b.tech[t];
     if (s.tech[TECH_HUSBANDRY].practising) s.herd = technology::HERD_SEED;
@@ -238,6 +256,7 @@ inline bool mergeBand(population::Field& pf, technology::WorldState& ws,
             t.tech[tc].practiceT = b.tech[tc].practiceT;
             t.nextTech[tc] = 1e18;
             if (tc == TECH_HUSBANDRY && t.herd <= 0) t.herd = technology::HERD_SEED;
+            if (tc == TECH_FARMING) technology::redraw(pf, ti, ws, TECH_GRANARY, now);
             for (int j : pf.neighbours[ti]) technology::redraw(pf, j, ws, tc, now);
             technology::scheduleInvention(pf, ws, tc, now);
         }

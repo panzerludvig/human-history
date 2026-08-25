@@ -78,7 +78,7 @@ The band is the first instance of Delegate's Agents concept ([[Design/Core Conce
 
 - ~~Bands currently cross water as if it were maximally barren land~~ Superseded by passability: unfrozen open water is crossed at half speed (the raft stand-in made explicit), **frozen** water — seasonal local temperature below −2 °C — is walked at full speed, and a major unfrozen river slows a band to fording pace. Stores still drain on water and ice (no forage), so range limits remain; winter is the crossing season, and ice-bridge migrations over northern straits are possible. Boats stay a future technology.
 
-- Exact harvest time-budget numbers, and whether the settled cap (90 days) should predate granary technology at all.
+- Exact harvest time-budget numbers. (Resolved: the settled cap of 90 days predates granaries — pits and baskets — and built granaries extend it; see [[Design/Technology]].)
 - How knowledge ages: do rumours of a valley persist after the band that heard them settles?
 - What a group passing a foreign settlement does short of raiding (trade, tension, absorption?).
 - Does a departing band leave a scar — reduced P is stored, but should R take a parting hit?

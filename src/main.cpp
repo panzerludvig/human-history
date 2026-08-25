@@ -348,7 +348,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 7\n";
+    f << "version 8\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -361,7 +361,9 @@ static bool saveWorld(const World& w, const Camera& c) {
         for (int t = 0; t < population::NTECH; t++)
             f << (int)s.tech[t].aware << " " << (int)s.tech[t].practising << " "
               << s.tech[t].practiceT << " ";
-        f << s.S << " " << s.scarceSince << " " << s.founded << " " << s.herd << "\n";
+        f << s.S << " " << s.scarceSince << " " << s.founded << " " << s.herd << " "
+          << s.granaries << " " << s.buildWork << " " << s.fillLo << " " << s.fillHi << " "
+          << s.cycleT << "\n";
     }
     for (const population::Band& b : w.pop.bands) {
         f << "band " << b.id << " " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
@@ -380,8 +382,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     if (!f) return false;
     w = World{};
     w.name = name;
-    std::vector<std::array<double, 13>> savedSettlements;
-    std::vector<std::array<double, 15>> savedBands;
+    std::vector<std::array<double, 21>> savedSettlements;
+    std::vector<std::array<double, 18>> savedBands;
     double savedTime = 0;
     int version = 1;
     uint64_t savedTechRng = 0;
@@ -392,25 +394,32 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         else if (key == "time") f >> savedTime;
         else if (key == "techrng") f >> savedTechRng;
         else if (key == "settlement") {
-            // layout: cell P R [aware practising practiceT]xNTECH S scarce founded herd
-            std::array<double, 13> sv{};
-            sv[9] = -1; // scarceSince default
+            // layout: cell P R [aware practising practiceT]xNTECH S scarce founded
+            // herd; v8 adds granaries buildWork fillLo fillHi cycleT (and a third
+            // tech triple). Unified slots: tech at 3..11, the rest from 12.
+            std::array<double, 21> sv{};
+            sv[13] = -1; // scarceSince default
+            sv[18] = 2;  // fillLo default (no observation yet)
+            sv[19] = -1; // fillHi default
             f >> sv[0] >> sv[1] >> sv[2];
             if (version >= 7) {
-                for (int t = 0; t < 6; t++) f >> sv[3 + t];
-                f >> sv[9 - 1] >> sv[9] >> sv[10] >> sv[11];
+                int nt = version >= 8 ? 3 : 2;
+                for (int t = 0; t < nt * 3; t++) f >> sv[3 + t];
+                f >> sv[12] >> sv[13] >> sv[14] >> sv[15];
+                if (version >= 8) f >> sv[16] >> sv[17] >> sv[18] >> sv[19] >> sv[20];
             } else {
                 if (version >= 3) f >> sv[3] >> sv[4] >> sv[5];
-                if (version >= 4) f >> sv[8] >> sv[9];
-                else sv[8] = 0.5 * population::CAP_DAYS_SETTLED * sv[1];
-                if (version >= 6) f >> sv[10];
+                if (version >= 4) f >> sv[12] >> sv[13];
+                else sv[12] = 0.5 * population::CAP_DAYS_SETTLED * sv[1];
+                if (version >= 6) f >> sv[14];
             }
             savedSettlements.push_back(sv);
         }
         else if (key == "band") {
-            std::array<double, 15> bv{};
+            std::array<double, 18> bv{};
             if (version >= 7) {
-                for (int i = 0; i < 15; i++) f >> bv[i];
+                int n = version >= 8 ? 18 : 15;
+                for (int i = 0; i < n; i++) f >> bv[i];
             } else {
                 int i0 = version >= 5 ? 0 : 1;
                 for (int i = i0; i < 12; i++) f >> bv[i];
@@ -445,10 +454,16 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
                 st.tech[t].practising = sv[4 + t * 3] > 0.5;
                 st.tech[t].practiceT = sv[5 + t * 3];
             }
-            st.S = (float)sv[8];
-            st.scarceSince = sv[9];
-            st.founded = sv[10];
-            st.herd = (float)sv[11];
+            st.S = (float)sv[12];
+            st.scarceSince = sv[13];
+            st.founded = sv[14];
+            st.herd = (float)sv[15];
+            st.granaries = (float)sv[16];
+            st.buildWork = (float)sv[17];
+            st.fillLo = (float)sv[18];
+            st.fillHi = (float)sv[19];
+            st.cycleT = version >= 8 ? sv[20] : savedTime;
+            st.buildMat = w.pop.buildMatMap[cell];
             if (st.tech[population::TECH_HUSBANDRY].practising && st.herd <= 0)
                 st.herd = technology::HERD_SEED;
             atmosphere::seasonProfile(w.clim, sim::cellCentre(cell),
@@ -587,7 +602,10 @@ static std::vector<float> popTexData() {
     std::vector<float> d(population::W * population::H * 4, 0.0f);
     const population::Field& pf = app.world.pop;
     for (int i = 0; i < population::W * population::H; i++) d[i * 4] = pf.K[i];
-    for (const population::Settlement& s : pf.settlements) d[s.cell * 4 + 1] = std::max(s.P, 1.0f);
+    for (const population::Settlement& s : pf.settlements) {
+        d[s.cell * 4 + 1] = std::max(s.P, 1.0f);
+        d[s.cell * 4 + 3] = s.granaries; // alpha: built granaries at the cell
+    }
     for (const population::Band& b : pf.bands) {
         int cell = sim::cellOf({b.px, b.py, b.pz});
         d[cell * 4 + 2] += std::max(b.P, 1.0f);
@@ -1103,6 +1121,27 @@ static std::string describePoint(Vec3 n) {
     int cx = (int)std::floor((lon + PI) / (2 * PI) * hydrology::W), cy = (int)std::floor((lat + PI / 2) / PI * hydrology::H);
     cx = hydrology::wrapX(cx);
     cy = std::clamp(cy, 0, hydrology::H - 1);
+    // A building under the cursor names itself: same marker positions the
+    // shader draws (sim::granaryPos, defined once), pick radius = draw
+    // radius plus ~3 px of slop.
+    std::string building;
+    if (!wd.pop.settlementAt.empty()) {
+        float pickR = (float)std::clamp(app.cam.kmPerPixel() * 2.0, 0.6, 2.5) +
+                      (float)(app.cam.kmPerPixel() * 3.0);
+        for (int dy = -1; dy <= 1 && building.empty(); dy++)
+            for (int dx = -1; dx <= 1 && building.empty(); dx++) {
+                int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
+                int cell = yy * hydrology::W + hydrology::wrapX(cx + dx);
+                int si = wd.pop.settlementAt[cell];
+                if (si < 0) continue;
+                const population::Settlement& st = wd.pop.settlements[si];
+                for (int k = 0; k < (int)(st.granaries + 0.5f) && k < 8; k++)
+                    if (sim::distKm(nf, sim::granaryPos(st.cell, k)) < pickR) {
+                        building = "Granary  |  ";
+                        break;
+                    }
+            }
+    }
     bool nearRiver = false;
     if (!wd.hydro.cells.empty()) {
         const hydrology::Cell& c = wd.hydro.cells[cy * hydrology::W + cx];
@@ -1135,8 +1174,8 @@ static std::string describePoint(Vec3 n) {
             extra = b;
         }
     }
-    snprintf(buf, sizeof buf, "%s  |  %.0f C  |  %s%s%s", fmtM(h).c_str(), tempNow, describeMixture(m).c_str(),
-             climTxt, extra.c_str());
+    snprintf(buf, sizeof buf, "%s%s  |  %.0f C  |  %s%s%s", building.c_str(), fmtM(h).c_str(),
+             tempNow, describeMixture(m).c_str(), climTxt, extra.c_str());
     return buf;
 }
 
@@ -1159,9 +1198,11 @@ static void updateTooltip(int x, int y) {
 
 static std::string panelText(const Panel& pn) {
     const World& wd = app.world;
-    char buf[400];
+    char buf[512];
     auto techLine = [&](const population::TechState& ts, int techId) {
-        const char* name = techId == population::TECH_FARMING ? "Farming" : "Husbandry";
+        static const char* names[population::NTECH] = {"Farming", "Husbandry",
+                                                       "Granary building"};
+        const char* name = names[techId];
         if (!ts.practising)
             return std::string(name) + (ts.aware ? ": known, not practised" : ": unknown");
         char b[64];
@@ -1179,15 +1220,23 @@ static std::string panelText(const Panel& pn) {
         char herdTxt[48] = "";
         if (st.herd > 0.5f)
             snprintf(herdTxt, sizeof herdTxt, "\nLivestock: feeds %d", (int)st.herd);
+        char granTxt[64] = "";
+        if (st.buildWork > 0)
+            snprintf(granTxt, sizeof granTxt, "\nGranaries: %d (building, %d%% done)",
+                     (int)st.granaries,
+                     (int)std::lround((1.0 - st.buildWork / population::GRANARY_WORK) * 100));
+        else if (st.granaries > 0.5f)
+            snprintf(granTxt, sizeof granTxt, "\nGranaries: %d", (int)st.granaries);
         snprintf(buf, sizeof buf,
                  "Settlement %d\n%.1f%c  %.1f%c\nPeople: %d (capacity %d)\nStores: %d days\n"
-                 "Land condition: %d%%\n%s\n%s%s\nAwareness: %d km",
+                 "Land condition: %d%%\n%s\n%s\n%s%s%s\nAwareness: %d km",
                  pn.index, std::fabs(lat), lat >= 0 ? 'N' : 'S', std::fabs(lon), lon >= 0 ? 'E' : 'W',
                  (int)st.P, (int)(technology::effectiveK(st, wd.simTime) * population::SUSTAIN_R),
                  (int)(st.S / std::max(st.P, 1.0f)), (int)std::lround(st.R * 100),
                  techLine(st.tech[population::TECH_FARMING], population::TECH_FARMING).c_str(),
                  techLine(st.tech[population::TECH_HUSBANDRY], population::TECH_HUSBANDRY).c_str(),
-                 herdTxt, (int)awareKm);
+                 techLine(st.tech[population::TECH_GRANARY], population::TECH_GRANARY).c_str(),
+                 herdTxt, granTxt, (int)awareKm);
         return buf;
     }
     for (const population::Band& bd : wd.pop.bands)
@@ -1197,12 +1246,13 @@ static std::string panelText(const Panel& pn) {
             float awareKm = population::bandAwareKm(
                 rest, sim::prominenceM(wd.hydro, wd.clim, sim::cellOf({bd.px, bd.py, bd.pz})));
             snprintf(buf, sizeof buf,
-                     "Band %u\nPeople: %d\nStores: %d days\nState: %s\nTarget: %d km away\n%s\n%s\n"
+                     "Band %u\nPeople: %d\nStores: %d days\nState: %s\nTarget: %d km away\n%s\n%s\n%s\n"
                      "Awareness: %d km",
                      bd.id, (int)bd.P, (int)(bd.S / std::max(bd.P, 1.0f)),
                      bd.resting ? "resting" : "moving", (int)away,
                      techLine(bd.tech[population::TECH_FARMING], population::TECH_FARMING).c_str(),
                      techLine(bd.tech[population::TECH_HUSBANDRY], population::TECH_HUSBANDRY).c_str(),
+                     techLine(bd.tech[population::TECH_GRANARY], population::TECH_GRANARY).c_str(),
                      (int)awareKm);
             return buf;
         }
@@ -1509,23 +1559,36 @@ int main(int argc, char** argv) {
 
     // Testing shortcut:
     // ironblood <latDeg> <lonDeg> [altitudeKm] [seed] [land%] [conc%] [debugmode] [fastForwardYears]
+    // A seed of "@name" loads worlds\name.ibw instead of generating (testing).
     if (argc >= 3) {
-        app.world.seed = argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0;
-        if (argc >= 6) app.world.landPercent = (float)atof(argv[5]);
-        if (argc >= 7) app.world.concentration = (float)atof(argv[6]);
+        bool loaded = argc >= 5 && argv[4][0] == '@' &&
+                      loadWorld(argv[4] + 1, app.world, app.cam);
+        if (!loaded) {
+            app.world.seed = argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0;
+            if (argc >= 6) app.world.landPercent = (float)atof(argv[5]);
+            if (argc >= 7) app.world.concentration = (float)atof(argv[6]);
+            app.world.build();
+        }
         if (argc >= 8) {
             std::string d = argv[7];
             app.debugMode = d == "plates" ? 1 : d == "substrate" ? 2 : d == "vegetation" ? 3
                           : d == "population" ? 4 : d == "climate" ? 5 : 0;
         }
-        app.world.build();
         uploadHydrology();
         app.cam.lat = atof(argv[1]) * PI / 180;
         app.cam.lon = atof(argv[2]) * PI / 180;
         if (argc >= 4) app.cam.altitude = atof(argv[3]) / EARTH_RADIUS_KM;
         app.cam.clampAltitude();
         setScreen(Screen::InGame);
-        if (argc >= 9) advanceDays(atof(argv[8]) * 365.0); // fast-forward years
+        if (argc >= 9) {
+            advanceDays(atof(argv[8]) * 365.0); // fast-forward years
+            int gran = 0, building = 0;
+            for (const population::Settlement& s : app.world.pop.settlements) {
+                gran += (int)(s.granaries + 0.5f);
+                building += s.buildWork > 0 ? 1 : 0;
+            }
+            fprintf(stderr, "granaries built: %d, under construction: %d\n", gran, building);
+        }
         if (argc >= 10) app.shotPath = argv[9];            // save a frame, then keep running
     } else {
         setScreen(Screen::MainMenu);

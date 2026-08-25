@@ -81,9 +81,23 @@ constexpr float FARMYARD_SHARE_POP = 0.05f; // household animals, no pasture nee
 constexpr float HERD_GROWTH_YR = 0.25f;     // logistic growth rate
 constexpr float HERD_PASTURE_K = 2.0f;      // people/km2 on pure pasture at full expertise
 
+// Granaries (Design/Technology.md): built structures that extend storage.
+// Demand is measured, not planned, from the annual fill cycle: a build
+// starts when last year filled the existing capacity (the fat season had
+// more to bank) AND the lean season then nearly exhausted it (the buffer
+// binds). Once capacity comfortably covers the winter drawdown the low
+// mark stays high and building stops; population growth deepens the
+// drawdown and reopens demand. The work total is fixed; expertise sets the
+// pace, local wood and stone set the gathering, and only fed people build.
+constexpr float GRANARY_STORE = 10000.0f;     // rations one granary banks
+constexpr float GRANARY_WORK = 1000.0f;       // man-days per granary, constant
+constexpr float GRANARY_LABOUR_SHARE = 0.02f; // share of people on the build
+constexpr float GRANARY_HI = 0.95f;           // "we filled what we have"
+constexpr float GRANARY_LO = 0.35f;           // "...and winter nearly drained it"
+
 // The technology table (Design/Technology.md): per-settlement state for each
 // technology. Farming's original fields generalized when husbandry arrived.
-enum : int { TECH_FARMING = 0, TECH_HUSBANDRY = 1, NTECH = 2 };
+enum : int { TECH_FARMING = 0, TECH_HUSBANDRY = 1, TECH_GRANARY = 2, NTECH = 3 };
 struct TechState {
     bool aware = false;
     bool practising = false; // implies aware
@@ -108,10 +122,15 @@ struct Settlement {
     float sFarm = 0;   // farming suitability 0..1 (grass-like cover, warm enough)
     float pasture = 0; // grazing suitability 0..1 (grass, steppe, savanna, some tundra)
     float herd = 0;    // livestock, in people-fed-per-day units (husbandry)
+    float buildMat = 0.15f; // local wood and stone availability 0.15..1 (build pace)
+    float granaries = 0;    // completed granaries (drawn on the map)
+    float buildWork = 0;    // man-days left on the granary going up, 0 = none
+    float fillLo = 2, fillHi = -1; // store-fill extremes in the current cycle
+    double cycleT = 0;             // when the current fill cycle began
     // Technology state (see technology.h / Design/Technology.md):
     TechState tech[NTECH];
-    double nextTech[NTECH] = {1e18, 1e18}; // next contact draw or resample moment
-    bool techFires[NTECH] = {false, false};
+    double nextTech[NTECH] = {1e18, 1e18, 1e18}; // next contact draw or resample moment
+    bool techFires[NTECH] = {false, false, false};
 };
 
 // A migrating group: a settlement with velocity (Design/Migration.md). It
@@ -139,7 +158,7 @@ struct Field {
     std::vector<Band> bands;
     uint32_t nextBandId = 1;
     // Per-cell local properties, kept for founding settlements at runtime:
-    std::vector<float> kFoodPMap, kWaterMap, sFarmMap, pastureMap;
+    std::vector<float> kFoodPMap, kWaterMap, sFarmMap, pastureMap, buildMatMap;
 };
 
 constexpr float CONTACT_KM = 160.0f; // twice the minimum settlement spacing
@@ -195,9 +214,10 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
     const std::vector<float>& hm = hy.heightM;
 
     // Everything the population model needs to know about one cell.
-    auto evalCell = [&](int x, int y, float& kFoodP, float& kWater, float& sFarm, float& pasture) {
+    auto evalCell = [&](int x, int y, float& kFoodP, float& kWater, float& sFarm, float& pasture,
+                        float& buildMat) {
         int i = y * W + x;
-        kFoodP = kWater = sFarm = pasture = 0;
+        kFoodP = kWater = sFarm = pasture = buildMat = 0;
         float h = hm[i];
         if (h <= 0) return;                                           // land only
         if (hy.cells[i].lakeLevel > hydrology::NO_LAKE + 1 && h < hy.cells[i].lakeLevel) return;
@@ -234,17 +254,25 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         kWater = litresPerDay * USABLE_WATER / WATER_L_PER_PERSON;
         sFarm = farmSuitability(m, temp);
         pasture = pastureSuitability(m);
+        // Building materials within reach: standing timber, else bare rock.
+        // Never zero on land -- driftwood and fieldstone exist everywhere,
+        // just slowly.
+        buildMat = std::clamp(m.cov[2] + m.cov[3] + m.cov[4] + 0.3f * m.cov[8] +
+                                  0.6f * m.cov[0],
+                              0.15f, 1.0f);
     };
 
     f.kFoodPMap.assign(W * H, 0.0f);
     f.kWaterMap.assign(W * H, 0.0f);
     f.sFarmMap.assign(W * H, 0.0f);
     f.pastureMap.assign(W * H, 0.0f);
+    f.buildMatMap.assign(W * H, 0.0f);
 #pragma omp parallel for
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
             int i = y * W + x;
-            evalCell(x, y, f.kFoodPMap[i], f.kWaterMap[i], f.sFarmMap[i], f.pastureMap[i]);
+            evalCell(x, y, f.kFoodPMap[i], f.kWaterMap[i], f.sFarmMap[i], f.pastureMap[i],
+                     f.buildMatMap[i]);
             f.K[i] = std::min(f.kFoodPMap[i], f.kWaterMap[i]);
         }
 
@@ -282,6 +310,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         s.kWater = f.kWaterMap[c.cell];
         s.sFarm = f.sFarmMap[c.cell];
         s.pasture = f.pastureMap[c.cell];
+        s.buildMat = f.buildMatMap[c.cell];
         s.S = 0.5f * CAP_DAYS_SETTLED * s.P;
         if (clim) atmosphere::seasonProfile(*clim, cellN(c.cell),
                                             std::max(hy.heightM[c.cell], 0.0f), s.tSeason,
@@ -303,7 +332,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
 // an inadequate harvest flow. Calibrated offline to preserve the ~18%
 // overshoot at year ~33 and settling at the sustained capacity. `flow` is
 // the seasonal food flow already assembled by the caller; `capDays` grows
-// with farming (granaries).
+// with built granaries (storageCapDays).
 inline void derivatives(float P, float R, float S, float flow, float K, float capDays, float& dP,
                         float& dR, float& dS) {
     float H = std::min(flow, GATHER_SETTLED * P);         // limited by land and time
@@ -328,7 +357,14 @@ struct SeasonCtx {
     float h = 0;
     float farmMult = 1; // 1 + gain*s*expertise, from technology
     float husbExp = 0;  // husbandry expertise
+    float granExp = 0;  // granary expertise, 0 unless practising (build pace)
 };
+
+// Storage: the base cap plus what the built granaries hold. A granary banks
+// a fixed absolute amount, so its worth in days shrinks as people multiply.
+inline float storageCapDays(float P, float granaries) {
+    return CAP_DAYS_SETTLED + granaries * GRANARY_STORE / std::max(P, 1.0f);
+}
 
 // The season-interpolated site temperature from the cached profile.
 inline float cachedSeasonT(const Settlement& s, double t) {
@@ -361,20 +397,42 @@ inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double
 // watches for the store crossing the hoarding threshold.
 inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     if (K <= 0) { s.t = now; s.nextUpdate = now + 3650; return false; }
-    float capDays = CAP_DAYS_SETTLED * (2.0f - 1.0f / std::max(ctx.farmMult, 1.0f)); // granaries
     float herdCap = s.pasture * FORAGE_KM2 * HERD_PASTURE_K / SUSTAIN_R *
                     (0.3f + 0.7f * ctx.husbExp);
     float P = s.P, R = s.R, S = s.S;
+    float granaries = s.granaries, buildWork = s.buildWork;
+    float fillLo = s.fillLo, fillHi = s.fillHi;
+    double cycleT = s.cycleT;
     double span = now - s.t;
     int steps = std::clamp((int)(span / 5.0) + 1, 1, 800);
     float hstep = (float)(span / steps);
     for (int k = 0; k < steps && hstep > 0; k++) {
         double tk = s.t + (k + 0.5) * hstep;
+        float capDays = storageCapDays(P, granaries);
         float dP, dR, dS;
         derivatives(P, R, S, foodFlow(s, ctx, R, tk), K, capDays, dP, dR, dS);
         P = std::max(P + dP * hstep, 0.0f);
         R = std::clamp(R + dR * hstep, 0.0f, 1.0f);
-        S = std::clamp(S + dS * hstep, 0.0f, capDays * std::max(P, 1.0f));
+        float cap = capDays * std::max(P, 1.0f);
+        S = std::clamp(S + dS * hstep, 0.0f, cap);
+        // The annual fill cycle: track the store-fill extremes and judge
+        // granary demand once a year (see the constants above).
+        float fill = S / cap;
+        fillLo = std::min(fillLo, fill);
+        fillHi = std::max(fillHi, fill);
+        if (tk - cycleT >= 365.0) {
+            if (buildWork <= 0 && ctx.granExp > 0 && fillHi > GRANARY_HI && fillLo < GRANARY_LO)
+                buildWork = GRANARY_WORK;
+            cycleT = tk;
+            fillLo = fillHi = fill;
+        }
+        // Granary building (Design/Technology.md): only the fed divert
+        // labour, expertise sets the pace, materials set the gathering; the
+        // work total itself never changes.
+        if (buildWork > 0 && ctx.granExp > 0 && fill > HOARD_FILL) {
+            buildWork -= P * GRANARY_LABOUR_SHARE * ctx.granExp * s.buildMat * hstep;
+            if (buildWork <= 0) { granaries += 1; buildWork = 0; }
+        }
         if (s.herd > 0 && herdCap > 0)
             s.herd = std::clamp(s.herd + HERD_GROWTH_YR / 365.0f * s.herd *
                                              (1.0f - s.herd / herdCap) * hstep,
@@ -382,11 +440,18 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
         else if (herdCap <= 0)
             s.herd = 0;
     }
-    bool changed = std::fabs(P - s.P) > 0.5f || std::fabs(R - s.R) > 0.002f;
+    bool changed = std::fabs(P - s.P) > 0.5f || std::fabs(R - s.R) > 0.002f ||
+                   granaries != s.granaries;
     s.P = P;
     s.R = R;
     s.S = S;
+    s.granaries = granaries;
+    s.buildWork = buildWork;
+    s.fillLo = fillLo;
+    s.fillHi = fillHi;
+    s.cycleT = cycleT;
     s.t = now;
+    float capDays = storageCapDays(s.P, s.granaries);
     // Horizon from the ANNUAL-MEAN flow: the seasonal oscillation is
     // recurring, so a settlement in seasonal equilibrium still sleeps long.
     float meanFlow = std::min(s.kFoodP * (s.meanF + ctx.farmMult - 1.0f) * s.R, s.kWater);
