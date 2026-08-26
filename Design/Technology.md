@@ -41,6 +41,8 @@ Pinned so future technologies can be tested against drift — when adding or tun
 | Granaries: one farming settlement, P = 300, fill signal ≥ 4 yr (s = 1) | 1 | 2,000 yr |
 | Granaries: same but non-farming forager (s = 0.15) | 0.15 | 5,200 yr |
 | Husbandry (serendipity): pristine world, any population | — | 10,000 yr |
+| Adoption: aware settlement, one fully-expert neighbour, s = 1, fully hungry | — | 100 yr |
+| Adoption: same but comfortable (φ ≥ 1.11) | — | never (re-checked 5-yearly) |
 
 ---
 
@@ -49,7 +51,7 @@ Pinned so future technologies can be tested against drift — when adding or tun
 Knowing about a technology and practising it are different states — ideas travel where practice can't. Each settlement is **unaware → aware → practising**:
 
 - **Awareness** spreads by contact, ungated by terrain: hearing about farming needs neighbours who know of it, not soil to plant. Rate = Σ(knowing neighbours) / 25 years within 160 km (twice the minimum settlement spacing); aware-but-not-practising settlements count as sources, so knowledge relays across tundra and desert belts. A modern tundra settlement knows exactly what farming is — it just has nowhere to do it.
-- **Practice** is learning the craft: requires awareness, s > 0, and practising neighbours to learn from. Rate = s · Σ(neighbour expertise) / 100 years within the same radius — a mean of ~100 years with one fully-expert neighbour, faster with several, slower while the neighbourhood is still inexpert. Expertise accrues only here. Invention puts a settlement straight into practising.
+- **Practice** is learning the craft: requires awareness, s > 0, practising neighbours to learn from — and a reason. Rate = s · **adoption need** · Σ(neighbour expertise) / 100 years within the same radius. Adoption need (decided 2026-08-26): nobody changes a working lifestyle, but you needn't be desperate either — getting utility is enough. A settlement expanding at its maximum rate (φ ≥ 1.11, where growth saturates) adopts at rate zero; the rate ramps up as food starts to bind, reaching full speed at the invention-hunger threshold (φ ≤ 0.92) — the hungrier, the faster. Granaries use their own utility signal (the fill cycle binding) instead of φ. So the ~100-year mean with one expert neighbour holds for a genuinely hungry settlement; a comfortable one waits until it isn't. Expertise accrues only here. Invention puts a settlement straight into practising.
 
 Both draws are exponential and per-settlement, separate from the world clock; the clock's "non-knowing share" means *unaware*.
 
@@ -160,4 +162,4 @@ These were part of Delegate's Tech Tree design. Each is deferred because its pre
 - Does expertise decay if a technology goes unused (a collapsed settlement's knowledge)?
 - Does farming change the map — cleared fields as terrain deviations ([[Design/Terrain]])?
 - ~~The world-clock model means a harsher world does not discover sooner — pacing is fixed by design. Revisit if that ever feels wrong in play.~~ Revisited 2026-08-26: necessity techs (farming, granaries) are now need-driven; see Discovery above.
-- Should *adoption* (aware → practising) also be need-scaled? Currently a comfortable settlement adopts farming from expert neighbours at the same rate as a desperate one.
+- ~~Should *adoption* (aware → practising) also be need-scaled?~~ Decided 2026-08-26: yes — see the practice rate under Spread.

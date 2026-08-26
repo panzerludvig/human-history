@@ -110,6 +110,21 @@ inline float needWeight(const population::Settlement& s, int tech, double now) {
     return acute * suitability(s, tech) * std::min(s.P / 300.0f, 3.0f);
 }
 
+// Adoption need: nobody changes a working lifestyle. A settlement expanding
+// at its maximum rate (phi >= 1.11, where growth saturates) gets no utility
+// from more food and does not adopt; the adoption rate then grows with the
+// size of the need, reaching full speed at the invention-hunger threshold.
+// Granaries use their own utility signal: the fill cycle binding.
+constexpr float ADOPT_PHI_CONTENT = 1.11f; // growth saturates here
+
+inline float adoptionNeed(const population::Settlement& s, int tech, double now) {
+    if (tech == population::TECH_GRANARY) return std::clamp(s.granNeedYrs, 0.0f, 1.0f);
+    float phi = s.P > 1 ? effectiveK(s, now) * s.R / s.P : 2.0f;
+    return std::clamp(
+        (ADOPT_PHI_CONTENT - phi) / (ADOPT_PHI_CONTENT - population::NEED_HUNGRY_PHI), 0.0f,
+        1.0f);
+}
+
 // Redraw a settlement's next contact event for one technology.
 inline void redraw(population::Field& pf, int i, WorldState& ws, int tech, double now) {
     using namespace population;
@@ -126,11 +141,15 @@ inline void redraw(population::Field& pf, int i, WorldState& ws, int tech, doubl
     } else {
         float esum = 0;
         for (int j : pf.neighbours[i]) esum += expertise(pf.settlements[j].tech[tech], now);
-        double rate = suitability(s, tech) * esum / (PRACT_MEAN_YEARS * YEAR);
-        if (rate <= 0) { s.nextTech[tech] = INF_T; return; }
-        double dt = expDraw(ws.rng, 1.0 / rate);
-        s.techFires[tech] = dt <= RESAMPLE;
-        s.nextTech[tech] = now + std::min(dt, RESAMPLE);
+        // No teachers or no suitable ground parks at infinity (re-armed by
+        // neighbour practice events); a contented zero need re-checks on the
+        // short horizon, since contentment can end without a discrete event.
+        if (esum <= 0 || suitability(s, tech) <= 0) { s.nextTech[tech] = INF_T; return; }
+        double rate =
+            suitability(s, tech) * adoptionNeed(s, tech, now) * esum / (PRACT_MEAN_YEARS * YEAR);
+        double dt = rate > 0 ? expDraw(ws.rng, 1.0 / rate) : INF_T;
+        s.techFires[tech] = dt <= NEED_RESAMPLE;
+        s.nextTech[tech] = now + std::min(dt, NEED_RESAMPLE);
         if (ws.sink) ws.sink->techEvent(i, tech, s.nextTech[tech]);
     }
 }
