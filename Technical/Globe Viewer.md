@@ -89,6 +89,10 @@ The first buildings on the map. Each settlement tracks completed `granaries`, th
 
 Rendering: the population texture's alpha channel carries the granary count at the settlement's cell; the shader draws up to 8 straw-coloured markers on a golden-angle ring 6.5 km around the cell centre, visible only when zoomed right in (uKmPerPixel < 2.5). Marker positions are defined ONCE in `sim::granaryPos` and mirrored exactly in the shader's `granaryNear` (integer per-cell phase, so CPU and GPU cannot drift); the tooltip uses the same positions to prepend "Granary" when the cursor is over one, with the same draw-radius-plus-3px pick slop as markers. Granaries are not selectable. Save format v8 carries granaries, buildWork, and the fill cycle. For testing, an argv seed of `@name` loads `worlds\name.ibw` instead of generating, and the post-fast-forward stderr summary reports granary totals.
 
+## Daily rhythm
+
+`src/daylight.h` (design in [[Design/Population]]): declination and subsolar direction (also used for the renderer's `uSun` — one definition, no drift), `hoursAbove` (sun above a given altitude: −0.83° = the work day, −6° = light to travel by), `workHours` (daylight up to the 17-h waking cap plus a need-bought ×0.35 firelight extension), and `activeDays` (activity inside a sub-day span for a window centered on local solar noon; spans ≥ 1 day pass through unchanged). Settlements scale their gather cap by work hours per substep; bands scale foraging and move only during travel hours. Hour-scale time steps show stores flat and bands stationary at night.
+
 ## Tooltip
 
 In game, a label follows the cursor with what is under it: elevation, mean temperature, the terrain mixture ("forest 68%, grassland 22%, rock 10%"; "Sea, 354 m deep"; "Lake, 20 m deep"), and the cell's carrying capacity. It is computed on the CPU from the terrain mirror (`terrain.h`) at the current level of detail, using the same lake rule as the shader, so it doubles as a live check that the CPU and GPU terrain agree.

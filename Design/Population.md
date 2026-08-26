@@ -40,6 +40,18 @@ P can overshoot because R gives way slowly, then falls back as R runs down; depe
 
 No ticks. Each settlement integrates its own P and R forward at scheduled re-evaluations, choosing the next moment as "when will my state have drifted ~5%" (clamped 1 month–5 years). A settlement at equilibrium wakes rarely; one in collapse wakes often. This is the first real client of [[Design/Event-Driven]].
 
+## Daily rhythm
+
+Decided 2026-08-26 (`src/daylight.h`). People sleep at night and work, move, and eat by day — emergent from three ingredients rather than hardcoded hours:
+
+- **Sleep is a biological constant** (~7 h), so at most 17 waking hours — the polar-summer work cap falls out by itself.
+- **Light is an economic input**: daylight is free and full-efficiency; darkness can be worked by firelight at ×0.35. Bands travel by any light good enough to walk (through civil twilight — arctic winters keep a usable glow after the sun stops rising).
+- **Need buys the margin**: the firelight extension is proportional to hunger (the same φ ramp adoption uses, content 1.11 → desperate 0.92). A content settlement stops at sunset; a hungry one burns torches — the "winter minimum" emerges only for those who need it.
+
+The gather budget (1.5 rations/person/day) is the 12-hour baseline scaled by the day's effective hours; annual-mean daylight is 12 h at every latitude, so mid-latitude calibration is untouched while seasonal amplitude grows toward the poles. Band speed (15 km/day) is likewise the 12-lit-hour baseline. Sub-day time steps see the rhythm — a band stands still in the dead of night, stores hold flat till dawn — while whole-day steps use daily totals, which already integrate it. The sun's declination and phase are defined once in daylight.h and shared with the renderer, so the lit hemisphere on screen and the hours people work can never drift apart.
+
+Deferred: weather-dependent light, fuel as a resource, hot-climate siesta patterns, night-time visuals (fires).
+
 ---
 
 ## Deferred

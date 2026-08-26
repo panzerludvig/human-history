@@ -174,20 +174,27 @@ inline void integrateBand(population::Band& b, float flowBase, double span, bool
                           const atmosphere::Climatology& clim, terrain::V3 n, float h,
                           double startT) {
     using namespace population;
+    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
+    float lon = std::atan2(n.y, n.x);
     int steps = std::clamp((int)(span / 2.0) + 1, 1, 60);
     float dt = (float)(span / steps);
     float gather = resting ? GATHER_SETTLED : GATHER_MOVING;
     for (int k = 0; k < steps && dt > 0; k++) {
         double tk = startT + (k + 0.5) * dt;
+        // A migrating band is never content: full firelight extension.
+        float wh = daylight::workHours(lat, tk, 1.0f);
         float flow = flowBase *
                      atmosphere::forageFactor(atmosphere::seasonalTempC(clim, n, h, tk));
-        float H = std::min(flow, gather * b.P);
+        float H = std::min(flow, gather * b.P * wh / 12.0f);
         float cap = CAP_DAYS_BAND * std::max(b.P, 1.0f);
         float fill = std::clamp(b.S / cap, 0.0f, 1.0f);
         float excl = std::clamp(1.0f - fill / HOARD_FILL, 0.0f, 1.0f);
         float shortfall = b.P > 0 ? std::clamp(1.0f - H / b.P, 0.0f, 1.0f) : 0.0f;
+        double a = startT + k * (double)dt;
+        float act =
+            dt >= 1.0f ? 1.0f : (float)(daylight::activeDays(lon, a, a + dt, wh) / dt);
         b.P = std::max(b.P - STARVE_MAX * b.P * excl * shortfall * dt, 0.0f);
-        b.S = std::clamp(b.S + (H - b.P) * dt, 0.0f, CAP_DAYS_BAND * std::max(b.P, 1.0f));
+        b.S = std::clamp(b.S + (H - b.P) * dt * act, 0.0f, CAP_DAYS_BAND * std::max(b.P, 1.0f));
     }
 }
 
@@ -288,16 +295,24 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
     terrain::V3 tgt = cellCentre(b.targetCell);
     if (!b.resting) {
         // Terrain under our feet sets the pace: rafting is slow, ice walks,
-        // a major unfrozen river means fording.
-        float speed = BAND_SPEED_KM_DAY;
+        // a major unfrozen river means fording. Light sets the hours: bands
+        // walk while there is light to walk by (through civil twilight),
+        // sleep the rest -- 15 km/day is the 12-lit-hour baseline. Sub-day
+        // steps show it: a band stands still in the dead of night.
+        float lat = std::asin(std::clamp(pos.z, -1.0f, 1.0f));
+        float lonB = std::atan2(pos.y, pos.x);
+        float lh = daylight::travelHours(lat, now - span * 0.5);
+        float km = BAND_SPEED_KM_DAY / 12.0f * lh *
+                   (float)daylight::activeDays(lonB, now - span, now, lh);
+        float factor = 1.0f;
         bool water = hy.heightM[hereCell] <= 0 ||
                      hy.cells[hereCell].lakeLevel > hydrology::NO_LAKE + 1;
         float hHere = std::max(hy.heightM[hereCell], 0.0f);
         bool frozen = seasonalT(clim, pos, hHere, now) < FROZEN_T;
-        if (water && !frozen) speed *= RAFT_FACTOR;
+        if (water && !frozen) factor *= RAFT_FACTOR;
         else if (!water && !frozen && hy.cells[hereCell].flow >= RIVER_MAJOR_KM2)
-            speed *= RIVER_CROSS_FACTOR;
-        pos = moveToward(pos, tgt, speed * (float)span);
+            factor *= RIVER_CROSS_FACTOR;
+        pos = moveToward(pos, tgt, km * factor);
         b.px = pos.x;
         b.py = pos.y;
         b.pz = pos.z;

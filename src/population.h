@@ -5,6 +5,7 @@
 #include "terrain.h"
 #include "hydrology.h"
 #include "atmosphere.h"
+#include "daylight.h"
 #include <cstdio>
 #include <vector>
 #include <algorithm>
@@ -52,6 +53,15 @@ constexpr float SPLIT_PHI = 0.99f;
 // shortfall, not the ~0.98 comfort glide the split rule watches: the
 // overshoot trough reaches ~0.85, so hunger is an episode, not a lifestyle.
 constexpr float NEED_HUNGRY_PHI = 0.92f;
+// Content: growth saturates at phi = 1.11 (the 0.11 ramp in derivatives);
+// above it more food buys nothing -- no adoption utility (technology.h),
+// no reason to work past sunset (daylight.h). The need ramp between these
+// two thresholds is shared by adoption and the work day.
+constexpr float PHI_CONTENT = 1.11f;
+
+inline float needRamp(float phi) {
+    return std::clamp((PHI_CONTENT - phi) / (PHI_CONTENT - NEED_HUNGRY_PHI), 0.0f, 1.0f);
+}
 constexpr double SPLIT_AFTER_DAYS = 730.0;
 constexpr float SPLIT_MIN_P = 50.0f;
 constexpr float SPLIT_SHARE = 1.0f / 3.0f;
@@ -342,9 +352,9 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
 // overshoot at year ~33 and settling at the sustained capacity. `flow` is
 // the seasonal food flow already assembled by the caller; `capDays` grows
 // with built granaries (storageCapDays).
-inline void derivatives(float P, float R, float S, float flow, float K, float capDays, float& dP,
-                        float& dR, float& dS) {
-    float H = std::min(flow, GATHER_SETTLED * P);         // limited by land and time
+inline void derivatives(float P, float R, float S, float flow, float K, float capDays,
+                        float gather, float& dP, float& dR, float& dS) {
+    float H = std::min(flow, gather);                     // limited by land and time
     float cap = capDays * std::max(P, 1.0f);
     float fill = std::clamp(S / cap, 0.0f, 1.0f);
     float excl = std::clamp(1.0f - fill / HOARD_FILL, 0.0f, 1.0f);
@@ -412,18 +422,32 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     float granaries = s.granaries, buildWork = s.buildWork;
     float fillLo = s.fillLo, fillHi = s.fillHi, granNeed = s.granNeedYrs;
     double cycleT = s.cycleT;
+    float lat = std::asin(std::clamp(ctx.n.z, -1.0f, 1.0f));
+    float lon = std::atan2(ctx.n.y, ctx.n.x);
     double span = now - s.t;
     int steps = std::clamp((int)(span / 5.0) + 1, 1, 800);
     float hstep = (float)(span / steps);
     for (int k = 0; k < steps && hstep > 0; k++) {
         double tk = s.t + (k + 0.5) * hstep;
         float capDays = storageCapDays(P, granaries);
+        float flow = foodFlow(s, ctx, R, tk);
+        // The work day (daylight.h): daylight up to the waking cap, plus a
+        // firelight extension bought by hunger. The gather budget follows
+        // the hours; the 1.5/day constant is the 12-hour baseline.
+        float phiNow = P > 1 ? flow / P : 2.0f;
+        float wh = daylight::workHours(lat, tk, needRamp(phiNow));
         float dP, dR, dS;
-        derivatives(P, R, S, foodFlow(s, ctx, R, tk), K, capDays, dP, dR, dS);
+        derivatives(P, R, S, flow, K, capDays, GATHER_SETTLED * P * wh / 12.0f, dP, dR, dS);
+        // Sub-day steps see the rhythm: harvesting and eating happen inside
+        // the day's activity window, so stores hold flat through the night.
+        double a = s.t + k * (double)hstep;
+        float act = hstep >= 1.0f
+                        ? 1.0f
+                        : (float)(daylight::activeDays(lon, a, a + hstep, wh) / hstep);
         P = std::max(P + dP * hstep, 0.0f);
         R = std::clamp(R + dR * hstep, 0.0f, 1.0f);
         float cap = capDays * std::max(P, 1.0f);
-        S = std::clamp(S + dS * hstep, 0.0f, cap);
+        S = std::clamp(S + dS * hstep * act, 0.0f, cap);
         // The annual fill cycle: track the store-fill extremes and judge
         // granary demand once a year (see the constants above). The signal
         // also feeds need-driven invention: consecutive binding years make
@@ -469,7 +493,7 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     // recurring, so a settlement in seasonal equilibrium still sleeps long.
     float meanFlow = std::min(s.kFoodP * (s.meanF + ctx.farmMult - 1.0f) * s.R, s.kWater);
     float dP, dR, dS;
-    derivatives(s.P, s.R, s.S, meanFlow, K, capDays, dP, dR, dS);
+    derivatives(s.P, s.R, s.S, meanFlow, K, capDays, GATHER_SETTLED * s.P, dP, dR, dS);
     double horizon = 1800;
     if (std::fabs(dP) > 1e-9) horizon = std::min(horizon, 0.05 * std::max(s.P, 50.0f) / std::fabs(dP));
     if (std::fabs(dR) > 1e-9) horizon = std::min(horizon, 0.05 * std::max(s.R, 0.1f) / std::fabs(dR));

@@ -1671,9 +1671,11 @@ int main(int argc, char** argv) {
                 // Subsolar point from the sim clock: one lap per day westward
                 // (solar noon at longitude 0 at 12:00), declination +-23.5 deg
                 // peaking at the June 21 solstice (day 171 of the 365-day year).
-                double t = app.world.simTime;
-                double dec = 23.5 * PI / 180.0 * cos(2 * PI * (fmod(t, 365.0) - 171.0) / 365.0);
-                double hour = -2 * PI * fmod(t, 1.0) + PI;
+                // Computed in daylight.h -- the same formulas that set work
+                // hours and band travel, so the lit hemisphere on screen and
+                // the sim's activity can never drift apart.
+                double dec, hour;
+                daylight::subsolar(app.world.simTime, dec, hour);
                 glUniform3f(uSun, (float)(cos(dec) * cos(hour)), (float)(cos(dec) * sin(hour)),
                             (float)sin(dec));
             }
