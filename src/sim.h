@@ -492,13 +492,18 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     if (s.leaving) return;
     float keff = technology::effectiveK(s, now);
     float phi = s.P > 1 ? keff * s.R / s.P : 2.0f;
+    // A place that buries people every winter is failing, whatever the
+    // annual mean says (population.h, STARVE_NOTICE). Without this a
+    // seasonal settlement bleeds indefinitely and never once asks the
+    // question -- observed: falling 300 -> 220 in two years at phi 1.31.
+    bool bleeding = s.starvedYr > STARVE_NOTICE * std::max(s.P, 1.0f);
     // Sustained hunger for need-driven invention: a genuine shortfall
     // (phi < NEED_HUNGRY_PHI), not the comfort glide. Checked before every
     // early return so small settlements get desperate too; leaving or
     // splitting does not reset it -- neither cures desperation by itself.
-    if (phi >= NEED_HUNGRY_PHI) s.hungrySince = -1;
+    if (phi >= NEED_HUNGRY_PHI && !bleeding) s.hungrySince = -1;
     else if (s.hungrySince < 0) s.hungrySince = now;
-    if (phi >= SPLIT_PHI) {
+    if (phi >= SPLIT_PHI && !bleeding) {
         s.scarceSince = -1;
         s.noProspect = false;
         return;
@@ -511,7 +516,7 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     // early wake; at the ordinary equilibrium glide every settlement is
     // nominally scarce, and re-deciding the whole world every two years
     // costs far more than it is worth.
-    bool starving = phi < NEED_HUNGRY_PHI;
+    bool starving = phi < NEED_HUNGRY_PHI || bleeding;
     if (s.scarceSince < 0) {
         s.scarceSince = now;
         if (starving) s.nextUpdate = std::min(s.nextUpdate, now + SPLIT_AFTER_DAYS);

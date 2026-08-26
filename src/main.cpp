@@ -348,7 +348,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 11\n";
+    f << "version 12\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -363,7 +363,7 @@ static bool saveWorld(const World& w, const Camera& c) {
               << s.tech[t].practiceT << " ";
         f << s.S << " " << s.scarceSince << " " << s.founded << " " << s.herd << " "
           << s.granaries << " " << s.buildWork << " " << s.fillLo << " " << s.fillHi << " "
-          << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << " " << s.id << "\n";
+          << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << " " << s.id << " " << s.starvedYr << "\n";
     }
     for (const population::Band& b : w.pop.bands) {
         f << "band " << b.id << " " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
@@ -391,7 +391,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     if (!f) return false;
     w = World{};
     w.name = name;
-    std::vector<std::array<double, 24>> savedSettlements;
+    std::vector<std::array<double, 25>> savedSettlements;
     std::vector<std::array<double, 18>> savedBands;
     std::vector<std::pair<size_t, double>> savedGame;
     std::vector<std::array<double, 3>> savedScars;
@@ -410,7 +410,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             // herd; v8 adds granaries buildWork fillLo fillHi cycleT (and a third
             // tech triple); v9 adds hungrySince granNeedYrs. Unified slots: tech
             // at 3..11, the rest from 12.
-            std::array<double, 24> sv{};
+            std::array<double, 25> sv{};
             sv[13] = -1; // scarceSince default
             sv[18] = 2;  // fillLo default (no observation yet)
             sv[19] = -1; // fillHi default
@@ -423,6 +423,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
                 if (version >= 8) f >> sv[16] >> sv[17] >> sv[18] >> sv[19] >> sv[20];
                 if (version >= 9) f >> sv[21] >> sv[22];
                 if (version >= 11) f >> sv[23];
+                if (version >= 12) f >> sv[24];
             } else {
                 if (version >= 3) f >> sv[3] >> sv[4] >> sv[5];
                 if (version >= 4) f >> sv[12] >> sv[13];
@@ -499,6 +500,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.cycleT = version >= 8 ? sv[20] : savedTime;
             st.hungrySince = sv[21];
             st.granNeedYrs = (float)sv[22];
+            st.starvedYr = (float)sv[24];
             st.buildMat = w.pop.buildMatMap[cell];
             st.kGame = w.pop.kGameMap[cell];
             st.gRegion = population::gameRegion(cell);
@@ -1354,6 +1356,10 @@ static std::string envText(const population::Settlement& st) {
     out += b;
     if (st.herd > 0.5f) {
         snprintf(b, sizeof b, "Livestock: feeds %d\n", (int)st.herd);
+        out += b;
+    }
+    if (st.starvedYr >= 0.5f) {
+        snprintf(b, sizeof b, "Hunger: %d lost this year\n", (int)std::lround(st.starvedYr));
         out += b;
     }
     if (st.scarceSince >= 0) {

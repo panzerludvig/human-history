@@ -50,6 +50,13 @@ constexpr float STARVE_MAX = 0.02f;      // /day at full exclusion and total sho
 // Just under the phi = 1 equilibrium: the overshoot decline glides at
 // phi ~ 0.97-0.99, so a deeper threshold would never fire.
 constexpr float SPLIT_PHI = 0.99f;
+// Scarcity you can see. phi is built from ANNUAL-MEAN food, but starvation
+// is seasonal: a settlement in a sharply seasonal place can bury people
+// every winter while its yearly average reads comfortable, and so never ask
+// whether to leave. Burials are the signal a community actually has, so
+// losing this share of its people to hunger in a year counts as scarcity in
+// its own right, whatever the mean says.
+constexpr float STARVE_NOTICE = 0.02f; // of P, per trailing year
 // "Going hungry" for need-driven invention (technology.h) is a genuine
 // shortfall, not the ~0.98 comfort glide the split rule watches: the
 // overshoot trough reaches ~0.85, so hunger is an episode, not a lifestyle.
@@ -182,6 +189,7 @@ struct Settlement {
     double cycleT = 0;             // when the current fill cycle began
     float granNeedYrs = 0;         // consecutive years the fill signal held
                                    // (need-driven granary invention)
+    float starvedYr = 0;           // people lost to hunger in the trailing year
     // Technology state (see technology.h / Design/Technology.md):
     TechState tech[NTECH];
     double nextTech[NTECH] = {1e18, 1e18, 1e18}; // next contact draw or resample moment
@@ -464,7 +472,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
 // the seasonal food flow already assembled by the caller; `capDays` grows
 // with built granaries (storageCapDays).
 inline void derivatives(float P, float R, float S, float flow, float K, float capDays,
-                        float gather, float& dP, float& dR, float& dS) {
+                        float gather, float& dP, float& dR, float& dS, float& dStarve) {
     float H = std::min(flow, gather);                     // limited by land and time
     float cap = capDays * std::max(P, 1.0f);
     float fill = std::clamp(S / cap, 0.0f, 1.0f);
@@ -472,7 +480,8 @@ inline void derivatives(float P, float R, float S, float flow, float K, float ca
     float shortfall = P > 0 ? std::clamp(1.0f - H / P, 0.0f, 1.0f) : 0.0f;
     float phi = P > 1 ? flow / P : 2.0f;
     float g = phi >= 1 ? GROWTH_MAX / 365.0f * std::min((phi - 1) / 0.11f, 1.0f) : 0.0f;
-    dP = P * g - STARVE_MAX * P * excl * shortfall;
+    dStarve = STARVE_MAX * P * excl * shortfall; // deaths/day, the felt part
+    dP = P * g - dStarve;
     dR = (1 - R) / (R_REGEN_YEARS * 365) - (P / std::max(K, 1.0f)) * R / (R_DEPLETE_YEARS * 365);
     dS = H - P;
 }
@@ -539,6 +548,7 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     float P = s.P, R = s.R, S = s.S;
     float granaries = s.granaries, buildWork = s.buildWork;
     float fillLo = s.fillLo, fillHi = s.fillHi, granNeed = s.granNeedYrs;
+    float starved = s.starvedYr;
     double cycleT = s.cycleT;
     float lat = std::asin(std::clamp(ctx.n.z, -1.0f, 1.0f));
     float lon = std::atan2(ctx.n.y, ctx.n.x);
@@ -555,7 +565,11 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
         float phiNow = P > 1 ? flow / P : 2.0f;
         float wh = daylight::workHours(lat, tk, needRamp(phiNow));
         float dP, dR, dS;
-        derivatives(P, R, S, flow, K, capDays, GATHER_SETTLED * P * wh / 12.0f, dP, dR, dS);
+        float dStarve;
+        derivatives(P, R, S, flow, K, capDays, GATHER_SETTLED * P * wh / 12.0f, dP, dR, dS,
+                    dStarve);
+        starved += dStarve * hstep;
+        starved *= std::max(1.0f - hstep / 365.0f, 0.0f); // trailing year
         // Sub-day steps see the rhythm: harvesting and eating happen inside
         // the day's activity window, so stores hold flat through the night.
         double a = s.t + k * (double)hstep;
@@ -604,6 +618,7 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     s.fillLo = fillLo;
     s.fillHi = fillHi;
     s.granNeedYrs = granNeed;
+    s.starvedYr = starved;
     s.cycleT = cycleT;
     s.t = now;
     float capDays = storageCapDays(s.P, s.granaries);
@@ -612,8 +627,9 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     float forageBase = s.kFoodP - s.kGame + s.kGame * huntEff(ctx.gameG);
     float meanFlow = std::min(
         (forageBase * s.meanF + s.kFoodP * (ctx.farmMult - 1.0f)) * s.R, s.kWater);
-    float dP, dR, dS;
-    derivatives(s.P, s.R, s.S, meanFlow, K, capDays, GATHER_SETTLED * s.P, dP, dR, dS);
+    float dP, dR, dS, dStarveMean;
+    derivatives(s.P, s.R, s.S, meanFlow, K, capDays, GATHER_SETTLED * s.P, dP, dR, dS,
+                dStarveMean);
     double horizon = 1800;
     if (std::fabs(dP) > 1e-9) horizon = std::min(horizon, 0.05 * std::max(s.P, 50.0f) / std::fabs(dP));
     if (std::fabs(dR) > 1e-9) horizon = std::min(horizon, 0.05 * std::max(s.R, 0.1f) / std::fabs(dR));
