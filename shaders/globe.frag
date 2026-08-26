@@ -304,6 +304,26 @@ float bandNear(vec3 n) {
     return 0.0;
 }
 
+// Night fires: the glow of an inhabited place after dark. A soft-edged halo
+// around the settlement marker, slightly wider than the marker itself, its
+// strength rising with population -- more hearths, more light.
+float fireGlowAt(vec3 n) {
+    ivec2 c0 = hydroCell(n);
+    float radiusKm = clamp(uKmPerPixel * 5.0, 4.0, 18.0) * 1.8;
+    float g = 0.0;
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 c = c0 + ivec2(dx, dy);
+            ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
+            float p = texelFetch(uPop, cw, 0).g;
+            if (p <= 0.0) continue;
+            float dist = length(n - cellCentre(cw)) * 6371.0;
+            float fall = 1.0 - smoothstep(0.0, radiusKm, dist);
+            g = max(g, fall * (0.55 + 0.45 * clamp(log(p) / 11.0, 0.0, 1.0)));
+        }
+    return g;
+}
+
 // Granary markers: a ring of small structures around the settlement's cell
 // centre, visible only zoomed right in. Mirrors sim::granaryPos EXACTLY
 // (golden-angle ring, integer per-cell phase, 6.5 km radius) so the tooltip
@@ -761,6 +781,13 @@ void main() {
     float diff = max(dot(shadeN, sun), 0.0);
     float limb = pow(1.0 - max(dot(n, -dir), 0.0), 3.0);
     vec3 col = mix(albedo * vec3(0.045, 0.055, 0.10), albedo * (0.22 + 0.8 * diff), dayF);
+    // Settlements glow after dark: hearth-fire light, brightening as the
+    // sun sets, sitting under the cloud layer like any surface light.
+    float night = 1.0 - dayF;
+    if (uHasHydro == 1 && night > 0.01) {
+        float fg = fireGlowAt(n);
+        if (fg > 0.0) col += vec3(1.0, 0.52, 0.16) * fg * night * 0.6;
+    }
     float rainV;
     float cloudA = cloudsAt(n, rainV);
     // Clouds fade out at close zoom so they never hide the terrain being read.
