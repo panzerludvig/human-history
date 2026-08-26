@@ -782,11 +782,13 @@ void main() {
     float limb = pow(1.0 - max(dot(n, -dir), 0.0), 3.0);
     vec3 col = mix(albedo * vec3(0.045, 0.055, 0.10), albedo * (0.22 + 0.8 * diff), dayF);
     // Settlements glow after dark: hearth-fire light, brightening as the
-    // sun sets, sitting under the cloud layer like any surface light.
+    // sun sets, sitting under the cloud layer like any surface light. Kept
+    // very faint deliberately -- pre-electric fires would not really be
+    // visible from space at all; this is a whisper of them.
     float night = 1.0 - dayF;
     if (uHasHydro == 1 && night > 0.01) {
         float fg = fireGlowAt(n);
-        if (fg > 0.0) col += vec3(1.0, 0.52, 0.16) * fg * night * 0.6;
+        if (fg > 0.0) col += vec3(1.0, 0.52, 0.16) * fg * night * 0.07;
     }
     float rainV;
     float cloudA = cloudsAt(n, rainV);
