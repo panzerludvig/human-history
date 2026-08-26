@@ -15,14 +15,32 @@ How settlements learn to do new things. The core ideas are inherited from Delega
 
 ---
 
-## Discovery: a world clock decides when, need decides who
+## Discovery: need invents necessity; serendipity covers the rest
 
-Independent invention is a **world-level event**, not a per-settlement race. Per-settlement rates would sum — 300 settlements each on a 10,000-year clock discover somewhere within decades — so the pacing is pinned at the world level instead, and local conditions decide *who* invents rather than *when*:
+Two modes (decided 2026-08-26; this supersedes the original fixed-pace world clock for necessity techs, resolving the old open question "a harsher world does not discover sooner" the other way):
 
-- **When**: one exponential clock per technology. Rate = (share of world population that does not yet know the technology) / 10,000 years. In a pristine world the share is 1, so the mean time to first invention is exactly 10,000 years; as the technology spreads, independent invention fades toward zero — nobody independently invents farming once it is everywhere. Early on, while the share is still high, several independent cradles can appear.
-- **Who**: when the clock fires, the inventing settlement is a weighted random pick among those that don't know it. Weight = P · s · (1 + 9·scarcity), where s is terrain suitability (below) and scarcity ramps 0→1 as food per head φ = K·R/P falls from 1 to 0.8. Big, hungry settlements on good farmland are the likely inventors — [[Design/Population]]'s overshoot phase is when a settlement is most inventive. Comfortable foragers don't invent agriculture; hungry ones do.
+**Need-driven** (farming, granaries — nobody would do these unless they had to):
 
-This is a client of [[Design/Event-Driven]]: one scheduled event per technology, weights evaluated lazily at fire time, rescheduled only when the non-knowing share changes (each adoption is a discrete event, so this is exact, not polled).
+- Each unaware settlement contributes a need weight = sustained-state ramp × suitability s × min(P/300, 3). The **sustained ramp** is the core rule: the state must have held for a full year to count at all and saturates at four years — one tough winter changes nobody's lifestyle, but hunger year after year drives desperation. Farming's state is sustained hunger — a genuine shortfall, φ < 0.92 (the overshoot trough reaches ~0.85), not the ~0.98 comfort glide the split rule watches, tracked by its own `hungrySince` which unlike the split timer is *not* reset by sending out a band (emigration doesn't cure desperation); granaries' is the storage fill signal (filled in the fat season, nearly drained in the lean one) holding in consecutive years — the same signal that triggers building for those who already know how.
+- The world invention rate = **√(Σ need) / 2,000 years**, and when the clock fires the inventor is drawn proportional to need (mathematically this is per-settlement chances with sublinear crowding). The square root is the tuning lever: more potential inventors do invent sooner, but a crowded hungry world does not invent everything instantly. A fully comfortable world never invents these at all — no farming in Eden.
+- The clock re-checks every 5 years even at zero rate, since need can arise between draws.
+
+**Serendipity** (husbandry; the default for future opportunity techs): the original world clock. Rate = (share of world population that does not yet know it) / 10,000 years — population-invariant pacing; inventor picked by weight P · s · (1 + 9·scarcity). As a technology spreads, independent invention fades toward zero in both modes; early on, several independent cradles can appear.
+
+This is a client of [[Design/Event-Driven]]: one scheduled event per technology, weights evaluated lazily at fire time, rescheduled when adoption changes the pool (exact — each adoption is a discrete event) or on the 5-year need horizon (piecewise-constant approximation of a yearly-drifting rate).
+
+### Expected mean time to discovery (calibration table)
+
+Pinned so future technologies can be tested against drift — when adding or tuning anything that touches these formulas, re-derive this table and re-check it (`test_gran.cpp` prints the live need sums and implied means). All draws are exponential (median ≈ 0.69 × mean); for need techs with total weight W, mean = 2,000 / √W years.
+
+| Scenario | Weight W | Expected mean |
+|---|---|---|
+| Farming: one settlement, P ≥ 300, s = 1, hungry ≥ 4 yr | 1 | 2,000 yr |
+| Farming: same but s = 0.1 (real good sites are ~0.05–0.16) | 0.1 | 6,300 yr |
+| Farming: 100 settlements each at weight 0.1 | 10 | 630 yr |
+| Granaries: one farming settlement, P = 300, fill signal ≥ 4 yr (s = 1) | 1 | 2,000 yr |
+| Granaries: same but non-farming forager (s = 0.15) | 0.15 | 5,200 yr |
+| Husbandry (serendipity): pristine world, any population | — | 10,000 yr |
 
 ---
 
@@ -141,4 +159,5 @@ These were part of Delegate's Tech Tree design. Each is deferred because its pre
 
 - Does expertise decay if a technology goes unused (a collapsed settlement's knowledge)?
 - Does farming change the map — cleared fields as terrain deviations ([[Design/Terrain]])?
-- The world-clock model means a harsher world does not discover sooner — pacing is fixed by design. Revisit if that ever feels wrong in play.
+- ~~The world-clock model means a harsher world does not discover sooner — pacing is fixed by design. Revisit if that ever feels wrong in play.~~ Revisited 2026-08-26: necessity techs (farming, granaries) are now need-driven; see Discovery above.
+- Should *adoption* (aware → practising) also be need-scaled? Currently a comfortable settlement adopts farming from expert neighbours at the same rate as a desperate one.

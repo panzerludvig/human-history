@@ -48,6 +48,10 @@ constexpr float STARVE_MAX = 0.02f;      // /day at full exclusion and total sho
 // Just under the phi = 1 equilibrium: the overshoot decline glides at
 // phi ~ 0.97-0.99, so a deeper threshold would never fire.
 constexpr float SPLIT_PHI = 0.99f;
+// "Going hungry" for need-driven invention (technology.h) is a genuine
+// shortfall, not the ~0.98 comfort glide the split rule watches: the
+// overshoot trough reaches ~0.85, so hunger is an episode, not a lifestyle.
+constexpr float NEED_HUNGRY_PHI = 0.92f;
 constexpr double SPLIT_AFTER_DAYS = 730.0;
 constexpr float SPLIT_MIN_P = 50.0f;
 constexpr float SPLIT_SHARE = 1.0f / 3.0f;
@@ -111,7 +115,10 @@ struct Settlement {
     double t;          // sim day at which P and R are valid
     double nextUpdate; // sim day of the next scheduled re-evaluation
     float S = 0;               // food store, rations (person-days)
-    double scarceSince = -1;   // sim day scarcity began, -1 if fed (split rule)
+    double scarceSince = -1;   // sim day scarcity began, -1 if fed (split rule;
+                               // resets on every split attempt)
+    double hungrySince = -1;   // sim day sustained hunger began, -1 if fed --
+                               // never reset by splitting (need-driven invention)
     double founded = 0;        // sim day the settlement was founded (awareness age)
     // Fixed local properties (from the terrain at the cell):
     float kFoodP = 0;  // pristine food capacity (already / SUSTAIN_R)
@@ -127,6 +134,8 @@ struct Settlement {
     float buildWork = 0;    // man-days left on the granary going up, 0 = none
     float fillLo = 2, fillHi = -1; // store-fill extremes in the current cycle
     double cycleT = 0;             // when the current fill cycle began
+    float granNeedYrs = 0;         // consecutive years the fill signal held
+                                   // (need-driven granary invention)
     // Technology state (see technology.h / Design/Technology.md):
     TechState tech[NTECH];
     double nextTech[NTECH] = {1e18, 1e18, 1e18}; // next contact draw or resample moment
@@ -401,7 +410,7 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
                     (0.3f + 0.7f * ctx.husbExp);
     float P = s.P, R = s.R, S = s.S;
     float granaries = s.granaries, buildWork = s.buildWork;
-    float fillLo = s.fillLo, fillHi = s.fillHi;
+    float fillLo = s.fillLo, fillHi = s.fillHi, granNeed = s.granNeedYrs;
     double cycleT = s.cycleT;
     double span = now - s.t;
     int steps = std::clamp((int)(span / 5.0) + 1, 1, 800);
@@ -416,13 +425,16 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
         float cap = capDays * std::max(P, 1.0f);
         S = std::clamp(S + dS * hstep, 0.0f, cap);
         // The annual fill cycle: track the store-fill extremes and judge
-        // granary demand once a year (see the constants above).
+        // granary demand once a year (see the constants above). The signal
+        // also feeds need-driven invention: consecutive binding years make
+        // an unaware settlement desperate enough to invent (technology.h).
         float fill = S / cap;
         fillLo = std::min(fillLo, fill);
         fillHi = std::max(fillHi, fill);
         if (tk - cycleT >= 365.0) {
-            if (buildWork <= 0 && ctx.granExp > 0 && fillHi > GRANARY_HI && fillLo < GRANARY_LO)
-                buildWork = GRANARY_WORK;
+            bool binds = fillHi > GRANARY_HI && fillLo < GRANARY_LO;
+            granNeed = binds ? granNeed + 1.0f : 0.0f;
+            if (binds && buildWork <= 0 && ctx.granExp > 0) buildWork = GRANARY_WORK;
             cycleT = tk;
             fillLo = fillHi = fill;
         }
@@ -449,6 +461,7 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     s.buildWork = buildWork;
     s.fillLo = fillLo;
     s.fillHi = fillHi;
+    s.granNeedYrs = granNeed;
     s.cycleT = cycleT;
     s.t = now;
     float capDays = storageCapDays(s.P, s.granaries);

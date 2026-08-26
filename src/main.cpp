@@ -348,7 +348,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 8\n";
+    f << "version 9\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -363,7 +363,7 @@ static bool saveWorld(const World& w, const Camera& c) {
               << s.tech[t].practiceT << " ";
         f << s.S << " " << s.scarceSince << " " << s.founded << " " << s.herd << " "
           << s.granaries << " " << s.buildWork << " " << s.fillLo << " " << s.fillHi << " "
-          << s.cycleT << "\n";
+          << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << "\n";
     }
     for (const population::Band& b : w.pop.bands) {
         f << "band " << b.id << " " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
@@ -382,7 +382,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     if (!f) return false;
     w = World{};
     w.name = name;
-    std::vector<std::array<double, 21>> savedSettlements;
+    std::vector<std::array<double, 23>> savedSettlements;
     std::vector<std::array<double, 18>> savedBands;
     double savedTime = 0;
     int version = 1;
@@ -396,17 +396,20 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         else if (key == "settlement") {
             // layout: cell P R [aware practising practiceT]xNTECH S scarce founded
             // herd; v8 adds granaries buildWork fillLo fillHi cycleT (and a third
-            // tech triple). Unified slots: tech at 3..11, the rest from 12.
-            std::array<double, 21> sv{};
+            // tech triple); v9 adds hungrySince granNeedYrs. Unified slots: tech
+            // at 3..11, the rest from 12.
+            std::array<double, 23> sv{};
             sv[13] = -1; // scarceSince default
             sv[18] = 2;  // fillLo default (no observation yet)
             sv[19] = -1; // fillHi default
+            sv[21] = -1; // hungrySince default
             f >> sv[0] >> sv[1] >> sv[2];
             if (version >= 7) {
                 int nt = version >= 8 ? 3 : 2;
                 for (int t = 0; t < nt * 3; t++) f >> sv[3 + t];
                 f >> sv[12] >> sv[13] >> sv[14] >> sv[15];
                 if (version >= 8) f >> sv[16] >> sv[17] >> sv[18] >> sv[19] >> sv[20];
+                if (version >= 9) f >> sv[21] >> sv[22];
             } else {
                 if (version >= 3) f >> sv[3] >> sv[4] >> sv[5];
                 if (version >= 4) f >> sv[12] >> sv[13];
@@ -463,6 +466,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.fillLo = (float)sv[18];
             st.fillHi = (float)sv[19];
             st.cycleT = version >= 8 ? sv[20] : savedTime;
+            st.hungrySince = sv[21];
+            st.granNeedYrs = (float)sv[22];
             st.buildMat = w.pop.buildMatMap[cell];
             if (st.tech[population::TECH_HUSBANDRY].practising && st.herd <= 0)
                 st.herd = technology::HERD_SEED;

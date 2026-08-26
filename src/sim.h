@@ -351,6 +351,12 @@ inline void maybeSplit(population::Field& pf, technology::WorldState& ws,
     Settlement& s = pf.settlements[si];
     float keff = technology::effectiveK(s, now);
     float phi = s.P > 1 ? keff * s.R / s.P : 2.0f;
+    // Sustained hunger for need-driven invention: a genuine shortfall
+    // (phi < NEED_HUNGRY_PHI), not the comfort glide. Checked before every
+    // early return so small settlements get desperate too; split attempts
+    // do not reset it -- emigration does not cure desperation.
+    if (phi >= NEED_HUNGRY_PHI) s.hungrySince = -1;
+    else if (s.hungrySince < 0) s.hungrySince = now;
     if (phi >= SPLIT_PHI) {
         s.scarceSince = -1;
         return;

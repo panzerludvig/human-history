@@ -23,6 +23,17 @@ constexpr float HERD_SEED = 1.0f;             // bred from wild capture at pract
 // Clocks whose rates drift are redrawn at this horizon; the exponential is
 // memoryless, so redrawing is exact for piecewise-constant rates.
 constexpr double RESAMPLE = 50.0 * YEAR;
+// Need-driven discovery (farming, granaries): desperation invents. One tough
+// winter changes nobody's lifestyle, so need ramps in only after the state
+// has held a year and saturates at four. Each unaware settlement contributes
+// ramp x suitability x capped population; the world rate is sqrt(sum) /
+// NEED_MEAN_YEARS -- sublinear, so more potential inventors invent sooner
+// but a crowded hungry world is not instant. Expected mean times are pinned
+// in Design/Technology.md (calibration table) -- keep them in sync.
+constexpr double NEED_MEAN_YEARS = 2000.0;   // mean at total need weight 1
+constexpr double NEED_RESAMPLE = 5.0 * YEAR; // need drifts yearly: short horizon
+constexpr float NEED_YEARS_ON = 1.0f;        // below this, no desperation
+constexpr float NEED_YEARS_SAT = 4.0f;       // full desperation
 
 inline const char* techName(int t) {
     static const char* names[population::NTECH] = {"farming", "husbandry", "granaries"};
@@ -78,6 +89,27 @@ inline float effectiveK(const population::Settlement& s, double now) {
     return std::min(s.kFoodP * (s.meanF + farmMult - 1.0f) + husb, s.kWater);
 }
 
+// Which technologies are invented from need rather than serendipity: nobody
+// farms or builds granaries unless they have to. Husbandry (taming what is
+// already around you) stays on the serendipity clock.
+inline bool needDriven(int tech) {
+    return tech == population::TECH_FARMING || tech == population::TECH_GRANARY;
+}
+
+// One settlement's contribution to a need-driven invention rate, and its
+// pick weight when the clock fires. Farming's sustained state is hunger
+// (hungrySince, independent of split resets); granaries' is the storage
+// fill signal holding in consecutive years (granNeedYrs).
+inline float needWeight(const population::Settlement& s, int tech, double now) {
+    if (s.tech[tech].aware || s.P <= 1) return 0.0f;
+    float years = tech == population::TECH_FARMING
+                      ? (s.hungrySince >= 0 ? (float)((now - s.hungrySince) / YEAR) : 0.0f)
+                      : s.granNeedYrs;
+    float acute =
+        std::clamp((years - NEED_YEARS_ON) / (NEED_YEARS_SAT - NEED_YEARS_ON), 0.0f, 1.0f);
+    return acute * suitability(s, tech) * std::min(s.P / 300.0f, 3.0f);
+}
+
 // Redraw a settlement's next contact event for one technology.
 inline void redraw(population::Field& pf, int i, WorldState& ws, int tech, double now) {
     using namespace population;
@@ -103,9 +135,27 @@ inline void redraw(population::Field& pf, int i, WorldState& ws, int tech, doubl
     }
 }
 
-// Draw one technology's world invention clock: rate = (unaware population
-// share) / 10000 years.
+// Draw one technology's world invention clock. Need-driven techs: rate =
+// sqrt(total need weight) / NEED_MEAN_YEARS, re-checked on a short horizon
+// because need drifts yearly (a zero rate still re-checks -- desperation can
+// arise between draws). Serendipity techs: rate = (unaware population share)
+// / 10000 years.
 inline void scheduleInvention(population::Field& pf, WorldState& ws, int tech, double now) {
+    if (needDriven(tech)) {
+        double wsum = 0;
+        bool anyUnaware = false;
+        for (const population::Settlement& s : pf.settlements) {
+            if (!s.tech[tech].aware) anyUnaware = true;
+            wsum += needWeight(s, tech, now);
+        }
+        if (!anyUnaware) { ws.nextEvent[tech] = INF_T; return; }
+        double rate = std::sqrt(wsum) / (NEED_MEAN_YEARS * YEAR);
+        double dt = rate > 0 ? expDraw(ws.rng, 1.0 / rate) : INF_T;
+        ws.fires[tech] = dt <= NEED_RESAMPLE;
+        ws.nextEvent[tech] = now + std::min(dt, NEED_RESAMPLE);
+        if (ws.sink) ws.sink->clockEvent(tech, ws.nextEvent[tech]);
+        return;
+    }
     double unaware = 0, total = 0;
     for (const population::Settlement& s : pf.settlements) {
         total += s.P;
@@ -133,13 +183,19 @@ inline void startPractising(population::Field& pf, int i, WorldState& ws, int te
     for (int j : pf.neighbours[i]) redraw(pf, j, ws, tech, now);
 }
 
-// Weighted pick of the inventor among the unaware: big, hungry settlements on
-// suitable ground invent.
+// Weighted pick of the inventor among the unaware. Need-driven techs draw
+// proportional to the same need weights that set the rate; serendipity techs
+// favour big, hungry settlements on suitable ground.
 inline int pickInventor(population::Field& pf, WorldState& ws, int tech, double now) {
     std::vector<double> wts(pf.settlements.size(), 0.0);
     double wsum = 0;
     for (size_t i = 0; i < pf.settlements.size(); i++) {
         const population::Settlement& s = pf.settlements[i];
+        if (needDriven(tech)) {
+            wts[i] = needWeight(s, tech, now);
+            wsum += wts[i];
+            continue;
+        }
         float suit = suitability(s, tech);
         if (s.tech[tech].aware || suit <= 0 || s.P <= 1) continue;
         float phi = effectiveK(s, now) * s.R / std::max(s.P, 1.0f);
