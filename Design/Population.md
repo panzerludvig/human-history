@@ -50,7 +50,7 @@ Decided 2026-08-26 (`src/daylight.h`). People sleep at night and work, move, and
 
 The gather budget (1.5 rations/person/day) is the 12-hour baseline scaled by the day's effective hours; annual-mean daylight is 12 h at every latitude, so mid-latitude calibration is untouched while seasonal amplitude grows toward the poles. Band speed (15 km/day) is likewise the 12-lit-hour baseline. Sub-day time steps see the rhythm — a band stands still in the dead of night, stores hold flat till dawn — while whole-day steps use daily totals, which already integrate it. The sun's declination and phase are defined once in daylight.h and shared with the renderer, so the lit hemisphere on screen and the hours people work can never drift apart.
 
-Deferred: weather-dependent light, fuel as a resource, hot-climate siesta patterns, night-time visuals (fires).
+Deferred: weather-dependent light, fuel as a resource, hot-climate siesta patterns, night-time visuals (fires — a settlement glow was built and reverted 2026-08-26, commits ba131ff/e6867b4, because the look wasn't right even when very faint; get back to it with a better treatment, perhaps only at close zoom or as sparse individual points rather than a halo).
 
 ---
 

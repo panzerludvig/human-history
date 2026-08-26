@@ -91,7 +91,7 @@ Rendering: the population texture's alpha channel carries the granary count at t
 
 ## Daily rhythm
 
-`src/daylight.h` (design in [[Design/Population]]): declination and subsolar direction (also used for the renderer's `uSun` — one definition, no drift), `hoursAbove` (sun above a given altitude: −0.83° = the work day, −6° = light to travel by), `workHours` (daylight up to the 17-h waking cap plus a need-bought ×0.35 firelight extension), and `activeDays` (activity inside a sub-day span for a window centered on local solar noon; spans ≥ 1 day pass through unchanged). Settlements scale their gather cap by work hours per substep; bands scale foraging and move only during travel hours. Hour-scale time steps show stores flat and bands stationary at night. Settlements also glow after dark (`fireGlowAt` in the shader): a soft-edged warm halo scaled by night depth and population, added under the cloud layer — the night hemisphere reads like an Earth-at-night photo of hearth fires.
+`src/daylight.h` (design in [[Design/Population]]): declination and subsolar direction (also used for the renderer's `uSun` — one definition, no drift), `hoursAbove` (sun above a given altitude: −0.83° = the work day, −6° = light to travel by), `workHours` (daylight up to the 17-h waking cap plus a need-bought ×0.35 firelight extension), and `activeDays` (activity inside a sub-day span for a window centered on local solar noon; spans ≥ 1 day pass through unchanged). Settlements scale their gather cap by work hours per substep; bands scale foraging and move only during travel hours. Hour-scale time steps show stores flat and bands stationary at night.
 
 ## Tooltip
 
