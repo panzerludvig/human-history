@@ -348,7 +348,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 10\n";
+    f << "version 11\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -363,7 +363,7 @@ static bool saveWorld(const World& w, const Camera& c) {
               << s.tech[t].practiceT << " ";
         f << s.S << " " << s.scarceSince << " " << s.founded << " " << s.herd << " "
           << s.granaries << " " << s.buildWork << " " << s.fillLo << " " << s.fillHi << " "
-          << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << "\n";
+          << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << " " << s.id << "\n";
     }
     for (const population::Band& b : w.pop.bands) {
         f << "band " << b.id << " " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
@@ -373,6 +373,12 @@ static bool saveWorld(const World& w, const Camera& c) {
               << b.tech[t].practiceT;
         f << "\n";
     }
+    f << "nextsid " << w.pop.nextSettlementId << "\n";
+    // Land memory and ruins: where people have lived and left.
+    for (const auto& kv : w.pop.scars)
+        f << "scar " << kv.first << " " << kv.second.R << " " << kv.second.t << "\n";
+    for (const population::Field::Ruin& r : w.pop.ruins)
+        f << "ruin " << r.cell << " " << r.abandoned << "\n";
     // Regional game pools: only the dented ones (the rest reload as 1).
     for (size_t r = 0; r < w.pop.gameG.size(); r++)
         if (w.pop.gameG[r] < 0.9999f) f << "game " << r << " " << w.pop.gameG[r] << "\n";
@@ -385,9 +391,11 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     if (!f) return false;
     w = World{};
     w.name = name;
-    std::vector<std::array<double, 23>> savedSettlements;
+    std::vector<std::array<double, 24>> savedSettlements;
     std::vector<std::array<double, 18>> savedBands;
     std::vector<std::pair<size_t, double>> savedGame;
+    std::vector<std::array<double, 3>> savedScars;
+    std::vector<std::pair<int, double>> savedRuins;
     double savedTime = 0;
     int version = 1;
     uint64_t savedTechRng = 0;
@@ -402,7 +410,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             // herd; v8 adds granaries buildWork fillLo fillHi cycleT (and a third
             // tech triple); v9 adds hungrySince granNeedYrs. Unified slots: tech
             // at 3..11, the rest from 12.
-            std::array<double, 23> sv{};
+            std::array<double, 24> sv{};
             sv[13] = -1; // scarceSince default
             sv[18] = 2;  // fillLo default (no observation yet)
             sv[19] = -1; // fillHi default
@@ -414,6 +422,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
                 f >> sv[12] >> sv[13] >> sv[14] >> sv[15];
                 if (version >= 8) f >> sv[16] >> sv[17] >> sv[18] >> sv[19] >> sv[20];
                 if (version >= 9) f >> sv[21] >> sv[22];
+                if (version >= 11) f >> sv[23];
             } else {
                 if (version >= 3) f >> sv[3] >> sv[4] >> sv[5];
                 if (version >= 4) f >> sv[12] >> sv[13];
@@ -432,6 +441,18 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
                 for (int i = i0; i < 12; i++) f >> bv[i];
             }
             savedBands.push_back(bv);
+        }
+        else if (key == "nextsid") f >> w.pop.nextSettlementId;
+        else if (key == "scar") {
+            double cell, R, t;
+            f >> cell >> R >> t;
+            savedScars.push_back({cell, R, t});
+        }
+        else if (key == "ruin") {
+            int cell;
+            double t;
+            f >> cell >> t;
+            savedRuins.push_back({cell, t});
         }
         else if (key == "game") {
             size_t r;
@@ -457,7 +478,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         for (auto& sv : savedSettlements) {
             int cell = (int)sv[0];
             if (cell < 0 || cell >= population::W * population::H) continue;
-            population::Settlement st{cell, (float)sv[1], (float)sv[2], savedTime, savedTime};
+            population::Settlement st{cell, 0, false, (float)sv[1], (float)sv[2], savedTime, savedTime};
             st.kFoodP = w.pop.kFoodPMap[cell];
             st.kWater = w.pop.kWaterMap[cell];
             st.sFarm = w.pop.sFarmMap[cell];
@@ -481,6 +502,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.buildMat = w.pop.buildMatMap[cell];
             st.kGame = w.pop.kGameMap[cell];
             st.gRegion = population::gameRegion(cell);
+            st.id = sv[23] > 0 ? (uint32_t)sv[23] : w.pop.nextSettlementId++;
+            w.pop.nextSettlementId = std::max(w.pop.nextSettlementId, st.id + 1);
             if (st.tech[population::TECH_HUSBANDRY].practising && st.herd <= 0)
                 st.herd = technology::HERD_SEED;
             atmosphere::seasonProfile(w.clim, sim::cellCentre(cell),
@@ -511,6 +534,12 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         }
         population::computeNeighbours(w.pop);
     }
+    for (auto& sc : savedScars)
+        if (sc[0] >= 0 && sc[0] < population::W * population::H)
+            w.pop.scars[(int)sc[0]] = {(float)sc[1], sc[2]};
+    for (auto& rn : savedRuins)
+        if (rn.first >= 0 && rn.first < population::W * population::H)
+            w.pop.ruins.push_back({rn.first, rn.second});
     // Restore the game pools (default pristine), then refresh each
     // settlement's cached health.
     for (auto& [r, g] : savedGame)
@@ -568,7 +597,7 @@ enum : int {
 struct Panel {
     HWND wnd = nullptr;
     int kind = 0;       // 0 settlement, 1 band
-    int index = 0;      // settlement index (stable; settlements are never erased)
+    uint32_t sid = 0;   // settlement identity (indices shift when one moves away)
     uint32_t bandId = 0;
     int tab = 0;        // 0 environment, 1 technology, 2 buildings
     int techSel = -1;   // selected tech in the tech tab, -1 = overview list
@@ -634,6 +663,7 @@ static std::vector<float> popTexData() {
     std::vector<float> d(population::W * population::H * 4, 0.0f);
     const population::Field& pf = app.world.pop;
     for (int i = 0; i < population::W * population::H; i++) d[i * 4] = pf.K[i];
+    for (const population::Field::Ruin& r : pf.ruins) d[r.cell * 4 + 1] = -1.0f; // abandoned
     for (const population::Settlement& s : pf.settlements) {
         d[s.cell * 4 + 1] = std::max(s.P, 1.0f);
         d[s.cell * 4 + 3] = s.granaries; // alpha: built granaries at the cell
@@ -1159,7 +1189,19 @@ static std::string describePoint(Vec3 n) {
     // shader draws (sim::granaryPos, defined once), pick radius = draw
     // radius plus ~3 px of slop.
     std::string building;
-    if (!wd.pop.settlementAt.empty()) {
+    {
+        float pickR = (float)std::clamp(app.cam.kmPerPixel() * 4.0, 1.5, 6.0) +
+                      (float)(app.cam.kmPerPixel() * 3.0);
+        for (const population::Field::Ruin& r : wd.pop.ruins)
+            if (sim::distKm(nf, sim::cellCentre(r.cell)) < pickR) {
+                char rb[64];
+                snprintf(rb, sizeof rb, "Ruins, abandoned year %d  |  ",
+                         (int)(r.abandoned / 365.0) + 1);
+                building = rb;
+                break;
+            }
+    }
+    if (building.empty() && !wd.pop.settlementAt.empty()) {
         float pickR = (float)std::clamp(app.cam.kmPerPixel() * 2.0, 0.6, 2.5) +
                       (float)(app.cam.kmPerPixel() * 3.0);
         for (int dy = -1; dy <= 1 && building.empty(); dy++)
@@ -1246,6 +1288,15 @@ constexpr int PANEL_PAD = 12, PANEL_TAB_Y = 36, PANEL_TAB_H = 24, PANEL_CONTENT_
 static const int PANEL_TAB_X[4] = {12, 126, 236, 340}; // slot edges for 3 tabs
 static const char* PANEL_TABS[3] = {"Environment", "Technology", "Buildings"};
 static const char* TECH_NAMES[population::NTECH] = {"Farming", "Husbandry", "Granary building"};
+
+// Settlements are erased when they pick up and leave, so panels hold an id
+// and resolve the index whenever they draw.
+static int settlementIndexById(uint32_t sid) {
+    const std::vector<population::Settlement>& v = app.world.pop.settlements;
+    for (int i = 0; i < (int)v.size(); i++)
+        if (v[i].id == sid) return i;
+    return -1;
+}
 
 static std::string fmtYears(double yr) {
     char b[32];
@@ -1475,10 +1526,12 @@ static std::string bandText(uint32_t bandId) {
 
 static std::string panelContent(const Panel& pn) {
     if (pn.kind == 1) return bandText(pn.bandId);
-    const population::Settlement& st = app.world.pop.settlements[pn.index];
+    int idx = settlementIndexById(pn.sid);
+    if (idx < 0) return "This settlement is gone:\nthey picked up and moved on.";
+    const population::Settlement& st = app.world.pop.settlements[idx];
     if (pn.tab == 0) return envText(st);
     if (pn.tab == 2) return buildingsText(st, app.world.simTime);
-    if (pn.techSel >= 0) return techDetailText(st, pn.index, pn.techSel);
+    if (pn.techSel >= 0) return techDetailText(st, idx, pn.techSel);
     std::string out;
     for (int t = 0; t < population::NTECH; t++)
         out += techStateLine(st.tech[t], t, app.world.simTime) + "\n";
@@ -1502,7 +1555,7 @@ static void paintPanel(HWND h) {
     Panel* pn = panelFor(h);
     if (pn) {
         char title[48];
-        if (pn->kind == 0) snprintf(title, sizeof title, "Settlement %d", pn->index);
+        if (pn->kind == 0) snprintf(title, sizeof title, "Settlement %u", pn->sid);
         else snprintf(title, sizeof title, "Band %u", pn->bandId);
         SelectObject(dc, app.panelBold);
         SetTextColor(dc, RGB(235, 235, 240));
@@ -1612,9 +1665,9 @@ static LRESULT CALLBACK panelProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcA(h, msg, wp, lp);
 }
 
-static void openPanel(int kind, int index, uint32_t bandId) {
+static void openPanel(int kind, uint32_t sid, uint32_t bandId) {
     for (const Panel& pn : app.panels)
-        if (pn.kind == kind && pn.index == index && pn.bandId == bandId) {
+        if (pn.kind == kind && pn.sid == sid && pn.bandId == bandId) {
             SetWindowPos(pn.wnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             return; // already open: raise it instead of stacking a twin
         }
@@ -1627,7 +1680,7 @@ static void openPanel(int kind, int index, uint32_t bandId) {
     HWND btn = CreateWindowA("BUTTON", "X", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, pw - 34, 6, 24, 24,
                              w, (HMENU)1, inst, nullptr);
     SendMessageA(btn, WM_SETFONT, (WPARAM)app.font, TRUE);
-    app.panels.push_back({w, kind, index, bandId});
+    app.panels.push_back({w, kind, sid, bandId});
     SetWindowPos(w, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 }
 
@@ -1647,7 +1700,7 @@ static void pickAt(int x, int y) {
         float d = sim::distKm(n, sim::cellCentre(pf.settlements[i].cell));
         if (d < bestD) { bestD = d; best = i; }
     }
-    if (best >= 0) { openPanel(0, best, 0); return; }
+    if (best >= 0) { openPanel(0, pf.settlements[best].id, 0); return; }
     float bRadius = (float)std::clamp(app.cam.kmPerPixel() * 4.0, 3.0, 14.0) + slop;
     uint32_t bestId = 0;
     bestD = bRadius;
@@ -1905,7 +1958,14 @@ int main(int argc, char** argv) {
                 gran += (int)(s.granaries + 0.5f);
                 building += s.buildWork > 0 ? 1 : 0;
             }
-            fprintf(stderr, "granaries built: %d, under construction: %d\n", gran, building);
+            double totalP = 0;
+            for (const population::Settlement& s : app.world.pop.settlements) totalP += s.P;
+            fprintf(stderr,
+                    "granaries built: %d, under construction: %d\n"
+                    "settlements: %d, people: %.0f, bands: %d, ruins: %d, worked sites: %d\n",
+                    gran, building, (int)app.world.pop.settlements.size(), totalP,
+                    (int)app.world.pop.bands.size(), (int)app.world.pop.ruins.size(),
+                    (int)app.world.pop.scars.size());
         }
         if (argc >= 10) app.shotPath = argv[9];            // save a frame, then keep running
     } else {
@@ -1953,8 +2013,10 @@ int main(int argc, char** argv) {
                     if (nAw >= 8) break;
                     terrain::V3 e{};
                     float radius = 0;
+                    int sIdx = pn.kind == 0 ? settlementIndexById(pn.sid) : -1;
+                    if (pn.kind == 0 && sIdx < 0) continue; // moved on: no zone to draw
                     if (pn.kind == 0) {
-                        const population::Settlement& st = app.world.pop.settlements[pn.index];
+                        const population::Settlement& st = app.world.pop.settlements[sIdx];
                         e = sim::cellCentre(st.cell);
                         radius = population::settlementAwareKm(
                             app.world.simTime - st.founded,

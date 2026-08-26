@@ -36,6 +36,22 @@ Storage is also the substrate for deferred mechanics: raiding steals stores, gra
 
 A group knows its surroundings out to a range, with accuracy decaying over distance — near things resolve exactly, distant things are rumours. No per-group map rasters: knowledge is a radius plus distance-scaled noise applied when candidate sites are evaluated.
 
+## Moving as a whole: the default answer
+
+Decided 2026-08-26, after the historians: for most of human history relocating the whole community was the normal thing to do and staying put was the exception. Foragers moved camp seasonally; early farmers practised shifting cultivation and moved the village every ten to thirty years as soils and firewood ran out; pastoralists move by definition; and whole towns were abandoned outright when the land failed. What makes a settlement genuinely fixed is **sunk investment** -- cleared fields, granaries, permanent houses. Sedentism is a consequence of things you cannot carry.
+
+So when sustained scarcity forces a decision, the group first asks whether it can **all** go somewhere better:
+
+- **Split when the problem is numbers; leave when the problem is the place.** Moving is the default because people are kin and a failing place fails for everyone; fission is the fallback for a world with no room left for the whole group. The colonization wave therefore appears only as the map fills -- exactly the historical order.
+- **Judged on the rumour, not the truth.** The destination is valued at what the group has *heard* (`bestProspect`'s distance-noised estimate), because that is all they know. Arriving to a poorer valley than promised is a real outcome; the band re-evaluates on arrival like any other.
+- **Sunk investment anchors the choice.** The destination must beat home by a factor of 1 + 0.25 per granary + 0.5 x farming expertise, so foragers and herders shift readily while a farming village with full granaries splits and keeps its fields.
+- **Small groups get an exit.** Below the split minimum (50) a settlement could previously only sit and dwindle; relocation is now its only real answer to a failing site, gated at 20 people (fewer cannot survive a journey).
+- **Scarce settlements wake in time to decide.** A settlement's ordinary horizon can be years long; without pulling the next wake to the decision moment, famine resolves the crisis mid-sleep -- starving down to fit rather than moving, with the question never asked. (Found in testing: a scarce settlement slept 1,383 days through its own 730-day deadline.)
+
+The site they leave is **erased, not tombstoned** -- settlements carry a stable id, and panels resolve it each frame, so the settlement list never accumulates ghosts. Two traces remain: the land keeps the condition it was left in and recovers on the usual timescale (so an exhausted valley is a bad place to move to for a generation, and `moverCap` prices it accordingly), and a place that was invested in -- granaries, or sixty years of occupation -- leaves **ruins**: a small grey mark at close zoom, named by the tooltip, weathering away after four centuries. A forager camp of thirty that stood a decade leaves nothing, which is also archaeologically true.
+
+In a 1,000-year test world this produces roughly four moves for every split, with most of the churn in the first two centuries before the map settles.
+
 **Skills decide worth** (2026-08-26): every candidate site is valued at what *this mover* could make of it (`sim::moverCap`) — forager yield plus the farming bonus scaled by carried farming expertise and the herd-capacity bonus for practising herders — and the same measure gates actual founding. A herding band therefore takes steppe a forager walks past (~67,000 cells per test world are herder-only), and pastoral colonization of the grasslands continues after forager expansion has saturated — bands that find "nowhere to go" as foragers find pasture as herders. Arriving herders seed their settlement with stock driven along the march (0.25 per person × expertise), not the bare wild-capture seed. Band-owned herds en route remain deferred; the driven-stock seeding approximates them at the endpoints.
 
 The radius is dynamic (capped at 600 km):

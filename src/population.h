@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <vector>
 #include <algorithm>
+#include <unordered_map>
 
 namespace population {
 
@@ -107,6 +108,18 @@ inline float bandAwareKm(double restDays, float promM) {
     return std::min(r + vantageKm(promM), AWARE_CAP_KM);
 }
 constexpr int MAX_BANDS = 200;
+// Relocation (Design/Migration.md): moving as a whole is the DEFAULT answer
+// to a failing place -- people are kin and stay together -- and fission is
+// the fallback for when no known ground can hold everyone. What anchors a
+// group is sunk investment: granaries and cleared fields raise the bar a
+// destination must clear, so foragers and herders shift readily while a
+// farming village with full granaries splits instead of abandoning them.
+constexpr float RELOC_ANCHOR_GRANARY = 0.25f; // per built granary
+constexpr float RELOC_ANCHOR_FARM = 0.5f;     // per unit farming expertise
+// Ruins: only places that were invested in leave a trace, and it weathers
+// away. A camp of thirty that stood a decade leaves nothing to find.
+constexpr double RUIN_MIN_AGE_DAYS = 60.0 * 365.0;
+constexpr double RUIN_LIFE_DAYS = 400.0 * 365.0;
 constexpr float FARMYARD_SHARE_POP = 0.05f; // household animals, no pasture needed
 constexpr float HERD_GROWTH_YR = 0.25f;     // logistic growth rate
 constexpr float HERD_PASTURE_K = 2.0f;      // people/km2 on pure pasture at full expertise
@@ -136,6 +149,8 @@ struct TechState {
 
 struct Settlement {
     int cell;
+    uint32_t id = 0;   // stable identity (settlements are erased when they move)
+    bool leaving = false; // converted to a band this step; swept at step end
     float P;           // people
     float R;           // land condition 0..1
     double t;          // sim day at which P and R are valid
@@ -197,6 +212,16 @@ struct Field {
     std::vector<std::vector<int>> neighbours; // settlements within contact range
     std::vector<Band> bands;
     uint32_t nextBandId = 1;
+    uint32_t nextSettlementId = 1;
+    // Land memory: a vacated site keeps the condition it was left in and
+    // recovers on the usual timescale, so an exhausted valley is a bad place
+    // to move to for a generation. Sparse and lazily evaluated -- only sites
+    // that have been lived on appear here.
+    struct LandScar { float R; double t; };
+    std::unordered_map<int, LandScar> scars;
+    // What is left standing where an invested settlement walked away.
+    struct Ruin { int cell; double abandoned; };
+    std::vector<Ruin> ruins;
     // Per-cell local properties, kept for founding settlements at runtime:
     std::vector<float> kFoodPMap, kWaterMap, sFarmMap, pastureMap, buildMatMap, kGameMap;
     // Regional wild game pools, on the climate grid (atmosphere::W x H):
@@ -204,6 +229,21 @@ struct Field {
     std::vector<float> gameDmax; // sustainable draw per region, people
     double gameT = 0;            // sim day the pools are valid
 };
+
+// The land condition a cell offers now: pristine unless someone has lived
+// here, in which case it is what they left, recovered since (same timescale
+// as an occupied settlement's regeneration).
+inline float cellCondition(const Field& f, int cell, double now) {
+    auto it = f.scars.find(cell);
+    if (it == f.scars.end()) return 1.0f;
+    float rec = 1.0f - (1.0f - it->second.R) *
+                           (float)std::exp(-(now - it->second.t) / (R_REGEN_YEARS * 365.0));
+    return std::clamp(rec, 0.0f, 1.0f);
+}
+
+inline void markScar(Field& f, int cell, float R, double now) {
+    f.scars[cell] = {R, now};
+}
 
 constexpr float CONTACT_KM = 160.0f; // twice the minimum settlement spacing
 
@@ -387,7 +427,8 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         }
         if (!clear) continue;
         f.settlementAt[c.cell] = (int)f.settlements.size();
-        Settlement s{c.cell, c.k * SUSTAIN_R * 0.5f, 1.0f, 0.0, 0.0};
+        Settlement s{c.cell, 0, false, c.k * SUSTAIN_R * 0.5f, 1.0f, 0.0, 0.0};
+        s.id = f.nextSettlementId++;
         s.kFoodP = f.kFoodPMap[c.cell];
         s.kGame = f.kGameMap[c.cell];
         s.gRegion = gameRegion(c.cell);

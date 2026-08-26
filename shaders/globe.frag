@@ -304,6 +304,23 @@ float bandNear(vec3 n) {
     return 0.0;
 }
 
+// Ruins of an abandoned settlement: the population channel carries -1 where
+// people once lived and walked away. A small grey mark, close zoom only --
+// only invested places leave one, and it weathers away within centuries.
+float ruinNear(vec3 n) {
+    if (uKmPerPixel > 6.0) return 0.0;
+    float rad = clamp(uKmPerPixel * 4.0, 1.5, 6.0);
+    ivec2 c0 = hydroCell(n);
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 c = c0 + ivec2(dx, dy);
+            ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
+            if (texelFetch(uPop, cw, 0).g >= 0.0) continue;
+            if (length(n - cellCentre(cw)) * 6371.0 < rad) return 1.0;
+        }
+    return 0.0;
+}
+
 // Granary markers: a ring of small structures around the settlement's cell
 // centre, visible only zoomed right in. Mirrors sim::granaryPos EXACTLY
 // (golden-angle ring, integer per-cell phase, 6.5 km radius) so the tooltip
@@ -739,6 +756,8 @@ void main() {
     else if (bp > 0.0) albedo = vec3(0.85, 0.55, 0.10); // bands: amber, even mid-crossing
     else if (uHasHydro == 1 && !isWater && granaryNear(n) > 0.0)
         albedo = vec3(0.80, 0.64, 0.26); // granaries: straw-coloured stores
+    else if (uHasHydro == 1 && !isWater && ruinNear(n) > 0.0)
+        albedo = vec3(0.42, 0.40, 0.38); // ruins: weathered stone and ash
     else if (isRiver) albedo = mix(vec3(0.10, 0.30, 0.48), vec3(0.80, 0.86, 0.92), iceAt(n, h));
     else if (isPond) albedo = mix(vec3(0.14, 0.36, 0.50), vec3(0.80, 0.86, 0.92), iceAt(n, h));
     else if (isWater) {
