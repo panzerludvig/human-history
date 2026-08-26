@@ -201,6 +201,11 @@ struct Band {
     double restStart = 0;
     double t = 0;            // sim day at which the state is valid
     double nextUpdate = 0;
+    // What the site they left could still feed, for a whole community that
+    // picked up and went (0 for a splinter band, which has left nothing).
+    // New ground has to beat it: a place they judged unable to keep them
+    // cannot be the place they settle again. Journey state, not saved.
+    float leftCap = 0;
     // Technology carried (demic diffusion):
     TechState tech[NTECH];
 };

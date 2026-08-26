@@ -428,13 +428,23 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
     }
     bool done = false;
     // The band's skills decide what ground is worth settling (moverCap):
-    // herders take steppe a forager would starve on.
+    // herders take steppe a forager would starve on. And ground is only
+    // worth settling if it can feed the people who would settle it -- the
+    // same test a settlement applies when deciding whether to stay. Without
+    // it a group that left because the valley could not feed three hundred
+    // would happily re-found on that same valley the next day: leaving was
+    // judged against its population, settling against a fixed threshold.
     float fExp = technology::expertise(b.tech[TECH_FARMING], now);
     float hExp = technology::expertise(b.tech[TECH_HUSBANDRY], now);
+    auto canHold = [&](int c) {
+        float cap = moverCap(pf, c, fExp, hExp, now);
+        return cap >= b.P && cap > b.leftCap;
+    };
     if (distKm(pos, tgt) < 20.0f) {
         // Arrived: the rumour meets reality.
         if (pf.settlementAt[cell] < 0 && moverCap(pf, cell, fExp, hExp, now) >= MIN_SETTLEMENT_K &&
-            spacingOK(pf, pos) && (int)pf.settlements.size() < MAX_TOTAL_SETTLEMENTS) {
+            canHold(cell) && spacingOK(pf, pos) &&
+            (int)pf.settlements.size() < MAX_TOTAL_SETTLEMENTS) {
             foundSettlement(pf, ws, hy, clim, b, cell, now);
             done = true;
         } else {
@@ -448,7 +458,7 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
             }
         }
     } else if (!b.resting && pf.settlementAt[cell] < 0 &&
-               moverCap(pf, cell, fExp, hExp, now) >= MIN_SETTLEMENT_K &&
+               moverCap(pf, cell, fExp, hExp, now) >= MIN_SETTLEMENT_K && canHold(cell) &&
                moverCap(pf, cell, fExp, hExp, now) >=
                    0.9f * moverCap(pf, b.targetCell, fExp, hExp, now) &&
                spacingOK(pf, pos) && (int)pf.settlements.size() < MAX_TOTAL_SETTLEMENTS) {
@@ -530,7 +540,9 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     // Judged on the rumour, not the truth: a group deciding whether to pick
     // up and leave knows only what it has heard, and distant ground is
     // reported optimistically as often as not. Arriving to a poorer valley
-    // than promised is a real outcome -- the band re-evaluates on arrival.
+    // than promised is a real outcome -- the band re-evaluates on arrival
+    // against this same measure, so nobody marches toward ground they would
+    // refuse when they got there.
     float targetSupport = est * SUSTAIN_R;
     float homeSupport = keff * s.R; // what this place carries in its present state
     float anchor = 1.0f + RELOC_ANCHOR_GRANARY * s.granaries + RELOC_ANCHOR_FARM * fExp;
@@ -549,6 +561,9 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     b.nextUpdate = now + BAND_STEP_DAYS;
     for (int t = 0; t < NTECH; t++) b.tech[t] = s.tech[t];
     if (wholeGroup) {
+        // What this place could still feed, in the same measure a candidate
+        // site is judged by -- the bar the new ground has to clear.
+        b.leftCap = moverCap(pf, s.cell, fExp, hExp, now) * s.R;
         // The land remembers what it was left in; only a place that was
         // invested in leaves anything to find.
         markScar(pf, s.cell, s.R, now);
