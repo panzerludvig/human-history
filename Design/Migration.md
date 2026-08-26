@@ -36,6 +36,8 @@ Storage is also the substrate for deferred mechanics: raiding steals stores, gra
 
 A group knows its surroundings out to a range, with accuracy decaying over distance — near things resolve exactly, distant things are rumours. No per-group map rasters: knowledge is a radius plus distance-scaled noise applied when candidate sites are evaluated.
 
+**Skills decide worth** (2026-08-26): every candidate site is valued at what *this mover* could make of it (`sim::moverCap`) — forager yield plus the farming bonus scaled by carried farming expertise and the herd-capacity bonus for practising herders — and the same measure gates actual founding. A herding band therefore takes steppe a forager walks past (~67,000 cells per test world are herder-only), and pastoral colonization of the grasslands continues after forager expansion has saturated — bands that find "nowhere to go" as foragers find pasture as herders. Arriving herders seed their settlement with stock driven along the march (0.25 per person × expertise), not the bare wild-capture seed. Band-owned herds en route remain deferred; the driven-stock seeding approximates them at the endpoints.
+
 The radius is dynamic (capped at 600 km):
 
 - **Base**: 150 km — what any group sees from where it stands.

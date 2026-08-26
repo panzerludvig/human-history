@@ -93,12 +93,29 @@ inline bool spacingOK(const population::Field& pf, terrain::V3 n) {
     return true;
 }
 
+// The capacity a mover with these skills would command at a cell: forager
+// yield plus the farming and herding bonuses for what it practises. This is
+// how a herding band values the steppe a forager walks past -- and it must
+// gate founding too, or a band would choose a target it then refuses.
+inline float moverCap(const population::Field& pf, int cell, float farmExp, float husbExp) {
+    using namespace population;
+    float food = pf.kFoodPMap[cell];
+    if (food <= 0) return 0;
+    food += food * technology::FARM_YIELD_GAIN * pf.sFarmMap[cell] * farmExp;
+    if (husbExp > 0)
+        food += pf.pastureMap[cell] * FORAGE_KM2 * HERD_PASTURE_K / SUSTAIN_R *
+                (0.3f + 0.7f * husbExp) * 0.85f;
+    return std::min(food, pf.kWaterMap[cell]);
+}
+
 // The best-looking unclaimed prospect within the knowledge range, judged with
 // noise that grows with distance: near things resolve exactly, far things are
-// rumours. Returns a cell index, or -1 if nothing known is worth going to.
+// rumours; each candidate is valued at what THIS mover could make of it.
+// Returns a cell index, or -1 if nothing known is worth going to.
 inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t& rng,
-                        float radiusKm) {
+                        float radiusKm, float farmExp = 0, float husbExp = 0) {
     using namespace population;
+    bool skilled = farmExp > 0 || husbExp > 0;
     float lat0 = std::asin(std::clamp(from.z, -1.0f, 1.0f));
     float dLat = radiusKm / 6371.0f;
     int y0 = std::max((int)(((lat0 - dLat) + 3.14159265f / 2) / 3.14159265f * H), 1);
@@ -111,13 +128,15 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
     for (int y = y0; y <= y1; y += 2)
         for (int x = 0; x < W; x += 2) {
             int cell = y * W + x;
-            if (pf.K[cell] < MIN_SETTLEMENT_K) continue;
+            float cap = pf.K[cell];
+            if (skilled && pf.kFoodPMap[cell] > 0) cap = moverCap(pf, cell, farmExp, husbExp);
+            if (cap < MIN_SETTLEMENT_K) continue;
             terrain::V3 n = cellCentre(cell);
             float dot = terrain::dot(from, n);
             float d = 6371.0f * std::sqrt(std::max(2.0f - 2.0f * dot, 0.0f)); // chord ~ arc
             if (d > radiusKm || d < 80.0f) continue;
             float noise = ((float)technology::urand(rng) * 2.0f - 1.0f) * 0.6f * (d / radiusKm);
-            float est = pf.K[cell] * (1.0f + noise);
+            float est = cap * (1.0f + noise);
             if (nTop < 24) {
                 top[nTop++] = {est, cell};
             } else {
@@ -253,7 +272,12 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     s.cycleT = now; // the fill cycle starts with the settlement
     s.S = std::min(b.S, CAP_DAYS_SETTLED * b.P);
     for (int t = 0; t < NTECH; t++) s.tech[t] = b.tech[t];
-    if (s.tech[TECH_HUSBANDRY].practising) s.herd = technology::HERD_SEED;
+    if (s.tech[TECH_HUSBANDRY].practising) {
+        // Herders arrive with stock driven along the march, not a bare
+        // seed: enough to feed a share of the arrivals while it grows.
+        float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
+        s.herd = std::max(technology::HERD_SEED, 0.25f * b.P * hExp);
+    }
     atmosphere::seasonProfile(clim, cellCentre(cell), std::max(hy.heightM[cell], 0.0f), s.tSeason,
                               s.meanF, s.meanG2);
     int idx = (int)pf.settlements.size();
@@ -374,25 +398,31 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
         b.restStart = now;
     }
     bool done = false;
+    // The band's skills decide what ground is worth settling (moverCap):
+    // herders take steppe a forager would starve on.
+    float fExp = technology::expertise(b.tech[TECH_FARMING], now);
+    float hExp = technology::expertise(b.tech[TECH_HUSBANDRY], now);
     if (distKm(pos, tgt) < 20.0f) {
         // Arrived: the rumour meets reality.
-        if (pf.settlementAt[cell] < 0 && pf.K[cell] >= MIN_SETTLEMENT_K && spacingOK(pf, pos) &&
-            (int)pf.settlements.size() < MAX_TOTAL_SETTLEMENTS) {
+        if (pf.settlementAt[cell] < 0 && moverCap(pf, cell, fExp, hExp) >= MIN_SETTLEMENT_K &&
+            spacingOK(pf, pos) && (int)pf.settlements.size() < MAX_TOTAL_SETTLEMENTS) {
             foundSettlement(pf, ws, hy, clim, b, cell, now);
             done = true;
         } else {
             double rest = b.resting ? now - b.restStart : 0.0;
             int nt = bestProspect(pf, pos, ws.rng,
-                                  bandAwareKm(rest, prominenceM(hy, clim, cell)));
+                                  bandAwareKm(rest, prominenceM(hy, clim, cell)), fExp, hExp);
             if (nt >= 0) b.targetCell = nt;
             else {
                 if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
                 done = true;
             }
         }
-    } else if (!b.resting && pf.settlementAt[cell] < 0 && pf.K[cell] >= MIN_SETTLEMENT_K &&
-               pf.K[cell] >= 0.9f * pf.K[b.targetCell] && spacingOK(pf, pos) &&
-               (int)pf.settlements.size() < MAX_TOTAL_SETTLEMENTS) {
+    } else if (!b.resting && pf.settlementAt[cell] < 0 &&
+               moverCap(pf, cell, fExp, hExp) >= MIN_SETTLEMENT_K &&
+               moverCap(pf, cell, fExp, hExp) >=
+                   0.9f * moverCap(pf, b.targetCell, fExp, hExp) &&
+               spacingOK(pf, pos) && (int)pf.settlements.size() < MAX_TOTAL_SETTLEMENTS) {
         // Good enough ground under their feet beats a distant rumour.
         foundSettlement(pf, ws, hy, clim, b, cell, now);
         done = true;
@@ -433,7 +463,9 @@ inline void maybeSplit(population::Field& pf, technology::WorldState& ws,
     if (now - s.scarceSince < SPLIT_AFTER_DAYS || (int)pf.bands.size() >= MAX_BANDS) return;
     terrain::V3 home = cellCentre(s.cell);
     int tgt = bestProspect(pf, home, ws.rng,
-                           settlementAwareKm(now - s.founded, prominenceM(hy, clim, s.cell)));
+                           settlementAwareKm(now - s.founded, prominenceM(hy, clim, s.cell)),
+                           technology::expertise(s.tech[TECH_FARMING], now),
+                           technology::expertise(s.tech[TECH_HUSBANDRY], now));
     s.scarceSince = now; // whether or not anyone leaves, the pressure resets
     s.noProspect = tgt < 0;
     if (tgt < 0) return;
