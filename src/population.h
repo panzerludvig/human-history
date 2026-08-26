@@ -143,6 +143,8 @@ struct Settlement {
     float S = 0;               // food store, rations (person-days)
     double scarceSince = -1;   // sim day scarcity began, -1 if fed (split rule;
                                // resets on every split attempt)
+    bool noProspect = false;   // last emigration attempt found nowhere to go
+                               // (transient; shown in the panel, not saved)
     double hungrySince = -1;   // sim day sustained hunger began, -1 if fed --
                                // never reset by splitting (need-driven invention)
     double founded = 0;        // sim day the settlement was founded (awareness age)

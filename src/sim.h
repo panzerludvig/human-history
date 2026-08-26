@@ -422,6 +422,7 @@ inline void maybeSplit(population::Field& pf, technology::WorldState& ws,
     else if (s.hungrySince < 0) s.hungrySince = now;
     if (phi >= SPLIT_PHI) {
         s.scarceSince = -1;
+        s.noProspect = false;
         return;
     }
     if (s.P < SPLIT_MIN_P) return;
@@ -434,6 +435,7 @@ inline void maybeSplit(population::Field& pf, technology::WorldState& ws,
     int tgt = bestProspect(pf, home, ws.rng,
                            settlementAwareKm(now - s.founded, prominenceM(hy, clim, s.cell)));
     s.scarceSince = now; // whether or not anyone leaves, the pressure resets
+    s.noProspect = tgt < 0;
     if (tgt < 0) return;
     Band b{};
     b.id = pf.nextBandId++;

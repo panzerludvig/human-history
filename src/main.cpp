@@ -562,11 +562,16 @@ enum : int {
 };
 
 // A detail window for one settlement or band, opened by clicking its marker.
+// Settlement panels are tabbed (Environment / Technology / Buildings) and
+// custom-painted so tabs and technology rows are clickable; every panel is
+// repositioned by dragging anywhere that isn't a click target.
 struct Panel {
     HWND wnd = nullptr;
     int kind = 0;       // 0 settlement, 1 band
     int index = 0;      // settlement index (stable; settlements are never erased)
     uint32_t bandId = 0;
+    int tab = 0;        // 0 environment, 1 technology, 2 buildings
+    int techSel = -1;   // selected tech in the tech tab, -1 = overview list
 };
 
 struct App {
@@ -600,7 +605,10 @@ struct App {
     int octaves = 8;   // current level of detail, shared with the tooltip
     HWND hwnd = nullptr;
     HFONT font = nullptr, titleFont = nullptr;
+    HFONT panelFont = nullptr, panelBold = nullptr; // dense panel text
     HBRUSH bgBrush = nullptr;
+    HWND panelDrag = nullptr; // panel being dragged, with the grab offset
+    POINT panelDragOff{};
     std::vector<std::pair<int, HWND>> controls;
 };
 static App app;
@@ -758,6 +766,8 @@ static void addControl(int id, const char* cls, const char* text, DWORD style) {
 static void createControls() {
     app.font = CreateFontA(24, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
     app.titleFont = CreateFontA(56, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
+    app.panelFont = CreateFontA(18, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
+    app.panelBold = CreateFontA(18, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
     app.bgBrush = CreateSolidBrush(RGB(8, 8, 16));
     addControl(ID_TITLE, "STATIC", "Iron and Blood", SS_CENTER);
     addControl(ID_STATUS, "STATIC", "", SS_CENTER);
@@ -1226,79 +1236,308 @@ static void updateTooltip(int x, int y) {
 }
 
 // ------------------------------------------------ selection detail panels
+// Custom-painted tabbed windows. Layout constants shared by painting and
+// hit-testing; tab hit slots are fixed x-ranges so no text measuring is
+// needed to route a click.
 
-static std::string panelText(const Panel& pn) {
+constexpr int PANEL_W = 380, PANEL_H = 312, PANEL_BAND_H = 260;
+constexpr int PANEL_PAD = 12, PANEL_TAB_Y = 36, PANEL_TAB_H = 24, PANEL_CONTENT_Y = 70,
+              PANEL_LINE_H = 21;
+static const int PANEL_TAB_X[4] = {12, 126, 236, 340}; // slot edges for 3 tabs
+static const char* PANEL_TABS[3] = {"Environment", "Technology", "Buildings"};
+static const char* TECH_NAMES[population::NTECH] = {"Farming", "Husbandry", "Granary building"};
+
+static std::string fmtYears(double yr) {
+    char b[32];
+    if (yr >= 100000) return "100k+ yr";
+    if (yr >= 1000) snprintf(b, sizeof b, "%.1fk yr", yr / 1000.0);
+    else snprintf(b, sizeof b, "%.0f yr", yr);
+    return b;
+}
+
+static std::string techStateLine(const population::TechState& ts, int techId, double now) {
+    if (!ts.practising)
+        return std::string(TECH_NAMES[techId]) + (ts.aware ? ": known, not practised" : ": unknown");
+    char b[64];
+    snprintf(b, sizeof b, "%s: practising, expertise %d%%", TECH_NAMES[techId],
+             (int)std::lround(technology::expertise(ts, now) * 100));
+    return b;
+}
+
+static std::string envText(const population::Settlement& st) {
     const World& wd = app.world;
-    char buf[512];
-    auto techLine = [&](const population::TechState& ts, int techId) {
-        static const char* names[population::NTECH] = {"Farming", "Husbandry",
-                                                       "Granary building"};
-        const char* name = names[techId];
-        if (!ts.practising)
-            return std::string(name) + (ts.aware ? ": known, not practised" : ": unknown");
-        char b[64];
-        snprintf(b, sizeof b, "%s: practising, expertise %d%%", name,
-                 (int)std::lround(technology::expertise(ts, wd.simTime) * 100));
-        return std::string(b);
-    };
-    if (pn.kind == 0) {
-        const population::Settlement& st = wd.pop.settlements[pn.index];
-        terrain::V3 n = sim::cellCentre(st.cell);
-        float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
-        float lon = std::atan2(n.y, n.x) * 180.0f / 3.14159265f;
-        float awareKm = population::settlementAwareKm(
-            wd.simTime - st.founded, sim::prominenceM(wd.hydro, wd.clim, st.cell));
-        char herdTxt[48] = "";
-        if (st.herd > 0.5f)
-            snprintf(herdTxt, sizeof herdTxt, "\nLivestock: feeds %d", (int)st.herd);
-        char gameTxt[48] = "";
-        if (st.kGame > 0.15f * st.kFoodP && st.gameNow < 0.98f)
-            snprintf(gameTxt, sizeof gameTxt, "\nWild game: %d%%%s",
-                     (int)std::lround(st.gameNow * 100),
-                     st.gameNow < population::GAME_FLOOR ? " (gone)" : "");
-        char granTxt[64] = "";
-        if (st.buildWork > 0)
-            snprintf(granTxt, sizeof granTxt, "\nGranaries: %d (building, %d%% done)",
-                     (int)st.granaries,
-                     (int)std::lround((1.0 - st.buildWork / population::GRANARY_WORK) * 100));
-        else if (st.granaries > 0.5f)
-            snprintf(granTxt, sizeof granTxt, "\nGranaries: %d", (int)st.granaries);
-        snprintf(buf, sizeof buf,
-                 "Settlement %d\n%.1f%c  %.1f%c\nPeople: %d (capacity %d)\nStores: %d days\n"
-                 "Land condition: %d%%%s\n%s\n%s\n%s%s%s\nAwareness: %d km",
-                 pn.index, std::fabs(lat), lat >= 0 ? 'N' : 'S', std::fabs(lon), lon >= 0 ? 'E' : 'W',
-                 (int)st.P, (int)(technology::effectiveK(st, wd.simTime) * population::SUSTAIN_R),
-                 (int)(st.S / std::max(st.P, 1.0f)), (int)std::lround(st.R * 100), gameTxt,
-                 techLine(st.tech[population::TECH_FARMING], population::TECH_FARMING).c_str(),
-                 techLine(st.tech[population::TECH_HUSBANDRY], population::TECH_HUSBANDRY).c_str(),
-                 techLine(st.tech[population::TECH_GRANARY], population::TECH_GRANARY).c_str(),
-                 herdTxt, granTxt, (int)awareKm);
-        return buf;
+    double now = wd.simTime;
+    terrain::V3 n = sim::cellCentre(st.cell);
+    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
+    float lon = std::atan2(n.y, n.x) * 180.0f / 3.14159265f;
+    float awareKm = population::settlementAwareKm(now - st.founded,
+                                                  sim::prominenceM(wd.hydro, wd.clim, st.cell));
+    char b[128];
+    std::string out;
+    snprintf(b, sizeof b, "%.1f%c  %.1f%c\n", std::fabs(lat), lat >= 0 ? 'N' : 'S',
+             std::fabs(lon), lon >= 0 ? 'E' : 'W');
+    out += b;
+    snprintf(b, sizeof b, "People: %d (capacity %d)\n", (int)st.P,
+             (int)(technology::effectiveK(st, now) * population::SUSTAIN_R));
+    out += b;
+    snprintf(b, sizeof b, "Stores: %d of %d days\n", (int)(st.S / std::max(st.P, 1.0f)),
+             (int)population::storageCapDays(st.P, st.granaries));
+    out += b;
+    snprintf(b, sizeof b, "Land condition: %d%%\n", (int)std::lround(st.R * 100));
+    out += b;
+    if (st.kGame > 0) {
+        float plantF = st.kFoodP - st.kGame;
+        float gameF = st.kGame * population::huntEff(st.gameNow);
+        int dietG = (int)std::lround(gameF / std::max(plantF + gameF, 1e-6f) * 100);
+        snprintf(b, sizeof b, "Wild game: %d%%%s (diet %d%% game)\n",
+                 (int)std::lround(st.gameNow * 100),
+                 st.gameNow < population::GAME_FLOOR ? " -- gone" : "", dietG);
+        out += b;
     }
+    snprintf(b, sizeof b, "Farm suitability: %d%%   pasture: %d%%\n",
+             (int)std::lround(st.sFarm * 100), (int)std::lround(st.pasture * 100));
+    out += b;
+    snprintf(b, sizeof b, "Build materials: %d%%\n", (int)std::lround(st.buildMat * 100));
+    out += b;
+    snprintf(b, sizeof b, "Awareness: %d km\n", (int)awareKm);
+    out += b;
+    if (st.herd > 0.5f) {
+        snprintf(b, sizeof b, "Livestock: feeds %d\n", (int)st.herd);
+        out += b;
+    }
+    if (st.scarceSince >= 0) {
+        snprintf(b, sizeof b, "Scarce since year %d%s\n", (int)(st.scarceSince / 365.0) + 1,
+                 st.noProspect ? " -- nowhere to go" : "");
+        out += b;
+    }
+    return out;
+}
+
+// The exact numbers behind one technology's chances here: invention weight,
+// contact odds, and every adoption gate, with the blocked one named.
+static std::string techDetailText(const population::Settlement& st, int idx, int t) {
+    const World& wd = app.world;
+    double now = wd.simTime;
+    char b[160];
+    std::string out = "< back\n";
+    const population::TechState& ts = st.tech[t];
+    out += TECH_NAMES[t];
+    out += ts.practising ? " -- practising" : ts.aware ? " -- known, not practised" : " -- unknown";
+    out += "\n";
+    if (ts.practising) {
+        snprintf(b, sizeof b, "Expertise %d%% since year %d\n(matures toward 100%% over ~50 yr)\n",
+                 (int)std::lround(technology::expertise(ts, now) * 100),
+                 (int)(ts.practiceT / 365.0) + 1);
+        out += b;
+        return out;
+    }
+    if (!ts.aware) {
+        if (technology::needDriven(t)) {
+            float years =
+                t == population::TECH_FARMING
+                    ? (st.hungrySince >= 0 ? (float)((now - st.hungrySince) / 365.0) : 0.0f)
+                    : st.granNeedYrs;
+            float acute = std::clamp((years - technology::NEED_YEARS_ON) /
+                                         (technology::NEED_YEARS_SAT - technology::NEED_YEARS_ON),
+                                     0.0f, 1.0f);
+            float w = technology::needWeight(st, t, now);
+            double W = 0;
+            for (const population::Settlement& o : wd.pop.settlements)
+                W += technology::needWeight(o, t, now);
+            out += "Invention, driven by need:\n";
+            snprintf(b, sizeof b, " %s %.1f yr -> desperation %d%%\n",
+                     t == population::TECH_FARMING ? "hungry" : "stores binding", years,
+                     (int)std::lround(acute * 100));
+            out += b;
+            snprintf(b, sizeof b, " suitability %d%%, people x%.2f\n",
+                     (int)std::lround(technology::suitability(st, t) * 100),
+                     std::min(st.P / 300.0f, 3.0f));
+            out += b;
+            if (W > 0) {
+                snprintf(b, sizeof b, " weight %.2f of world %.1f (share %d%%)\n", w, W,
+                         (int)std::lround(w / W * 100));
+                out += b;
+                snprintf(b, sizeof b, " world mean %s\n",
+                         fmtYears(technology::NEED_MEAN_YEARS / std::sqrt(W)).c_str());
+                out += b;
+            } else
+                out += " nobody in the world needs it yet\n";
+        } else {
+            double unaware = 0, total = 0;
+            for (const population::Settlement& o : wd.pop.settlements) {
+                total += o.P;
+                if (!o.tech[t].aware) unaware += o.P;
+            }
+            double share = total > 0 ? unaware / total : 0;
+            out += "Invention, serendipity:\n";
+            snprintf(b, sizeof b, " unaware share %d%% -> world mean %s\n",
+                     (int)std::lround(share * 100),
+                     share > 0 ? fmtYears(technology::INVENT_MEAN_YEARS / share).c_str() : "never");
+            out += b;
+        }
+        int knowing = 0;
+        for (int j : wd.pop.neighbours[idx]) knowing += wd.pop.settlements[j].tech[t].aware ? 1 : 0;
+        if (knowing)
+            snprintf(b, sizeof b, "Hearing of it: %d neighbour%s -> mean %.1f yr\n", knowing,
+                     knowing == 1 ? " knows it" : "s know it",
+                     technology::AWARE_MEAN_YEARS / knowing);
+        else
+            snprintf(b, sizeof b, "Hearing of it: nobody within %d km knows\n",
+                     (int)population::CONTACT_KM);
+        out += b;
+        return out;
+    }
+    float suit = technology::suitability(st, t);
+    float need = technology::adoptionNeed(st, t, now);
+    float esum = 0;
+    int teachers = 0;
+    for (int j : wd.pop.neighbours[idx]) {
+        float e = technology::expertise(wd.pop.settlements[j].tech[t], now);
+        if (e > 0) { esum += e; teachers++; }
+    }
+    float phi = st.P > 1 ? technology::effectiveK(st, now) * st.R / st.P : 2.0f;
+    out += "Adoption gates (all must be open):\n";
+    snprintf(b, sizeof b, " suitable ground: %d%%%s\n", (int)std::lround(suit * 100),
+             suit <= 0 ? "  <- BLOCKED" : "");
+    out += b;
+    if (t == population::TECH_GRANARY)
+        snprintf(b, sizeof b, " need: %d%% (stores bound %.0f yr running)%s\n",
+                 (int)std::lround(need * 100), st.granNeedYrs, need <= 0 ? "  <- BLOCKED" : "");
+    else
+        snprintf(b, sizeof b, " need: %d%% (phi %.2f, content at 1.11)%s\n",
+                 (int)std::lround(need * 100), phi, need <= 0 ? "  <- BLOCKED" : "");
+    out += b;
+    snprintf(b, sizeof b, " teachers in %d km: %d, expertise sum %.2f%s\n",
+             (int)population::CONTACT_KM, teachers, esum, esum <= 0 ? "  <- BLOCKED" : "");
+    out += b;
+    double rate = (double)suit * need * esum;
+    if (rate > 0)
+        snprintf(b, sizeof b, "-> mean wait %s\n",
+                 fmtYears(technology::PRACT_MEAN_YEARS / rate).c_str());
+    else
+        snprintf(b, sizeof b, "-> will not adopt until unblocked\n");
+    out += b;
+    return out;
+}
+
+static std::string buildingsText(const population::Settlement& st, double now) {
+    char b[96];
+    std::string out;
+    if (st.granaries > 0.5f) snprintf(b, sizeof b, "Granaries: %d\n", (int)st.granaries);
+    else snprintf(b, sizeof b, "Granaries: none\n");
+    out += b;
+    if (st.buildWork > 0) {
+        snprintf(b, sizeof b, "Under construction: %d%% done\n",
+                 (int)std::lround((1.0 - st.buildWork / population::GRANARY_WORK) * 100));
+        out += b;
+    }
+    snprintf(b, sizeof b, "Storage: %d + %d days per person\n",
+             (int)population::CAP_DAYS_SETTLED,
+             (int)(population::storageCapDays(st.P, st.granaries) - population::CAP_DAYS_SETTLED));
+    out += b;
+    const population::TechState& gt = st.tech[population::TECH_GRANARY];
+    if (gt.practising) {
+        snprintf(b, sizeof b, "Build pace: craft %d%% x materials %d%%\n",
+                 (int)std::lround(technology::expertise(gt, now) * 100),
+                 (int)std::lround(st.buildMat * 100));
+        out += b;
+        if (st.buildWork <= 0) out += "No build under way: stores have\nnot both filled and drained.\n";
+    } else if (gt.aware)
+        out += "(knows the craft is possible,\nhas not learned it)\n";
+    else
+        out += "(granary building unknown here)\n";
+    return out;
+}
+
+static std::string bandText(uint32_t bandId) {
+    const World& wd = app.world;
+    double now = wd.simTime;
     for (const population::Band& bd : wd.pop.bands)
-        if (bd.id == pn.bandId) {
+        if (bd.id == bandId) {
+            char b[128];
+            std::string out;
             float away = sim::distKm({bd.px, bd.py, bd.pz}, sim::cellCentre(bd.targetCell));
-            double rest = bd.resting ? wd.simTime - bd.restStart : 0.0;
+            double rest = bd.resting ? now - bd.restStart : 0.0;
             float awareKm = population::bandAwareKm(
                 rest, sim::prominenceM(wd.hydro, wd.clim, sim::cellOf({bd.px, bd.py, bd.pz})));
-            snprintf(buf, sizeof buf,
-                     "Band %u\nPeople: %d\nStores: %d days\nState: %s\nTarget: %d km away\n%s\n%s\n%s\n"
-                     "Awareness: %d km",
-                     bd.id, (int)bd.P, (int)(bd.S / std::max(bd.P, 1.0f)),
-                     bd.resting ? "resting" : "moving", (int)away,
-                     techLine(bd.tech[population::TECH_FARMING], population::TECH_FARMING).c_str(),
-                     techLine(bd.tech[population::TECH_HUSBANDRY], population::TECH_HUSBANDRY).c_str(),
-                     techLine(bd.tech[population::TECH_GRANARY], population::TECH_GRANARY).c_str(),
-                     (int)awareKm);
-            return buf;
+            snprintf(b, sizeof b, "People: %d\nStores: %d days\nState: %s\nTarget: %d km away\n",
+                     (int)bd.P, (int)(bd.S / std::max(bd.P, 1.0f)),
+                     bd.resting ? "resting" : "moving", (int)away);
+            out += b;
+            for (int t = 0; t < population::NTECH; t++)
+                out += techStateLine(bd.tech[t], t, now) + "\n";
+            snprintf(b, sizeof b, "Awareness: %d km\n", (int)awareKm);
+            out += b;
+            return out;
         }
-    snprintf(buf, sizeof buf, "Band %u\n\nNo longer on the move:\nsettled, merged, or perished.",
-             pn.bandId);
-    return buf;
+    return "No longer on the move:\nsettled, merged, or perished.";
+}
+
+static std::string panelContent(const Panel& pn) {
+    if (pn.kind == 1) return bandText(pn.bandId);
+    const population::Settlement& st = app.world.pop.settlements[pn.index];
+    if (pn.tab == 0) return envText(st);
+    if (pn.tab == 2) return buildingsText(st, app.world.simTime);
+    if (pn.techSel >= 0) return techDetailText(st, pn.index, pn.techSel);
+    std::string out;
+    for (int t = 0; t < population::NTECH; t++)
+        out += techStateLine(st.tech[t], t, app.world.simTime) + "\n";
+    out += "\n(click a technology for details)";
+    return out;
+}
+
+static Panel* panelFor(HWND h) {
+    for (Panel& p : app.panels)
+        if (p.wnd == h) return &p;
+    return nullptr;
+}
+
+static void paintPanel(HWND h) {
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(h, &ps);
+    RECT rc;
+    GetClientRect(h, &rc);
+    FillRect(dc, &rc, app.bgBrush);
+    SetBkMode(dc, TRANSPARENT);
+    Panel* pn = panelFor(h);
+    if (pn) {
+        char title[48];
+        if (pn->kind == 0) snprintf(title, sizeof title, "Settlement %d", pn->index);
+        else snprintf(title, sizeof title, "Band %u", pn->bandId);
+        SelectObject(dc, app.panelBold);
+        SetTextColor(dc, RGB(235, 235, 240));
+        TextOutA(dc, PANEL_PAD, 8, title, (int)strlen(title));
+        SelectObject(dc, app.panelFont);
+        if (pn->kind == 0)
+            for (int t = 0; t < 3; t++) {
+                SetTextColor(dc, pn->tab == t ? RGB(255, 225, 150) : RGB(140, 140, 155));
+                TextOutA(dc, PANEL_TAB_X[t], PANEL_TAB_Y, PANEL_TABS[t],
+                         (int)strlen(PANEL_TABS[t]));
+            }
+        std::string txt = panelContent(*pn);
+        int y = pn->kind == 0 ? PANEL_CONTENT_Y : PANEL_TAB_Y;
+        int row = 0;
+        size_t pos = 0;
+        while (pos <= txt.size()) {
+            size_t e = txt.find('\n', pos);
+            std::string line =
+                txt.substr(pos, e == std::string::npos ? std::string::npos : e - pos);
+            bool clickable = pn->kind == 0 && pn->tab == 1 &&
+                             ((pn->techSel < 0 && row < population::NTECH) ||
+                              (pn->techSel >= 0 && row == 0));
+            SetTextColor(dc, clickable ? RGB(255, 215, 130) : RGB(230, 230, 235));
+            TextOutA(dc, PANEL_PAD, y, line.c_str(), (int)line.size());
+            y += PANEL_LINE_H;
+            row++;
+            if (e == std::string::npos) break;
+            pos = e + 1;
+        }
+    }
+    EndPaint(h, &ps);
 }
 
 static void refreshPanels() {
-    for (const Panel& pn : app.panels) SetWindowTextA(GetDlgItem(pn.wnd, 3), panelText(pn).c_str());
+    for (const Panel& pn : app.panels) InvalidateRect(pn.wnd, nullptr, TRUE);
 }
 
 static void closeAllPanels() {
@@ -1311,17 +1550,64 @@ static void closeAllPanels() {
 
 static LRESULT CALLBACK panelProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_PAINT:
+        paintPanel(h);
+        return 0;
     case WM_COMMAND:
         if (LOWORD(wp) == 1) DestroyWindow(h);
         return 0;
     case WM_DESTROY:
+        if (app.panelDrag == h) { ReleaseCapture(); app.panelDrag = nullptr; }
         for (size_t i = 0; i < app.panels.size(); i++)
             if (app.panels[i].wnd == h) { app.panels.erase(app.panels.begin() + i); break; }
         return 0;
-    case WM_CTLCOLORSTATIC:
-        SetTextColor((HDC)wp, RGB(230, 230, 235));
-        SetBkColor((HDC)wp, RGB(8, 8, 16));
-        return (LRESULT)app.bgBrush;
+    case WM_LBUTTONDOWN: {
+        Panel* pn = panelFor(h);
+        int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
+        SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE); // raise on grab
+        if (pn && pn->kind == 0 && my >= PANEL_TAB_Y && my < PANEL_TAB_Y + PANEL_TAB_H) {
+            for (int t = 0; t < 3; t++)
+                if (mx >= PANEL_TAB_X[t] && mx < PANEL_TAB_X[t + 1] - 6) {
+                    pn->tab = t;
+                    pn->techSel = -1;
+                    InvalidateRect(h, nullptr, TRUE);
+                    return 0;
+                }
+        }
+        if (pn && pn->kind == 0 && pn->tab == 1 && my >= PANEL_CONTENT_Y) {
+            int row = (my - PANEL_CONTENT_Y) / PANEL_LINE_H;
+            if (pn->techSel < 0 && row >= 0 && row < population::NTECH) {
+                pn->techSel = row;
+                InvalidateRect(h, nullptr, TRUE);
+                return 0;
+            }
+            if (pn->techSel >= 0 && row == 0) { // "< back"
+                pn->techSel = -1;
+                InvalidateRect(h, nullptr, TRUE);
+                return 0;
+            }
+        }
+        // Anywhere else grabs the window for dragging.
+        SetCapture(h);
+        app.panelDrag = h;
+        app.panelDragOff = {mx, my};
+        return 0;
+    }
+    case WM_MOUSEMOVE:
+        if (app.panelDrag == h) {
+            POINT c;
+            GetCursorPos(&c);
+            ScreenToClient(app.hwnd, &c);
+            SetWindowPos(h, nullptr, c.x - app.panelDragOff.x, c.y - app.panelDragOff.y, 0, 0,
+                         SWP_NOSIZE | SWP_NOZORDER);
+        }
+        return 0;
+    case WM_LBUTTONUP:
+        if (app.panelDrag == h) {
+            ReleaseCapture();
+            app.panelDrag = nullptr;
+        }
+        return 0;
     }
     return DefWindowProcA(h, msg, wp, lp);
 }
@@ -1332,7 +1618,7 @@ static void openPanel(int kind, int index, uint32_t bandId) {
             SetWindowPos(pn.wnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             return; // already open: raise it instead of stacking a twin
         }
-    int pw = 340, ph = 216;
+    int pw = PANEL_W, ph = kind == 0 ? PANEL_H : PANEL_BAND_H;
     int x = 16 + (app.panelSpawn % 7) * 30, y = 56 + (app.panelSpawn % 7) * 30;
     app.panelSpawn++;
     HINSTANCE inst = GetModuleHandleA(nullptr);
@@ -1340,12 +1626,8 @@ static void openPanel(int kind, int index, uint32_t bandId) {
                            x, y, pw, ph, app.hwnd, nullptr, inst, nullptr);
     HWND btn = CreateWindowA("BUTTON", "X", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, pw - 34, 6, 24, 24,
                              w, (HMENU)1, inst, nullptr);
-    HWND txt = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, 12, 8,
-                             pw - 54, ph - 20, w, (HMENU)3, inst, nullptr);
     SendMessageA(btn, WM_SETFONT, (WPARAM)app.font, TRUE);
-    SendMessageA(txt, WM_SETFONT, (WPARAM)app.font, TRUE);
     app.panels.push_back({w, kind, index, bandId});
-    refreshPanels();
     SetWindowPos(w, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 }
 
