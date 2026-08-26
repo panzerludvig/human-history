@@ -93,13 +93,15 @@ overgrazing feedback on R.
 
 ## Granaries (the third technology; the first building)
 
-Granaries follow the plough: the technology can only be invented or taken up
-by a settlement that practises farming (its suitability gate). The granary
-itself is the project's first **building** — a structure that exists on the
-map at the settlement, visible when zoomed right in, identified by the
-tooltip, and acting as a local modifier: each one banks a fixed absolute
-store (10,000 rations), so its worth in days shrinks as people multiply and
-granary count naturally tracks population.
+Granaries do not require farming — pre-agricultural wild-grain stores are
+real — but farming makes the need obvious: a practising farmer's suitability
+is 1.0 against a 0.15 base, so farmers are ~7x likelier to invent granaries
+and ~7x faster to adopt them (decided 2026-08-26; the gate was briefly
+hard). The granary itself is the project's first **building** — a structure
+that exists on the map at the settlement, visible when zoomed right in,
+identified by the tooltip, and acting as a local modifier: each one banks a
+fixed absolute store (10,000 rations), so its worth in days shrinks as
+people multiply and granary count naturally tracks population.
 
 **Demand is measured, not planned**, from the annual fill cycle. A build
 starts only when, over the past year, the settlement both *filled* its

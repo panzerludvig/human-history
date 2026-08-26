@@ -59,12 +59,13 @@ inline float expertise(const population::TechState& ts, double now) {
 }
 
 // The suitability gate for practising a technology at a settlement's site.
-// Granaries follow the plough: only a farming settlement has a harvest pulse
-// worth banking, so only farmers invent or take up granary building.
+// Granaries: anyone who stores food can invent them (pre-agricultural
+// granaries are real), but a harvest pulse makes the need obvious --
+// practising farming multiplies the invention weight and adoption rate ~7x.
 inline float suitability(const population::Settlement& s, int tech) {
     if (tech == population::TECH_FARMING) return s.sFarm;
     if (tech == population::TECH_HUSBANDRY) return s.pasture;
-    return s.tech[population::TECH_FARMING].practising ? 1.0f : 0.0f;
+    return s.tech[population::TECH_FARMING].practising ? 1.0f : 0.15f;
 }
 
 // Annual food capacity: foraging scaled by the seasonal mean, farming's
@@ -126,8 +127,8 @@ inline void startPractising(population::Field& pf, int i, WorldState& ws, int te
     s.tech[tech].practiceT = now;
     s.nextTech[tech] = INF_T;
     if (tech == TECH_HUSBANDRY) s.herd = std::max(s.herd, HERD_SEED); // bred from capture
-    // Taking up farming opens the granary gate: re-arm that clock too, since
-    // its suitability was 0 (and its draw parked at infinity) until now.
+    // Taking up farming raises granary suitability ~7x: redraw that clock so
+    // the new rate applies now rather than at the next resample.
     if (tech == TECH_FARMING) redraw(pf, i, ws, TECH_GRANARY, now);
     for (int j : pf.neighbours[i]) redraw(pf, j, ws, tech, now);
 }

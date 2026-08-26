@@ -81,7 +81,7 @@ Sustained scarcity (φ < 0.99 for 2 years, P ≥ 50) splits a third of a settlem
 
 ## Technology table
 
-Per-settlement (and band) tech state is an array (`population::TechState tech[NTECH]`, currently farming, animal husbandry, and granary building) with per-technology world invention clocks, contact spread, suitability gates (sFarm / pasture / practises-farming), and expertise. Husbandry adds a herd (people-fed units) growing logistically toward pasture x expertise inside `population::advance`, a winter-resistant flow in `foodFlow`, and a farmyard bonus; panels show per-tech status and "Livestock: feeds N". Save format v7 carries the tech array and herd.
+Per-settlement (and band) tech state is an array (`population::TechState tech[NTECH]`, currently farming, animal husbandry, and granary building) with per-technology world invention clocks, contact spread, suitability gates (sFarm / pasture / 0.15 base raised to 1 by farming), and expertise. Husbandry adds a herd (people-fed units) growing logistically toward pasture x expertise inside `population::advance`, a winter-resistant flow in `foodFlow`, and a farmyard bonus; panels show per-tech status and "Livestock: feeds N". Save format v7 carries the tech array and herd.
 
 ## Buildings (granaries)
 
