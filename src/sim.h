@@ -138,6 +138,42 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
     return -1;
 }
 
+// Advance every regional game pool to `now` (population.h constants). The
+// draw is what the region's settlements currently eat from the game side of
+// their diet; depletion is proportional to actual kills, recovery is slow,
+// and below the Allee floor there is no recovery at all. Runs on a fixed
+// 90-day schedule (plus catch-up), so it is step-size invariant. Bands are
+// too small and transient to count.
+inline void gameTick(population::Field& pf, double now) {
+    using namespace population;
+    double dt = now - pf.gameT;
+    if (dt <= 0 || pf.gameG.empty()) return;
+    std::vector<float> draw(pf.gameG.size(), 0.0f);
+    for (const Settlement& s : pf.settlements) {
+        if (s.kGame <= 0 || s.P <= 1) continue;
+        float g = pf.gameG[s.gRegion];
+        float gameFlow = s.kGame * huntEff(g) * s.meanF;
+        float farmMult = 1.0f + technology::FARM_YIELD_GAIN * s.sFarm *
+                                    technology::expertise(s.tech[TECH_FARMING], now);
+        float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
+        float total = (s.kFoodP - s.kGame) * s.meanF + gameFlow +
+                      s.kFoodP * (farmMult - 1.0f) + s.herd * 0.85f +
+                      FARMYARD_SHARE_POP * s.kFoodP * hExp;
+        if (total <= 1e-6f) continue;
+        draw[s.gRegion] += s.P * gameFlow / total; // game share of what they eat
+    }
+    for (size_t r = 0; r < pf.gameG.size(); r++) {
+        if (pf.gameDmax[r] <= 0) continue;
+        float g = pf.gameG[r];
+        float regen = g >= GAME_FLOOR ? (1.0f - g) / (GAME_REGEN_YEARS * 365.0f) : 0.0f;
+        float depl = draw[r] / pf.gameDmax[r] / (GAME_DEPLETE_YEARS * 365.0f);
+        pf.gameG[r] = std::clamp(g + (regen - depl) * (float)dt, 0.0f, 1.0f);
+    }
+    for (Settlement& s : pf.settlements)
+        if (s.kGame > 0) s.gameNow = pf.gameG[s.gRegion];
+    pf.gameT = now;
+}
+
 inline population::SeasonCtx seasonCtx(const population::Settlement& s,
                                        const hydrology::Result& hy,
                                        const atmosphere::Climatology& clim, double now) {
@@ -149,6 +185,7 @@ inline population::SeasonCtx seasonCtx(const population::Settlement& s,
                        technology::expertise(s.tech[population::TECH_FARMING], now);
     ctx.husbExp = technology::expertise(s.tech[population::TECH_HUSBANDRY], now);
     ctx.granExp = technology::expertise(s.tech[population::TECH_GRANARY], now);
+    ctx.gameG = s.gameNow;
     return ctx;
 }
 
@@ -206,6 +243,9 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     Settlement s{cell, b.P, 1.0f, now, now};
     s.founded = now;
     s.kFoodP = pf.kFoodPMap[cell];
+    s.kGame = pf.kGameMap[cell];
+    s.gRegion = population::gameRegion(cell);
+    s.gameNow = pf.gameG.empty() ? 1.0f : pf.gameG[s.gRegion];
     s.kWater = pf.kWaterMap[cell];
     s.sFarm = pf.sFarmMap[cell];
     s.pasture = pf.pastureMap[cell];
@@ -284,7 +324,15 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
     b.t = now;
     int hereCell = cellOf(pos);
     double startT = b.t - span; // b.t was already moved to now
-    float flowBase = pf.K[hereCell] * SUSTAIN_R; // 0 on water: crossings cost stores
+    // 0 on water: crossings cost stores. The game-borne share of the cell's
+    // yield follows the regional pool's health, like a settlement's does.
+    float flowBase = pf.K[hereCell] * SUSTAIN_R;
+    if (flowBase > 0 && pf.kFoodPMap[hereCell] > 0 && !pf.gameG.empty()) {
+        float g = pf.gameG[population::gameRegion(hereCell)];
+        float scale = (pf.kFoodPMap[hereCell] - pf.kGameMap[hereCell] * (1.0f - huntEff(g))) /
+                      pf.kFoodPMap[hereCell];
+        flowBase *= std::max(scale, 0.0f);
+    }
     integrateBand(b, flowBase, span, b.resting, clim, pos,
                   std::max(hy.heightM[hereCell], 0.0f), startT);
     if (b.P < BAND_MIN_P) {
@@ -450,6 +498,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
     for (const Band& b : pf.bands) pushBand(b);
     for (int t = 0; t < NTECH; t++)
         if (ws.nextEvent[t] < 1e17) q.push({ws.nextEvent[t], 0, 0, t});
+    if (!pf.gameG.empty()) q.push({pf.gameT + GAME_TICK_DAYS, 4, 0, 0});
 
     while (!q.empty() && q.top().t <= now) {
         Ev ev = q.top();
@@ -494,6 +543,10 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
             }
             technology::scheduleInvention(pf, ws, ev.tech, t);
             changed = true;
+        } else if (ev.kind == 4) {
+            if (std::fabs(t - (pf.gameT + GAME_TICK_DAYS)) > 1e-6) continue; // stale
+            gameTick(pf, t);
+            q.push({pf.gameT + GAME_TICK_DAYS, 4, 0, 0});
         } else {
             int bi = -1;
             for (int i = 0; i < (int)pf.bands.size(); i++)
@@ -524,6 +577,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
             stepBand(pf, ws, hy, clim, i, now);
             changed = true;
         }
+    if (pf.gameT < now - 1e-9) gameTick(pf, now);
     return changed;
 }
 

@@ -348,7 +348,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 9\n";
+    f << "version 10\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -373,6 +373,9 @@ static bool saveWorld(const World& w, const Camera& c) {
               << b.tech[t].practiceT;
         f << "\n";
     }
+    // Regional game pools: only the dented ones (the rest reload as 1).
+    for (size_t r = 0; r < w.pop.gameG.size(); r++)
+        if (w.pop.gameG[r] < 0.9999f) f << "game " << r << " " << w.pop.gameG[r] << "\n";
     f << "techrng " << w.tech.rng << "\n";
     return (bool)f;
 }
@@ -384,6 +387,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     w.name = name;
     std::vector<std::array<double, 23>> savedSettlements;
     std::vector<std::array<double, 18>> savedBands;
+    std::vector<std::pair<size_t, double>> savedGame;
     double savedTime = 0;
     int version = 1;
     uint64_t savedTechRng = 0;
@@ -429,6 +433,12 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             }
             savedBands.push_back(bv);
         }
+        else if (key == "game") {
+            size_t r;
+            double g;
+            f >> r >> g;
+            savedGame.push_back({r, g});
+        }
         else if (key == "land") f >> w.landPercent;
         else if (key == "concentration") f >> w.concentration;
         else if (key == "lat") f >> c.lat;
@@ -469,6 +479,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.hungrySince = sv[21];
             st.granNeedYrs = (float)sv[22];
             st.buildMat = w.pop.buildMatMap[cell];
+            st.kGame = w.pop.kGameMap[cell];
+            st.gRegion = population::gameRegion(cell);
             if (st.tech[population::TECH_HUSBANDRY].practising && st.herd <= 0)
                 st.herd = technology::HERD_SEED;
             atmosphere::seasonProfile(w.clim, sim::cellCentre(cell),
@@ -499,6 +511,13 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         }
         population::computeNeighbours(w.pop);
     }
+    // Restore the game pools (default pristine), then refresh each
+    // settlement's cached health.
+    for (auto& [r, g] : savedGame)
+        if (r < w.pop.gameG.size()) w.pop.gameG[r] = (float)g;
+    w.pop.gameT = savedTime;
+    for (population::Settlement& st : w.pop.settlements)
+        if (st.kGame > 0) st.gameNow = w.pop.gameG[st.gRegion];
     w.simTime = savedTime;
     if (savedTechRng) w.tech.rng = savedTechRng;
     // Contact draws and the invention clock are exponential (memoryless), so
@@ -1174,8 +1193,15 @@ static std::string describePoint(Vec3 n) {
     if (!wd.pop.K.empty()) {
         int ci = cy * hydrology::W + cx;
         if (wd.pop.K[ci] > 0) {
-            char b[48];
-            snprintf(b, sizeof b, "  |  capacity %d", (int)(wd.pop.K[ci] * population::SUSTAIN_R));
+            char b[72];
+            char gameB[24] = "";
+            if (!wd.pop.gameG.empty() && wd.pop.kGameMap[ci] > 0) {
+                float g = wd.pop.gameG[population::gameRegion(ci)];
+                if (g < 0.98f)
+                    snprintf(gameB, sizeof gameB, "  |  game %d%%", (int)std::lround(g * 100));
+            }
+            snprintf(b, sizeof b, "  |  capacity %d%s",
+                     (int)(wd.pop.K[ci] * population::SUSTAIN_R), gameB);
             extra = b;
         }
     }
@@ -1225,6 +1251,11 @@ static std::string panelText(const Panel& pn) {
         char herdTxt[48] = "";
         if (st.herd > 0.5f)
             snprintf(herdTxt, sizeof herdTxt, "\nLivestock: feeds %d", (int)st.herd);
+        char gameTxt[48] = "";
+        if (st.kGame > 0.15f * st.kFoodP && st.gameNow < 0.98f)
+            snprintf(gameTxt, sizeof gameTxt, "\nWild game: %d%%%s",
+                     (int)std::lround(st.gameNow * 100),
+                     st.gameNow < population::GAME_FLOOR ? " (gone)" : "");
         char granTxt[64] = "";
         if (st.buildWork > 0)
             snprintf(granTxt, sizeof granTxt, "\nGranaries: %d (building, %d%% done)",
@@ -1234,10 +1265,10 @@ static std::string panelText(const Panel& pn) {
             snprintf(granTxt, sizeof granTxt, "\nGranaries: %d", (int)st.granaries);
         snprintf(buf, sizeof buf,
                  "Settlement %d\n%.1f%c  %.1f%c\nPeople: %d (capacity %d)\nStores: %d days\n"
-                 "Land condition: %d%%\n%s\n%s\n%s%s%s\nAwareness: %d km",
+                 "Land condition: %d%%%s\n%s\n%s\n%s%s%s\nAwareness: %d km",
                  pn.index, std::fabs(lat), lat >= 0 ? 'N' : 'S', std::fabs(lon), lon >= 0 ? 'E' : 'W',
                  (int)st.P, (int)(technology::effectiveK(st, wd.simTime) * population::SUSTAIN_R),
-                 (int)(st.S / std::max(st.P, 1.0f)), (int)std::lround(st.R * 100),
+                 (int)(st.S / std::max(st.P, 1.0f)), (int)std::lround(st.R * 100), gameTxt,
                  techLine(st.tech[population::TECH_FARMING], population::TECH_FARMING).c_str(),
                  techLine(st.tech[population::TECH_HUSBANDRY], population::TECH_HUSBANDRY).c_str(),
                  techLine(st.tech[population::TECH_GRANARY], population::TECH_GRANARY).c_str(),

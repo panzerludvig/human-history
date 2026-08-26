@@ -40,6 +40,20 @@ P can overshoot because R gives way slowly, then falls back as R runs down; depe
 
 No ticks. Each settlement integrates its own P and R forward at scheduled re-evaluations, choosing the next moment as "when will my state have drifted ~5%" (clamped 1 month–5 years). A settlement at equilibrium wakes rarely; one in collapse wakes often. This is the first real client of [[Design/Event-Driven]].
 
+## Wild game: a shared, slow, mortal pool
+
+Decided 2026-08-26. Food capacity splits into two pools with different physics. Gatherable plants stay per-cell with the fast-recovering land condition R. The **game-borne share** of each cover's yield (grass, steppe, and tundra feed people almost only through animals; forests partly) instead tracks a **regional pool** on the climate grid (~200 km): every settlement in the region hunts the same herds.
+
+Three asymmetries make it the mammoth story rather than a second R:
+
+- **Slow**: recovery on a lifetime scale (80 yr), depletion at capacity-draw in 25 yr — the pool responds to generations of pressure, not seasons.
+- **Hunted harder when scarce**: the take falls only as √health (hunters range wider for scarcer game), which is also what lets a pool be pushed past saving instead of being left alone.
+- **Mortal**: below the extinction floor (0.15) recovery stops entirely; the floor deliberately sits *above* the starvation stall (~0.11, where the hunters' own famine caps the pressure), so a pool driven that low keeps sliding to zero — permanently. The old way of life does not come back.
+
+A lone settlement dents its region (equilibrium ~0.9); dense colonization drags it toward half; concentrated pressure — small island pools first, later farming-fed populations that keep hunting — pushes past the floor. Regional game collapse produces sustained hunger across many settlements at once, which is exactly the need signal that invents and adopts farming and husbandry: the crisis creates agriculture, as it did. In an 800-year test world: ~1,100 regions dented, ~10 below half, 3 extinct.
+
+Pools update on a fixed 90-day world event (step-size invariant, O(settlements) per tick); each settlement caches its pool's health. Bands' forage scales with the pool but their draw is ignored (too small and transient). Panels show "Wild game: N%" where game matters; the tooltip appends "game N%" once a region is visibly dented. Deferred: mobile herds as visible, followable entities (routes, seasonal interception) — this pool becomes their population when they arrive.
+
 ## Daily rhythm
 
 Decided 2026-08-26 (`src/daylight.h`). People sleep at night and work, move, and eat by day — emergent from three ingredients rather than hardcoded hours:

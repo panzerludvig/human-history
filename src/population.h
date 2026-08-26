@@ -62,6 +62,22 @@ constexpr float PHI_CONTENT = 1.11f;
 inline float needRamp(float phi) {
     return std::clamp((PHI_CONTENT - phi) / (PHI_CONTENT - NEED_HUNGRY_PHI), 0.0f, 1.0f);
 }
+
+// Regional wild game (Design/Population.md): a shared, slow, mortal pool.
+// Every settlement in a coarse region (the climate grid, ~200 km) hunts the
+// same herds. The pool recovers on a lifetime scale, not a season scale;
+// hunting efficiency falls only as sqrt(health) (scarcer game is hunted
+// harder); and below the Allee floor recovery stops entirely -- a pool
+// hunted that low is gone forever, and the old way of life with it.
+constexpr float GAME_REGEN_YEARS = 80.0f;   // full recovery timescale
+constexpr float GAME_DEPLETE_YEARS = 25.0f; // full depletion at draw = capacity
+// The extinction floor sits ABOVE the starvation stall: when hunters have
+// eaten a pool down to ~0.11 their own famine caps the pressure, so a floor
+// below that would never be crossed. At 0.15 a pool driven that low keeps
+// sliding to zero under any remaining draw -- the point of no return.
+constexpr float GAME_FLOOR = 0.15f;
+constexpr float GAME_ACCESS = 0.5f;         // share of a region's game within reach
+constexpr double GAME_TICK_DAYS = 90.0;     // pool update cadence (a slow layer)
 constexpr double SPLIT_AFTER_DAYS = 730.0;
 constexpr float SPLIT_MIN_P = 50.0f;
 constexpr float SPLIT_SHARE = 1.0f / 3.0f;
@@ -132,6 +148,9 @@ struct Settlement {
     double founded = 0;        // sim day the settlement was founded (awareness age)
     // Fixed local properties (from the terrain at the cell):
     float kFoodP = 0;  // pristine food capacity (already / SUSTAIN_R)
+    float kGame = 0;   // the game-borne part of kFoodP (regional pool)
+    int gRegion = 0;   // which regional game pool this settlement hunts
+    float gameNow = 1; // that pool's health, refreshed by sim::gameTick
     float meanF = 1;   // annual mean forage factor (seasonal climate)
     float meanG2 = 1;  // annual mean squared growing activity (farming shape)
     float tSeason[4] = {15, 15, 15, 15}; // season temps at the site (cached)
@@ -177,10 +196,20 @@ struct Field {
     std::vector<Band> bands;
     uint32_t nextBandId = 1;
     // Per-cell local properties, kept for founding settlements at runtime:
-    std::vector<float> kFoodPMap, kWaterMap, sFarmMap, pastureMap, buildMatMap;
+    std::vector<float> kFoodPMap, kWaterMap, sFarmMap, pastureMap, buildMatMap, kGameMap;
+    // Regional wild game pools, on the climate grid (atmosphere::W x H):
+    std::vector<float> gameG;    // health 0..1 per region
+    std::vector<float> gameDmax; // sustainable draw per region, people
+    double gameT = 0;            // sim day the pools are valid
 };
 
 constexpr float CONTACT_KM = 160.0f; // twice the minimum settlement spacing
+
+// The regional game pool a population cell belongs to (climate-grid index).
+inline int gameRegion(int cell) {
+    int x = cell % W, y = cell / W;
+    return (y * atmosphere::H / H) * atmosphere::W + x * atmosphere::W / W;
+}
 
 inline void computeNeighbours(Field& f) {
     auto cellN = [](int cell) {
@@ -203,10 +232,24 @@ inline void computeNeighbours(Field& f) {
 
 // Natural food yield, people per km^2 at land condition R = 1, by cover class:
 // bare, tundra, taiga, forest, rainforest, grass, steppe, savanna, shrub, marsh, desert.
+constexpr float COVER_YIELD[terrain::NCOV] = {0.0f, 0.08f, 0.4f,  1.2f, 1.0f, 0.8f,
+                                              0.3f, 0.6f,  0.2f, 1.0f, 0.02f};
+// The share of each cover's yield that is wild game rather than gatherable
+// plants: grass and tundra are only edible through the animals that eat
+// them; forests feed people directly as well.
+constexpr float GAME_SHARE[terrain::NCOV] = {0.0f, 0.9f, 0.6f,  0.4f, 0.25f, 0.7f,
+                                             0.85f, 0.7f, 0.5f, 0.4f, 0.5f};
+
 inline float coverYield(const terrain::Mixture& m) {
-    static const float y[terrain::NCOV] = {0.0f, 0.08f, 0.4f, 1.2f, 1.0f, 0.8f, 0.3f, 0.6f, 0.2f, 1.0f, 0.02f};
     float d = 0;
-    for (int i = 0; i < terrain::NCOV; i++) d += m.cov[i] * y[i];
+    for (int i = 0; i < terrain::NCOV; i++) d += m.cov[i] * COVER_YIELD[i];
+    return d;
+}
+
+// The game-borne part of the same yield (people per km^2 sustained).
+inline float coverGameYield(const terrain::Mixture& m) {
+    float d = 0;
+    for (int i = 0; i < terrain::NCOV; i++) d += m.cov[i] * COVER_YIELD[i] * GAME_SHARE[i];
     return d;
 }
 
@@ -234,9 +277,9 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
 
     // Everything the population model needs to know about one cell.
     auto evalCell = [&](int x, int y, float& kFoodP, float& kWater, float& sFarm, float& pasture,
-                        float& buildMat) {
+                        float& buildMat, float& kGame) {
         int i = y * W + x;
-        kFoodP = kWater = sFarm = pasture = buildMat = 0;
+        kFoodP = kWater = sFarm = pasture = buildMat = kGame = 0;
         float h = hm[i];
         if (h <= 0) return;                                           // land only
         if (hy.cells[i].lakeLevel > hydrology::NO_LAKE + 1 && h < hy.cells[i].lakeLevel) return;
@@ -267,6 +310,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         // a physical daily supply and is not scaled (it rarely binds before
         // farming and irrigation).
         kFoodP = coverYield(m) * FORAGE_KM2 / SUSTAIN_R;
+        kGame = coverGameYield(m) * FORAGE_KM2 / SUSTAIN_R;
         // Water within reach: accKm2 is runoff-equivalent drainage area at the
         // reference runoff (hydrology::reweight), fed by the climate's rain.
         float litresPerDay = hy.accKm2[i] * hydrology::REF_RUNOFF_MM_YR * 1.0e6f / 365.0f;
@@ -286,14 +330,31 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
     f.sFarmMap.assign(W * H, 0.0f);
     f.pastureMap.assign(W * H, 0.0f);
     f.buildMatMap.assign(W * H, 0.0f);
+    f.kGameMap.assign(W * H, 0.0f);
 #pragma omp parallel for
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
             int i = y * W + x;
             evalCell(x, y, f.kFoodPMap[i], f.kWaterMap[i], f.sFarmMap[i], f.pastureMap[i],
-                     f.buildMatMap[i]);
+                     f.buildMatMap[i], f.kGameMap[i]);
             f.K[i] = std::min(f.kFoodPMap[i], f.kWaterMap[i]);
         }
+
+    // Regional game pools: each region's sustainable draw is its game yield
+    // summed over its area, times the accessible share. Pools start pristine.
+    f.gameG.assign(atmosphere::W * atmosphere::H, 1.0f);
+    f.gameDmax.assign(atmosphere::W * atmosphere::H, 0.0f);
+    for (int y = 0; y < H; y++) {
+        float lat = ((y + 0.5f) / H - 0.5f) * 3.14159265f;
+        float cellKm2 = (2 * 3.14159265f * 6371.0f / W * std::max(std::cos(lat), 0.01f)) *
+                        (3.14159265f * 6371.0f / H);
+        for (int x = 0; x < W; x++) {
+            int i = y * W + x;
+            if (f.kGameMap[i] <= 0) continue;
+            float density = f.kGameMap[i] * SUSTAIN_R / FORAGE_KM2; // people/km2 sustained
+            f.gameDmax[gameRegion(i)] += density * cellKm2 * GAME_ACCESS;
+        }
+    }
 
     // Settlements at local maxima of K, best first, spaced at least ~80 km.
     struct Cand { float k; int cell; };
@@ -326,6 +387,8 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         f.settlementAt[c.cell] = (int)f.settlements.size();
         Settlement s{c.cell, c.k * SUSTAIN_R * 0.5f, 1.0f, 0.0, 0.0};
         s.kFoodP = f.kFoodPMap[c.cell];
+        s.kGame = f.kGameMap[c.cell];
+        s.gRegion = gameRegion(c.cell);
         s.kWater = f.kWaterMap[c.cell];
         s.sFarm = f.sFarmMap[c.cell];
         s.pasture = f.pastureMap[c.cell];
@@ -377,7 +440,13 @@ struct SeasonCtx {
     float farmMult = 1; // 1 + gain*s*expertise, from technology
     float husbExp = 0;  // husbandry expertise
     float granExp = 0;  // granary expertise, 0 unless practising (build pace)
+    float gameG = 1;    // regional game pool health (Settlement::gameNow)
 };
+
+// Hunting efficiency against a depleted pool: scarcer game is hunted
+// harder, so the take falls only as sqrt(health) -- which is also why a
+// pool can be pushed past its extinction floor instead of being left alone.
+inline float huntEff(float gameG) { return std::sqrt(std::max(gameG, 0.0f)); }
 
 // Storage: the base cap plus what the built granaries hold. A granary banks
 // a fixed absolute amount, so its worth in days shrinks as people multiply.
@@ -394,7 +463,8 @@ inline float cachedSeasonT(const Settlement& s, double t) {
 }
 
 inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double t) {
-    float forage = s.kFoodP, farm = s.kFoodP * (ctx.farmMult - 1.0f);
+    float forage = s.kFoodP - s.kGame + s.kGame * huntEff(ctx.gameG);
+    float farm = s.kFoodP * (ctx.farmMult - 1.0f);
     float fF = s.meanF, fG2 = 1.0f;
     if (ctx.clim) {
         float tC = cachedSeasonT(s, t);
@@ -491,7 +561,9 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     float capDays = storageCapDays(s.P, s.granaries);
     // Horizon from the ANNUAL-MEAN flow: the seasonal oscillation is
     // recurring, so a settlement in seasonal equilibrium still sleeps long.
-    float meanFlow = std::min(s.kFoodP * (s.meanF + ctx.farmMult - 1.0f) * s.R, s.kWater);
+    float forageBase = s.kFoodP - s.kGame + s.kGame * huntEff(ctx.gameG);
+    float meanFlow = std::min(
+        (forageBase * s.meanF + s.kFoodP * (ctx.farmMult - 1.0f)) * s.R, s.kWater);
     float dP, dR, dS;
     derivatives(s.P, s.R, s.S, meanFlow, K, capDays, GATHER_SETTLED * s.P, dP, dR, dS);
     double horizon = 1800;

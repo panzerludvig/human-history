@@ -79,14 +79,16 @@ inline float suitability(const population::Settlement& s, int tech) {
     return s.tech[population::TECH_FARMING].practising ? 1.0f : 0.15f;
 }
 
-// Annual food capacity: foraging scaled by the seasonal mean, farming's
+// Annual food capacity: foraging scaled by the seasonal mean (with the
+// game-borne share tracking the regional pool's health), farming's
 // harvest-shaped total, the herd's current flow (seasonal mean ~0.85), and
 // the farmyard bonus; water caps the whole.
 inline float effectiveK(const population::Settlement& s, double now) {
     float farmMult = 1.0f + FARM_YIELD_GAIN * s.sFarm * expertise(s.tech[population::TECH_FARMING], now);
     float hExp = expertise(s.tech[population::TECH_HUSBANDRY], now);
     float husb = s.herd * 0.85f + population::FARMYARD_SHARE_POP * s.kFoodP * hExp;
-    return std::min(s.kFoodP * (s.meanF + farmMult - 1.0f) + husb, s.kWater);
+    float forage = s.kFoodP - s.kGame + s.kGame * population::huntEff(s.gameNow);
+    return std::min(forage * s.meanF + s.kFoodP * (farmMult - 1.0f) + husb, s.kWater);
 }
 
 // Which technologies are invented from need rather than serendipity: nobody
