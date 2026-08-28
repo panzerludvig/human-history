@@ -84,6 +84,20 @@ constexpr float GAME_DEPLETE_YEARS = 25.0f; // full depletion at draw = capacity
 // sliding to zero under any remaining draw -- the point of no return.
 constexpr float GAME_FLOOR = 0.15f;
 constexpr float GAME_ACCESS = 0.5f;         // share of a region's game within reach
+// Small game (Design/Technology.md): birds, hares, the rest of the animals
+// too quick and too fecund to hunt out. It needs no pool of its own -- it
+// lives on the land condition R, the local resource that depletes with use
+// and recovers in a generation, which is exactly what small game is. What
+// it needs instead is a bow: snares and thrown sticks take some of it, a
+// bow takes most of it. Bows help against big game too, but only a little.
+constexpr float SMALL_SNARE_FLOOR = 0.25f;  // taken without a bow
+constexpr float BOW_BIG_GAIN = 0.25f;       // bows vs the herd animals
+constexpr float BOW_PER_HUNTER = 0.2f;      // one bow per hunter; a fifth hunt
+// A bow is craft work, not construction: one person per bow, so a crowd
+// makes more bows at once but never a single bow faster.
+constexpr float BOW_LABOUR_SHARE = 0.05f;   // people who can be spared to carve
+constexpr float BOW_WORK_DAYS = 90.0f;      // one bowyer, at full skill
+constexpr float BOW_LIFE_DAYS = 3650.0f;    // bows wear out and are replaced
 constexpr double GAME_TICK_DAYS = 90.0;     // pool update cadence (a slow layer)
 constexpr double SPLIT_AFTER_DAYS = 730.0;
 // A group that has looked around and found nothing worth the move does not
@@ -151,7 +165,13 @@ constexpr float GRANARY_LO = 0.35f;           // "...and winter nearly drained i
 
 // The technology table (Design/Technology.md): per-settlement state for each
 // technology. Farming's original fields generalized when husbandry arrived.
-enum : int { TECH_FARMING = 0, TECH_HUSBANDRY = 1, TECH_GRANARY = 2, NTECH = 3 };
+enum : int {
+    TECH_FARMING = 0,
+    TECH_HUSBANDRY = 1,
+    TECH_GRANARY = 2,
+    TECH_ARCHERY = 3, // known everywhere from the start; the bows are the scarce part
+    NTECH = 4
+};
 struct TechState {
     bool aware = false;
     bool practising = false; // implies aware
@@ -176,7 +196,9 @@ struct Settlement {
     double founded = 0;        // sim day the settlement was founded (awareness age)
     // Fixed local properties (from the terrain at the cell):
     float kFoodP = 0;  // pristine food capacity (already / SUSTAIN_R)
-    float kGame = 0;   // the game-borne part of kFoodP (regional pool)
+    float kGame = 0;   // the big-game part of kFoodP (regional pool)
+    float kSmall = 0;  // the small-game part (local, needs bows)
+    float bows = 0;    // made bows on hand; they wear out and are replaced
     int gRegion = 0;   // which regional game pool this settlement hunts
     float gameNow = 1; // that pool's health, refreshed by sim::gameTick
     float meanF = 1;   // annual mean forage factor (seasonal climate)
@@ -197,8 +219,8 @@ struct Settlement {
     double lookAgainDays = SPLIT_AFTER_DAYS; // patience before the next survey
     // Technology state (see technology.h / Design/Technology.md):
     TechState tech[NTECH];
-    double nextTech[NTECH] = {1e18, 1e18, 1e18}; // next contact draw or resample moment
-    bool techFires[NTECH] = {false, false, false};
+    double nextTech[NTECH] = {1e18, 1e18, 1e18, 1e18}; // next draw or resample moment
+    bool techFires[NTECH] = {false, false, false, false};
 };
 
 // A migrating group: a settlement with velocity (Design/Migration.md). It
@@ -219,6 +241,7 @@ struct Band {
     // New ground has to beat it: a place they judged unable to keep them
     // cannot be the place they settle again. Journey state, not saved.
     float leftCap = 0;
+    float bows = 0; // carried: the first possession that travels
     // Technology carried (demic diffusion):
     TechState tech[NTECH];
 };
@@ -241,7 +264,8 @@ struct Field {
     struct Ruin { int cell; double abandoned; };
     std::vector<Ruin> ruins;
     // Per-cell local properties, kept for founding settlements at runtime:
-    std::vector<float> kFoodPMap, kWaterMap, sFarmMap, pastureMap, buildMatMap, kGameMap;
+    std::vector<float> kFoodPMap, kWaterMap, sFarmMap, pastureMap, buildMatMap, kGameMap,
+        kSmallMap;
     // Regional wild game pools, on the climate grid (atmosphere::W x H):
     std::vector<float> gameG;    // health 0..1 per region
     std::vector<float> gameDmax; // sustainable draw per region, people
@@ -300,16 +324,32 @@ constexpr float COVER_YIELD[terrain::NCOV] = {0.0f, 0.08f, 0.4f,  1.2f, 1.0f, 0.
 constexpr float GAME_SHARE[terrain::NCOV] = {0.0f, 0.9f, 0.6f,  0.4f, 0.25f, 0.7f,
                                              0.85f, 0.7f, 0.5f, 0.4f, 0.5f};
 
+// Of a cover's animal food, the share that is small game. Herd country
+// (tundra, steppe, grass) is dominated by the big animals in the regional
+// pool; forest, marsh and rainforest hold more of what a bow is for -- so
+// a megafauna collapse guts the steppe and leaves the woods a fallback.
+constexpr float SMALL_SHARE[terrain::NCOV] = {0.0f, 0.15f, 0.30f, 0.50f, 0.60f, 0.25f,
+                                              0.15f, 0.25f, 0.40f, 0.60f, 0.50f};
+
 inline float coverYield(const terrain::Mixture& m) {
     float d = 0;
     for (int i = 0; i < terrain::NCOV; i++) d += m.cov[i] * COVER_YIELD[i];
     return d;
 }
 
-// The game-borne part of the same yield (people per km^2 sustained).
+// The big-game part of the same yield: what the regional pool holds.
 inline float coverGameYield(const terrain::Mixture& m) {
     float d = 0;
-    for (int i = 0; i < terrain::NCOV; i++) d += m.cov[i] * COVER_YIELD[i] * GAME_SHARE[i];
+    for (int i = 0; i < terrain::NCOV; i++)
+        d += m.cov[i] * COVER_YIELD[i] * GAME_SHARE[i] * (1.0f - SMALL_SHARE[i]);
+    return d;
+}
+
+// The small-game part: local, quick to recover, and hard to catch unarmed.
+inline float coverSmallYield(const terrain::Mixture& m) {
+    float d = 0;
+    for (int i = 0; i < terrain::NCOV; i++)
+        d += m.cov[i] * COVER_YIELD[i] * GAME_SHARE[i] * SMALL_SHARE[i];
     return d;
 }
 
@@ -337,9 +377,9 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
 
     // Everything the population model needs to know about one cell.
     auto evalCell = [&](int x, int y, float& kFoodP, float& kWater, float& sFarm, float& pasture,
-                        float& buildMat, float& kGame) {
+                        float& buildMat, float& kGame, float& kSmall) {
         int i = y * W + x;
-        kFoodP = kWater = sFarm = pasture = buildMat = kGame = 0;
+        kFoodP = kWater = sFarm = pasture = buildMat = kGame = kSmall = 0;
         float h = hm[i];
         if (h <= 0) return;                                           // land only
         if (hy.cells[i].lakeLevel > hydrology::NO_LAKE + 1 && h < hy.cells[i].lakeLevel) return;
@@ -371,6 +411,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         // farming and irrigation).
         kFoodP = coverYield(m) * FORAGE_KM2 / SUSTAIN_R;
         kGame = coverGameYield(m) * FORAGE_KM2 / SUSTAIN_R;
+        kSmall = coverSmallYield(m) * FORAGE_KM2 / SUSTAIN_R;
         // Water within reach: accKm2 is runoff-equivalent drainage area at the
         // reference runoff (hydrology::reweight), fed by the climate's rain.
         float litresPerDay = hy.accKm2[i] * hydrology::REF_RUNOFF_MM_YR * 1.0e6f / 365.0f;
@@ -391,12 +432,13 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
     f.pastureMap.assign(W * H, 0.0f);
     f.buildMatMap.assign(W * H, 0.0f);
     f.kGameMap.assign(W * H, 0.0f);
+    f.kSmallMap.assign(W * H, 0.0f);
 #pragma omp parallel for
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
             int i = y * W + x;
             evalCell(x, y, f.kFoodPMap[i], f.kWaterMap[i], f.sFarmMap[i], f.pastureMap[i],
-                     f.buildMatMap[i], f.kGameMap[i]);
+                     f.buildMatMap[i], f.kGameMap[i], f.kSmallMap[i]);
             f.K[i] = std::min(f.kFoodPMap[i], f.kWaterMap[i]);
         }
 
@@ -449,6 +491,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         s.id = f.nextSettlementId++;
         s.kFoodP = f.kFoodPMap[c.cell];
         s.kGame = f.kGameMap[c.cell];
+        s.kSmall = f.kSmallMap[c.cell];
         s.gRegion = gameRegion(c.cell);
         s.kWater = f.kWaterMap[c.cell];
         s.sFarm = f.sFarmMap[c.cell];
@@ -503,12 +546,25 @@ struct SeasonCtx {
     float husbExp = 0;  // husbandry expertise
     float granExp = 0;  // granary expertise, 0 unless practising (build pace)
     float gameG = 1;    // regional game pool health (Settlement::gameNow)
+    float bowCover = 0;  // share of hunters carrying a bow
+    float archExp = 0;   // archery expertise
 };
 
 // Hunting efficiency against a depleted pool: scarcer game is hunted
 // harder, so the take falls only as sqrt(health) -- which is also why a
 // pool can be pushed past its extinction floor instead of being left alone.
 inline float huntEff(float gameG) { return std::sqrt(std::max(gameG, 0.0f)); }
+
+// Knowledge x means: what share of a hunter's bows this group actually has.
+inline float bowCoverage(float bows, float P) {
+    return std::clamp(bows / std::max(P * BOW_PER_HUNTER, 1.0f), 0.0f, 1.0f);
+}
+
+// Small game taken, as a share of what is there: snares get a quarter of it,
+// bows in skilled hands get all of it.
+inline float smallGameEff(float coverage, float archExp) {
+    return SMALL_SNARE_FLOOR + (1.0f - SMALL_SNARE_FLOOR) * coverage * archExp;
+}
 
 // Storage: the base cap plus what the built granaries hold. A granary banks
 // a fixed absolute amount, so its worth in days shrinks as people multiply.
@@ -525,7 +581,11 @@ inline float cachedSeasonT(const Settlement& s, double t) {
 }
 
 inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double t) {
-    float forage = s.kFoodP - s.kGame + s.kGame * huntEff(ctx.gameG);
+    // Three kinds of food from the land: plants, the herds of the regional
+    // pool, and the small game a bow is for.
+    float bigEff = huntEff(ctx.gameG) * (1.0f + BOW_BIG_GAIN * ctx.bowCover * ctx.archExp);
+    float forage = s.kFoodP - s.kGame - s.kSmall + s.kGame * bigEff +
+                   s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp);
     float farm = s.kFoodP * (ctx.farmMult - 1.0f);
     float fF = s.meanF, fG2 = 1.0f;
     if (ctx.clim) {
@@ -554,6 +614,7 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     float granaries = s.granaries, buildWork = s.buildWork;
     float fillLo = s.fillLo, fillHi = s.fillHi, granNeed = s.granNeedYrs;
     float starved = s.starvedYr;
+    float bows = s.bows;
     double cycleT = s.cycleT;
     float lat = std::asin(std::clamp(ctx.n.z, -1.0f, 1.0f));
     float lon = std::atan2(ctx.n.y, ctx.n.x);
@@ -606,6 +667,17 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
             buildWork -= P * GRANARY_LABOUR_SHARE * ctx.granExp * s.buildMat * hstep;
             if (buildWork <= 0) { granaries += 1; buildWork = 0; }
         }
+        // Bows: one bowyer finishes one bow in BOW_WORK_DAYS however large
+        // the settlement, so a crowd only carves more of them at once. They
+        // are made up to one per hunter and no further, and they wear out.
+        if (ctx.archExp > 0) {
+            float want = P * BOW_PER_HUNTER;
+            float rate = 0;
+            if (bows < want)
+                rate = P * BOW_LABOUR_SHARE * s.buildMat /
+                       (BOW_WORK_DAYS / std::max(ctx.archExp, 0.2f));
+            bows = std::max(bows + (rate - bows / BOW_LIFE_DAYS) * hstep, 0.0f);
+        }
         if (s.herd > 0 && herdCap > 0)
             s.herd = std::clamp(s.herd + HERD_GROWTH_YR / 365.0f * s.herd *
                                              (1.0f - s.herd / herdCap) * hstep,
@@ -624,12 +696,15 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     s.fillHi = fillHi;
     s.granNeedYrs = granNeed;
     s.starvedYr = starved;
+    s.bows = bows;
     s.cycleT = cycleT;
     s.t = now;
     float capDays = storageCapDays(s.P, s.granaries);
     // Horizon from the ANNUAL-MEAN flow: the seasonal oscillation is
     // recurring, so a settlement in seasonal equilibrium still sleeps long.
-    float forageBase = s.kFoodP - s.kGame + s.kGame * huntEff(ctx.gameG);
+    float bigEffMean = huntEff(ctx.gameG) * (1.0f + BOW_BIG_GAIN * ctx.bowCover * ctx.archExp);
+    float forageBase = s.kFoodP - s.kGame - s.kSmall + s.kGame * bigEffMean +
+                       s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp);
     float meanFlow = std::min(
         (forageBase * s.meanF + s.kFoodP * (ctx.farmMult - 1.0f)) * s.R, s.kWater);
     float dP, dR, dS, dStarveMean;

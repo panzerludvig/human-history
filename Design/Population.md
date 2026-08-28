@@ -52,6 +52,8 @@ Three asymmetries make it the mammoth story rather than a second R:
 
 A lone settlement dents its region (equilibrium ~0.9); dense colonization drags it toward half; concentrated pressure — small island pools first, later farming-fed populations that keep hunting — pushes past the floor. Regional game collapse produces sustained hunger across many settlements at once, which is exactly the need signal that invents and adopts farming and husbandry: the crisis creates agriculture, as it did. In an 800-year test world: ~1,100 regions dented, ~10 below half, 3 extinct.
 
+**Only the big game is pooled** (2026-08-28). The animal share of a cover's yield splits again, by `SMALL_SHARE`: herd country (tundra, steppe, grass) is 85% big game, forest and marsh only 40-50%. Big game draws on the regional pool; small game lives on the local land condition R, which is already the fast-recovering, use-depleted resource small game actually is, and is gated on bows instead ([[Design/Technology]]). Without that split a pool collapse took every animal calorie in a 200 km region at once; with it, the woods keep a fallback and the steppe does not, which is both the historical pattern and the reason archery matters.
+
 Pools update on a fixed 90-day world event (step-size invariant, O(settlements) per tick); each settlement caches its pool's health. Bands' forage scales with the pool but their draw is ignored (too small and transient). Panels show "Wild game: N%" where game matters; the tooltip appends "game N%" once a region is visibly dented. Deferred: mobile herds as visible, followable entities (routes, seasonal interception) — this pool becomes their population when they arrive.
 
 ## Daily rhythm

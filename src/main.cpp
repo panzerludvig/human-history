@@ -348,7 +348,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 12\n";
+    f << "version 13\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -363,7 +363,7 @@ static bool saveWorld(const World& w, const Camera& c) {
               << s.tech[t].practiceT << " ";
         f << s.S << " " << s.scarceSince << " " << s.founded << " " << s.herd << " "
           << s.granaries << " " << s.buildWork << " " << s.fillLo << " " << s.fillHi << " "
-          << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << " " << s.id << " " << s.starvedYr << "\n";
+          << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << " " << s.id << " " << s.starvedYr << " " << s.bows << "\n";
     }
     for (const population::Band& b : w.pop.bands) {
         f << "band " << b.id << " " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
@@ -371,7 +371,7 @@ static bool saveWorld(const World& w, const Camera& c) {
         for (int t = 0; t < population::NTECH; t++)
             f << " " << (int)b.tech[t].aware << " " << (int)b.tech[t].practising << " "
               << b.tech[t].practiceT;
-        f << "\n";
+        f << " " << b.bows << "\n";
     }
     f << "nextsid " << w.pop.nextSettlementId << "\n";
     // Land memory and ruins: where people have lived and left.
@@ -391,8 +391,21 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     if (!f) return false;
     w = World{};
     w.name = name;
-    std::vector<std::array<double, 25>> savedSettlements;
-    std::vector<std::array<double, 18>> savedBands;
+    // Named fields, so adding a technology cannot silently shift a column.
+    struct SavedSettlement {
+        int cell = 0;
+        double P = 0, R = 0, S = 0, scarce = -1, founded = 0, herd = 0;
+        double granaries = 0, buildWork = 0, fillLo = 2, fillHi = -1, cycleT = 0;
+        double hungrySince = -1, granNeed = 0, id = 0, starved = 0, bows = 0;
+        double tech[population::NTECH][3] = {};
+    };
+    struct SavedBand {
+        double id = 0, px = 0, py = 0, pz = 0, P = 0, S = 0;
+        double target = -1, resting = 0, restStart = 0, bows = 0;
+        double tech[population::NTECH][3] = {};
+    };
+    std::vector<SavedSettlement> savedSettlements;
+    std::vector<SavedBand> savedBands;
     std::vector<std::pair<size_t, double>> savedGame;
     std::vector<std::array<double, 3>> savedScars;
     std::vector<std::pair<int, double>> savedRuins;
@@ -406,41 +419,37 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         else if (key == "time") f >> savedTime;
         else if (key == "techrng") f >> savedTechRng;
         else if (key == "settlement") {
-            // layout: cell P R [aware practising practiceT]xNTECH S scarce founded
-            // herd; v8 adds granaries buildWork fillLo fillHi cycleT (and a third
-            // tech triple); v9 adds hungrySince granNeedYrs. Unified slots: tech
-            // at 3..11, the rest from 12.
-            std::array<double, 25> sv{};
-            sv[13] = -1; // scarceSince default
-            sv[18] = 2;  // fillLo default (no observation yet)
-            sv[19] = -1; // fillHi default
-            sv[21] = -1; // hungrySince default
-            f >> sv[0] >> sv[1] >> sv[2];
+            // cell P R, then [aware practising practiceT] per technology as
+            // that version knew them, then the scalars each version added.
+            SavedSettlement sv{};
+            f >> sv.cell >> sv.P >> sv.R;
+            int nt = version >= 13 ? 4 : version >= 8 ? 3 : version >= 3 ? 1 : 0;
+            for (int t = 0; t < nt; t++)
+                f >> sv.tech[t][0] >> sv.tech[t][1] >> sv.tech[t][2];
             if (version >= 7) {
-                int nt = version >= 8 ? 3 : 2;
-                for (int t = 0; t < nt * 3; t++) f >> sv[3 + t];
-                f >> sv[12] >> sv[13] >> sv[14] >> sv[15];
-                if (version >= 8) f >> sv[16] >> sv[17] >> sv[18] >> sv[19] >> sv[20];
-                if (version >= 9) f >> sv[21] >> sv[22];
-                if (version >= 11) f >> sv[23];
-                if (version >= 12) f >> sv[24];
+                f >> sv.S >> sv.scarce >> sv.founded >> sv.herd;
+                if (version >= 8)
+                    f >> sv.granaries >> sv.buildWork >> sv.fillLo >> sv.fillHi >> sv.cycleT;
+                if (version >= 9) f >> sv.hungrySince >> sv.granNeed;
+                if (version >= 11) f >> sv.id;
+                if (version >= 12) f >> sv.starved;
+                if (version >= 13) f >> sv.bows;
             } else {
-                if (version >= 3) f >> sv[3] >> sv[4] >> sv[5];
-                if (version >= 4) f >> sv[12] >> sv[13];
-                else sv[12] = 0.5 * population::CAP_DAYS_SETTLED * sv[1];
-                if (version >= 6) f >> sv[14];
+                if (version >= 4) f >> sv.S >> sv.scarce;
+                else sv.S = 0.5 * population::CAP_DAYS_SETTLED * sv.P;
+                if (version >= 6) f >> sv.founded;
             }
             savedSettlements.push_back(sv);
         }
         else if (key == "band") {
-            std::array<double, 18> bv{};
-            if (version >= 7) {
-                int n = version >= 8 ? 18 : 15;
-                for (int i = 0; i < n; i++) f >> bv[i];
-            } else {
-                int i0 = version >= 5 ? 0 : 1;
-                for (int i = i0; i < 12; i++) f >> bv[i];
-            }
+            SavedBand bv{};
+            if (version >= 5) f >> bv.id;
+            f >> bv.px >> bv.py >> bv.pz >> bv.P >> bv.S >> bv.target >> bv.resting >>
+                bv.restStart;
+            int nt = version >= 13 ? 4 : version >= 8 ? 3 : version >= 7 ? 2 : 0;
+            for (int t = 0; t < nt; t++)
+                f >> bv.tech[t][0] >> bv.tech[t][1] >> bv.tech[t][2];
+            if (version >= 13) f >> bv.bows;
             savedBands.push_back(bv);
         }
         else if (key == "nextsid") f >> w.pop.nextSettlementId;
@@ -477,34 +486,40 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         w.pop.bands.clear();
         std::fill(w.pop.settlementAt.begin(), w.pop.settlementAt.end(), -1);
         for (auto& sv : savedSettlements) {
-            int cell = (int)sv[0];
+            int cell = sv.cell;
             if (cell < 0 || cell >= population::W * population::H) continue;
-            population::Settlement st{cell, 0, false, (float)sv[1], (float)sv[2], savedTime, savedTime};
+            population::Settlement st{cell,   0,          false, (float)sv.P,
+                                      (float)sv.R, savedTime, savedTime};
             st.kFoodP = w.pop.kFoodPMap[cell];
             st.kWater = w.pop.kWaterMap[cell];
             st.sFarm = w.pop.sFarmMap[cell];
             st.pasture = w.pop.pastureMap[cell];
-            for (int t = 0; t < population::NTECH; t++) {
-                st.tech[t].aware = sv[3 + t * 3] > 0.5;
-                st.tech[t].practising = sv[4 + t * 3] > 0.5;
-                st.tech[t].practiceT = sv[5 + t * 3];
-            }
-            st.S = (float)sv[12];
-            st.scarceSince = sv[13];
-            st.founded = sv[14];
-            st.herd = (float)sv[15];
-            st.granaries = (float)sv[16];
-            st.buildWork = (float)sv[17];
-            st.fillLo = (float)sv[18];
-            st.fillHi = (float)sv[19];
-            st.cycleT = version >= 8 ? sv[20] : savedTime;
-            st.hungrySince = sv[21];
-            st.granNeedYrs = (float)sv[22];
-            st.starvedYr = (float)sv[24];
             st.buildMat = w.pop.buildMatMap[cell];
             st.kGame = w.pop.kGameMap[cell];
+            st.kSmall = w.pop.kSmallMap[cell];
             st.gRegion = population::gameRegion(cell);
-            st.id = sv[23] > 0 ? (uint32_t)sv[23] : w.pop.nextSettlementId++;
+            for (int t = 0; t < population::NTECH; t++) {
+                st.tech[t].aware = sv.tech[t][0] > 0.5;
+                st.tech[t].practising = sv.tech[t][1] > 0.5;
+                st.tech[t].practiceT = sv.tech[t][2];
+            }
+            // Older saves predate archery as a technology: everyone knows it.
+            if (!st.tech[population::TECH_ARCHERY].practising)
+                st.tech[population::TECH_ARCHERY] = {true, true, savedTime};
+            st.S = (float)sv.S;
+            st.scarceSince = sv.scarce;
+            st.founded = sv.founded;
+            st.herd = (float)sv.herd;
+            st.granaries = (float)sv.granaries;
+            st.buildWork = (float)sv.buildWork;
+            st.fillLo = (float)sv.fillLo;
+            st.fillHi = (float)sv.fillHi;
+            st.cycleT = version >= 8 ? sv.cycleT : savedTime;
+            st.hungrySince = sv.hungrySince;
+            st.granNeedYrs = (float)sv.granNeed;
+            st.starvedYr = (float)sv.starved;
+            st.bows = (float)sv.bows;
+            st.id = sv.id > 0 ? (uint32_t)sv.id : w.pop.nextSettlementId++;
             w.pop.nextSettlementId = std::max(w.pop.nextSettlementId, st.id + 1);
             if (st.tech[population::TECH_HUSBANDRY].practising && st.herd <= 0)
                 st.herd = technology::HERD_SEED;
@@ -516,19 +531,22 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         }
         for (auto& bv : savedBands) {
             population::Band b{};
-            b.id = (uint32_t)bv[0];
+            b.id = (uint32_t)bv.id;
             if (!b.id) b.id = w.pop.nextBandId;
             w.pop.nextBandId = std::max(w.pop.nextBandId, b.id + 1);
-            b.px = (float)bv[1]; b.py = (float)bv[2]; b.pz = (float)bv[3];
-            b.P = (float)bv[4]; b.S = (float)bv[5];
-            b.targetCell = (int)bv[6];
-            b.resting = bv[7] > 0.5;
-            b.restStart = bv[8];
+            b.px = (float)bv.px; b.py = (float)bv.py; b.pz = (float)bv.pz;
+            b.P = (float)bv.P; b.S = (float)bv.S;
+            b.targetCell = (int)bv.target;
+            b.resting = bv.resting > 0.5;
+            b.restStart = bv.restStart;
+            b.bows = (float)bv.bows;
             for (int t = 0; t < population::NTECH; t++) {
-                b.tech[t].aware = bv[9 + t * 3] > 0.5;
-                b.tech[t].practising = bv[10 + t * 3] > 0.5;
-                b.tech[t].practiceT = bv[11 + t * 3];
+                b.tech[t].aware = bv.tech[t][0] > 0.5;
+                b.tech[t].practising = bv.tech[t][1] > 0.5;
+                b.tech[t].practiceT = bv.tech[t][2];
             }
+            if (!b.tech[population::TECH_ARCHERY].practising)
+                b.tech[population::TECH_ARCHERY] = {true, true, savedTime};
             b.t = savedTime;
             b.nextUpdate = savedTime;
             if (b.targetCell >= 0 && b.targetCell < population::W * population::H)
@@ -1289,7 +1307,8 @@ constexpr int PANEL_PAD = 12, PANEL_TAB_Y = 36, PANEL_TAB_H = 24, PANEL_CONTENT_
               PANEL_LINE_H = 21;
 static const int PANEL_TAB_X[4] = {12, 126, 236, 340}; // slot edges for 3 tabs
 static const char* PANEL_TABS[3] = {"Environment", "Technology", "Buildings"};
-static const char* TECH_NAMES[population::NTECH] = {"Farming", "Husbandry", "Granary building"};
+static const char* TECH_NAMES[population::NTECH] = {"Farming", "Husbandry",
+                                                   "Granary building", "Archery"};
 
 // Settlements are erased when they pick up and leave, so panels hold an id
 // and resolve the index whenever they draw.
@@ -1356,6 +1375,11 @@ static std::string envText(const population::Settlement& st) {
     out += b;
     if (st.herd > 0.5f) {
         snprintf(b, sizeof b, "Livestock: feeds %d\n", (int)st.herd);
+        out += b;
+    }
+    if (st.kSmall > 0.02f * st.kFoodP) {
+        snprintf(b, sizeof b, "Bows: %d (%d%% of hunters)\n", (int)st.bows,
+                 (int)std::lround(population::bowCoverage(st.bows, st.P) * 100));
         out += b;
     }
     if (st.starvedYr >= 0.5f) {

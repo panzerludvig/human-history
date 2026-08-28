@@ -80,7 +80,7 @@ cold survival.
 | Animal husbandry | undiscovered | herd (living stock) | pasture-scaled flow, winter-proof |
 | Fishing | known, expertise local | water access | food from water (planned) |
 | Boats | known, expertise local | built boats | water movement, offshore fishing (planned) |
-| Archery | known, low expertise | made bows | hunting/winter floor (planned) |
+| Archery | known at start | made bows | small game, some big game |
 | Pottery | undiscovered | made pots | portable storage (planned) |
 | Granaries | undiscovered | built granaries | settlement storage |
 
@@ -144,6 +144,42 @@ Storage capacity replaced the old farming-expertise stand-in (cap was 90–180
 days via the farm multiplier; it is now 90 days + built granaries).
 Deferred to a follow-up: maintenance and decay (abandoned granaries should
 crumble back to ruin).
+
+## Archery and bows (the fourth technology; the first carried possession)
+
+Nobody invents archery here: the bow is far older than anything else this
+simulation models, so every settlement starts practising it at the base
+expertise and there is no invention clock and no suitability gate.
+**Knowledge is universal; the means are local** -- what varies from place to
+place is bows, and bows must be made.
+
+This required splitting animal food in two (see [[Design/Population]]):
+
+- **Big game**, the herds of the regional pool -- slow, shared, and able to
+  be hunted to extinction. A bow helps a little (+25% at full coverage and
+  skill); a spear was never the limiting factor against a mammoth.
+- **Small game** -- birds, hares, the animals too quick and too fecund to
+  hunt out. It needs no pool of its own: it lives on the land condition R,
+  the local resource that depletes with use and recovers in a generation,
+  which is exactly what small game is. What it needs is a bow. Snares and
+  thrown sticks take a quarter of it; bows in skilled hands take all of it.
+
+That split is what gives archery a job, and it repairs something the game
+pool got wrong on its own: if *every* animal calorie came from the slow
+regional stock, a collapse would simply kill a whole region. In reality
+diets broadened when the megafauna went -- and now they can, but only for
+groups carrying bows. Herd country (tundra, steppe, grassland) is almost
+purely pool-fed, so a collapse there is still ruinous; forest and marsh
+hold enough small game to fall back on.
+
+**Making them** follows the granary model with one difference: a bow is
+craft work, not construction. One bowyer finishes one bow in ~90 days at
+full skill (longer while unskilled), and a crowd only carves more of them
+at once -- never a single bow faster. Wood gates the work, standing in for
+the sinew and glue a real bow also needs. Settlements make up to one bow
+per hunter and no more, and bows wear out over ~10 years, so the labour is
+a permanent charge rather than a one-off unlock. Bands carry their share
+when they split or move: the first possession in the game that travels.
 
 ---
 

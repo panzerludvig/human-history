@@ -195,11 +195,15 @@ inline void gameTick(population::Field& pf, double now) {
     for (const Settlement& s : pf.settlements) {
         if (s.kGame <= 0 || s.P <= 1) continue;
         float g = pf.gameG[s.gRegion];
-        float gameFlow = s.kGame * huntEff(g) * s.meanF;
+        float archExp = technology::expertise(s.tech[TECH_ARCHERY], now);
+        float cover = bowCoverage(s.bows, s.P);
+        float gameFlow =
+            s.kGame * huntEff(g) * (1.0f + BOW_BIG_GAIN * cover * archExp) * s.meanF;
         float farmMult = 1.0f + technology::FARM_YIELD_GAIN * s.sFarm *
                                     technology::expertise(s.tech[TECH_FARMING], now);
         float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
-        float total = (s.kFoodP - s.kGame) * s.meanF + gameFlow +
+        float total = (s.kFoodP - s.kGame - s.kSmall) * s.meanF +
+                      s.kSmall * smallGameEff(cover, archExp) * s.meanF + gameFlow +
                       s.kFoodP * (farmMult - 1.0f) + s.herd * 0.85f +
                       FARMYARD_SHARE_POP * s.kFoodP * hExp;
         if (total <= 1e-6f) continue;
@@ -229,6 +233,8 @@ inline population::SeasonCtx seasonCtx(const population::Settlement& s,
     ctx.husbExp = technology::expertise(s.tech[population::TECH_HUSBANDRY], now);
     ctx.granExp = technology::expertise(s.tech[population::TECH_GRANARY], now);
     ctx.gameG = s.gameNow;
+    ctx.archExp = technology::expertise(s.tech[population::TECH_ARCHERY], now);
+    ctx.bowCover = population::bowCoverage(s.bows, s.P);
     return ctx;
 }
 
@@ -291,6 +297,8 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
         if (pf.ruins[i].cell == cell) pf.ruins.erase(pf.ruins.begin() + i); // rebuilt over
     s.kFoodP = pf.kFoodPMap[cell];
     s.kGame = pf.kGameMap[cell];
+    s.kSmall = pf.kSmallMap[cell];
+    s.bows = b.bows; // carried on the march
     s.gRegion = population::gameRegion(cell);
     s.gameNow = pf.gameG.empty() ? 1.0f : pf.gameG[s.gRegion];
     s.kWater = pf.kWaterMap[cell];
@@ -342,6 +350,7 @@ inline bool mergeBand(population::Field& pf, technology::WorldState& ws,
     if (ti < 0) return false;
     Settlement& t = pf.settlements[ti];
     t.P += b.P;
+    t.bows += b.bows;
     t.S = std::min(t.S + b.S, CAP_DAYS_SETTLED * t.P);
     for (int tc = 0; tc < NTECH; tc++) {
         if (b.tech[tc].aware && !t.tech[tc].aware) {
@@ -576,6 +585,7 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     b.pz = home.z;
     b.P = wholeGroup ? s.P : s.P * SPLIT_SHARE;
     b.S = std::min((wholeGroup ? s.S : s.S * SPLIT_SHARE), CAP_DAYS_BAND * b.P);
+    b.bows = wholeGroup ? s.bows : s.bows * SPLIT_SHARE; // people take their bows
     b.targetCell = tgt;
     b.t = now;
     b.nextUpdate = now + BAND_STEP_DAYS;
@@ -599,6 +609,7 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     } else {
         s.P -= b.P;
         s.S -= b.S;
+        s.bows -= b.bows;
         logAt("split from settlement", si, home, b.P, now);
     }
     pf.bands.push_back(b);

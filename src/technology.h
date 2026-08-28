@@ -36,7 +36,8 @@ constexpr float NEED_YEARS_ON = 1.0f;        // below this, no desperation
 constexpr float NEED_YEARS_SAT = 4.0f;       // full desperation
 
 inline const char* techName(int t) {
-    static const char* names[population::NTECH] = {"farming", "husbandry", "granaries"};
+    static const char* names[population::NTECH] = {"farming", "husbandry", "granaries",
+                                                   "archery"};
     return names[t];
 }
 
@@ -48,8 +49,8 @@ struct WorldState {
         virtual void clockEvent(int tech, double when) = 0;
     };
     uint64_t rng = 0;
-    double nextEvent[population::NTECH] = {INF_T, INF_T, INF_T}; // fire or resample moment
-    bool fires[population::NTECH] = {false, false, false};
+    double nextEvent[population::NTECH] = {INF_T, INF_T, INF_T, INF_T}; // fire or resample
+    bool fires[population::NTECH] = {false, false, false, false};
     Sink* sink = nullptr;
 };
 
@@ -76,6 +77,7 @@ inline float expertise(const population::TechState& ts, double now) {
 inline float suitability(const population::Settlement& s, int tech) {
     if (tech == population::TECH_FARMING) return s.sFarm;
     if (tech == population::TECH_HUSBANDRY) return s.pasture;
+    if (tech == population::TECH_ARCHERY) return 1.0f; // everyone can draw a bow
     return s.tech[population::TECH_FARMING].practising ? 1.0f : 0.15f;
 }
 
@@ -87,7 +89,12 @@ inline float effectiveK(const population::Settlement& s, double now) {
     float farmMult = 1.0f + FARM_YIELD_GAIN * s.sFarm * expertise(s.tech[population::TECH_FARMING], now);
     float hExp = expertise(s.tech[population::TECH_HUSBANDRY], now);
     float husb = s.herd * 0.85f + population::FARMYARD_SHARE_POP * s.kFoodP * hExp;
-    float forage = s.kFoodP - s.kGame + s.kGame * population::huntEff(s.gameNow);
+    float archExp = expertise(s.tech[population::TECH_ARCHERY], now);
+    float cover = population::bowCoverage(s.bows, s.P);
+    float bigEff = population::huntEff(s.gameNow) *
+                   (1.0f + population::BOW_BIG_GAIN * cover * archExp);
+    float forage = s.kFoodP - s.kGame - s.kSmall + s.kGame * bigEff +
+                   s.kSmall * population::smallGameEff(cover, archExp);
     return std::min(forage * s.meanF + s.kFoodP * (farmMult - 1.0f) + husb, s.kWater);
 }
 
@@ -232,6 +239,13 @@ inline int pickInventor(population::Field& pf, WorldState& ws, int tech, double 
 
 inline void init(population::Field& pf, WorldState& ws, uint32_t seed, double now) {
     ws.rng = (uint64_t)seed * 0x2545F4914F6CDD1Dull + 0x853C49E6748FEA9Bull;
+    // Archery is not invented here: the bow is far older than anything else
+    // this simulation models, so everyone starts knowing it, at the base
+    // expertise. What varies from place to place is bows, not knowing how.
+    for (population::Settlement& s : pf.settlements) {
+        s.tech[population::TECH_ARCHERY] = {true, true, now};
+        s.nextTech[population::TECH_ARCHERY] = INF_T;
+    }
     for (int t = 0; t < population::NTECH; t++) {
         for (int i = 0; i < (int)pf.settlements.size(); i++) redraw(pf, i, ws, t, now);
         scheduleInvention(pf, ws, t, now);
