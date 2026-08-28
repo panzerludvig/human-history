@@ -1,4 +1,4 @@
-// Iron and Blood — version 1: view the globe, zoom, pan.
+// Human History — version 1: view the globe, zoom, pan.
 // Win32 + OpenGL, no external dependencies. The whole globe is raycast and
 // shaded procedurally in shaders/globe.frag; this file owns the window,
 // the camera, and input.
@@ -801,7 +801,7 @@ static void createControls() {
     app.panelFont = CreateFontA(18, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
     app.panelBold = CreateFontA(18, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
     app.bgBrush = CreateSolidBrush(RGB(8, 8, 16));
-    addControl(ID_TITLE, "STATIC", "Iron and Blood", SS_CENTER);
+    addControl(ID_TITLE, "STATIC", "Human History", SS_CENTER);
     addControl(ID_STATUS, "STATIC", "", SS_CENTER);
     addControl(ID_NEW_WORLD, "BUTTON", "New World", BS_PUSHBUTTON);
     addControl(ID_LOAD_WORLD, "BUTTON", "Load World", BS_PUSHBUTTON);
@@ -1861,7 +1861,7 @@ int main(int argc, char** argv) {
     wc.lpfnWndProc = wndProc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorA(nullptr, IDC_ARROW);
-    wc.lpszClassName = "IronAndBlood";
+    wc.lpszClassName = "HumanHistory";
     RegisterClassA(&wc);
 
     WNDCLASSA pc = {};
@@ -1874,7 +1874,7 @@ int main(int argc, char** argv) {
 
     RECT r = {0, 0, app.cam.width, app.cam.height};
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-    app.hwnd = CreateWindowA("IronAndBlood", "Iron and Blood",
+    app.hwnd = CreateWindowA("HumanHistory", "Human History",
                              WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
                              CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
                              nullptr, nullptr, inst, nullptr);
@@ -1935,7 +1935,7 @@ int main(int argc, char** argv) {
     app.cam.clampAltitude();
 
     // Testing shortcut:
-    // ironblood <latDeg> <lonDeg> [altitudeKm] [seed] [land%] [conc%] [debugmode] [fastForwardYears]
+    // humanhistory <latDeg> <lonDeg> [altitudeKm] [seed] [land%] [conc%] [debugmode] [fastForwardYears]
     // A seed of "@name" loads worlds\name.ibw instead of generating (testing).
     if (argc >= 3) {
         bool loaded = argc >= 5 && argv[4][0] == '@' &&
@@ -2132,7 +2132,7 @@ int main(int argc, char** argv) {
         double dt = (double)(now.QuadPart - fpsT0.QuadPart) / qpf.QuadPart;
         if (dt >= 0.5) {
             char title[96];
-            snprintf(title, sizeof title, "Iron and Blood - %s - %.0f fps", simDate().c_str(), fpsFrames / dt);
+            snprintf(title, sizeof title, "Human History - %s - %.0f fps", simDate().c_str(), fpsFrames / dt);
             SetWindowTextA(hwnd, title);
             fpsFrames = 0;
             fpsT0 = now;

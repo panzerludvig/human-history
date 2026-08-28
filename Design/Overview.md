@@ -3,7 +3,7 @@
 **Status:** Stub — see [[Meta/Status Vocabulary]]
 
 ## Concept
-_What is Iron and Blood? One paragraph. Same niche as Delegate: a strategy game where the player directs rather than micromanages. The specific angle is not yet decided._
+_What is Human History? One paragraph. Same niche as Delegate: a strategy game where the player directs rather than micromanages. The specific angle is not yet decided._
 
 ## Desired End States
 _Two or three concrete scenes the finished game should be able to produce. Used to judge whether a candidate concept is needed._

@@ -1,5 +1,23 @@
 # Dev Log
 
+## 2026-08-28 — Renamed to Human History
+
+### What was done
+Renamed the game from *Iron and Blood* to **Human History**: window title and
+main menu, the Win32 window class, the build artifact (`humanhistory.exe`), and
+every design and technical note. The GitHub remote is still
+`panzerludvig/iron-and-blood` and earlier dev-log entries keep the old name,
+being the record of what happened at the time.
+
+### Decisions and reasoning
+
+**The name should describe what the simulation is about**
+*Iron and Blood* promised war, which the game does not model at all. What it
+actually simulates is people finding food, filling a landscape, inventing what
+their circumstances force them to invent, and moving when the land stops
+feeding them. The new name says that, at the cost of being less evocative.
+
+
 ## 2026-08-22 — Project Setup
 
 ### What was done

@@ -5,8 +5,8 @@
 ## Tech Stack
 - **Language:** C++17
 - **Platform:** Windows (Win32 + OpenGL 3.3-level shaders on a compatibility context). No external libraries; the handful of GL functions needed are loaded by hand.
-- **Build:** `build.bat` at the repo root — calls `vcvars64.bat` and `cl`, outputs `build\ironblood.exe` and copies `shaders\` next to it. Requires the VS 2022 "Desktop development with C++" workload.
-- **Run:** `build\ironblood.exe [latDeg lonDeg [altitudeKm [seed [land% [concentration% [plates]]]]]]` — the optional start view exists for testing; `plates` enables the plate debug overlay.
+- **Build:** `build.bat` at the repo root — calls `vcvars64.bat` and `cl`, outputs `build\humanhistory.exe` and copies `shaders\` next to it. Requires the VS 2022 "Desktop development with C++" workload.
+- **Run:** `build\humanhistory.exe [latDeg lonDeg [altitudeKm [seed [land% [concentration% [plates]]]]]]` — the optional start view exists for testing; `plates` enables the plate debug overlay.
 
 ## Key Systems
 - [[Technical/Globe Viewer]] — raycast sphere with procedural terrain in metres; zoom and pan; worlds; plate and hydrology layers (Implemented)

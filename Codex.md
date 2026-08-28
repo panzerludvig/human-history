@@ -1,6 +1,6 @@
 # Codex
 
-The Codex is the authoritative reference for working on Iron and Blood. It describes the project's workflow, standards, and philosophy. When starting a session, point Claude here for context. Each entry should be a short summary that links to a dedicated note where the detail lives — the Codex itself stays concise. See [[Meta/Codex Guidelines]] for how to maintain it.
+The Codex is the authoritative reference for working on Human History. It describes the project's workflow, standards, and philosophy. When starting a session, point Claude here for context. Each entry should be a short summary that links to a dedicated note where the detail lives — the Codex itself stays concise. See [[Meta/Codex Guidelines]] for how to maintain it.
 
 The workflow and vault structure are inherited from the Delegate project (https://github.com/panzerludvig/delegate). What was kept and what was deliberately left behind is recorded in [[Meta/Inherited from Delegate]].
 

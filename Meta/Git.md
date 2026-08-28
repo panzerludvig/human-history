@@ -1,6 +1,6 @@
 # Git
 
-Version control for Iron and Blood. The repository is hosted at https://github.com/panzerludvig/iron-and-blood.
+Version control for Human History. The repository is hosted at https://github.com/panzerludvig/iron-and-blood.
 
 ---
 

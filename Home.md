@@ -1,4 +1,4 @@
-# Iron and Blood
+# Human History
 
 > A strategy game in the same niche as Delegate — built from a minimal core outward.
 

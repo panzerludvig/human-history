@@ -1,6 +1,6 @@
 # Incremental Design
 
-The governing rule for how Iron and Blood is designed: start with the smallest set of core concepts that produces a playable loop, and expand only from what is already working.
+The governing rule for how Human History is designed: start with the smallest set of core concepts that produces a playable loop, and expand only from what is already working.
 
 ---
 
