@@ -163,6 +163,12 @@ constexpr float GRANARY_LABOUR_SHARE = 0.02f; // share of people on the build
 constexpr float GRANARY_HI = 0.95f;           // "we filled what we have"
 constexpr float GRANARY_LO = 0.35f;           // "...and winter nearly drained it"
 
+// Storage: the base cap plus what the built granaries hold. A granary banks
+// a fixed absolute amount, so its worth in days shrinks as people multiply.
+inline float storageCapDays(float P, float granaries) {
+    return CAP_DAYS_SETTLED + granaries * GRANARY_STORE / std::max(P, 1.0f);
+}
+
 // The technology table (Design/Technology.md): per-settlement state for each
 // technology. Farming's original fields generalized when husbandry arrived.
 enum : int {
@@ -497,7 +503,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         s.sFarm = f.sFarmMap[c.cell];
         s.pasture = f.pastureMap[c.cell];
         s.buildMat = f.buildMatMap[c.cell];
-        s.S = 0.5f * CAP_DAYS_SETTLED * s.P;
+        s.S = storageCapDays(s.P, s.granaries) * s.P; // the world opens on full stores
         if (clim) atmosphere::seasonProfile(*clim, cellN(c.cell),
                                             std::max(hy.heightM[c.cell], 0.0f), s.tSeason,
                                             s.meanF, s.meanG2);
@@ -566,11 +572,6 @@ inline float smallGameEff(float coverage, float archExp) {
     return SMALL_SNARE_FLOOR + (1.0f - SMALL_SNARE_FLOOR) * coverage * archExp;
 }
 
-// Storage: the base cap plus what the built granaries hold. A granary banks
-// a fixed absolute amount, so its worth in days shrinks as people multiply.
-inline float storageCapDays(float P, float granaries) {
-    return CAP_DAYS_SETTLED + granaries * GRANARY_STORE / std::max(P, 1.0f);
-}
 
 // The season-interpolated site temperature from the cached profile.
 inline float cachedSeasonT(const Settlement& s, double t) {
