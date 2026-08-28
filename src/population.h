@@ -46,10 +46,9 @@ constexpr float CAP_DAYS_BAND = 10.0f;
 constexpr float HOARD_FILL = 0.25f;      // famine sets in below this fill fraction
 constexpr float STARVE_MAX = 0.02f;      // /day at full exclusion and total shortfall
 
-// Splitting and bands (Design/Migration.md).
-// Just under the phi = 1 equilibrium: the overshoot decline glides at
-// phi ~ 0.97-0.99, so a deeper threshold would never fire.
-constexpr float SPLIT_PHI = 0.99f;
+// Splitting and bands (Design/Migration.md). The trigger is PHI_CONTENT
+// below: a group looks for somewhere else as soon as food is what is
+// holding its growth back, not only once it is visibly failing.
 // Scarcity you can see. phi is built from ANNUAL-MEAN food, but starvation
 // is seasonal: a settlement in a sharply seasonal place can bury people
 // every winter while its yearly average reads comfortable, and so never ask
@@ -87,6 +86,11 @@ constexpr float GAME_FLOOR = 0.15f;
 constexpr float GAME_ACCESS = 0.5f;         // share of a region's game within reach
 constexpr double GAME_TICK_DAYS = 90.0;     // pool update cadence (a slow layer)
 constexpr double SPLIT_AFTER_DAYS = 730.0;
+// A group that has looked around and found nothing worth the move does not
+// re-survey the horizon every other year; it settles into its life and
+// looks again less often, until things get worse. Cheap in-world reason for
+// what is also the expensive part of the decision (a prospect search).
+constexpr double LOOK_BACKOFF_MAX = 32.0 * 365.0;
 constexpr float SPLIT_MIN_P = 50.0f;
 constexpr float SPLIT_SHARE = 1.0f / 3.0f;
 constexpr float BAND_MIN_P = 20.0f;
@@ -190,6 +194,7 @@ struct Settlement {
     float granNeedYrs = 0;         // consecutive years the fill signal held
                                    // (need-driven granary invention)
     float starvedYr = 0;           // people lost to hunger in the trailing year
+    double lookAgainDays = SPLIT_AFTER_DAYS; // patience before the next survey
     // Technology state (see technology.h / Design/Technology.md):
     TechState tech[NTECH];
     double nextTech[NTECH] = {1e18, 1e18, 1e18}; // next contact draw or resample moment

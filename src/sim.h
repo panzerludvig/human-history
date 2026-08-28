@@ -492,18 +492,23 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     if (s.leaving) return;
     float keff = technology::effectiveK(s, now);
     float phi = s.P > 1 ? keff * s.R / s.P : 2.0f;
-    // A place that buries people every winter is failing, whatever the
-    // annual mean says (population.h, STARVE_NOTICE). Without this a
-    // seasonal settlement bleeds indefinitely and never once asks the
-    // question -- observed: falling 300 -> 220 in two years at phi 1.31.
+    // Food-limited: a group with every calorie need met grows at its
+    // maximum rate, and growth saturates at PHI_CONTENT. Anything short of
+    // that means food is what is holding them back -- reason enough to look
+    // for somewhere else, long before the place is visibly failing. (The
+    // burial term is the backstop for what the annual mean cannot see: a
+    // sharply seasonal site can read comfortable on the year while the lean
+    // season still kills, and people dying of hunger is food limiting
+    // growth in the plainest possible sense.)
     bool bleeding = s.starvedYr > STARVE_NOTICE * std::max(s.P, 1.0f);
+    bool foodLimited = phi < PHI_CONTENT || bleeding;
     // Sustained hunger for need-driven invention: a genuine shortfall
     // (phi < NEED_HUNGRY_PHI), not the comfort glide. Checked before every
     // early return so small settlements get desperate too; leaving or
     // splitting does not reset it -- neither cures desperation by itself.
     if (phi >= NEED_HUNGRY_PHI && !bleeding) s.hungrySince = -1;
     else if (s.hungrySince < 0) s.hungrySince = now;
-    if (phi >= SPLIT_PHI && !bleeding) {
+    if (!foodLimited) {
         s.scarceSince = -1;
         s.noProspect = false;
         return;
@@ -525,12 +530,15 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     // Never schedule into the past: a deadline that has already gone by
     // would be re-popped from the queue forever (the event time would keep
     // matching), rewinding the settlement's clock instead of advancing it.
+    // Real hunger restores the short cadence: things got worse, so they
+    // look again in earnest.
+    if (phi < NEED_HUNGRY_PHI || bleeding) s.lookAgainDays = SPLIT_AFTER_DAYS;
     if (starving)
         s.nextUpdate =
-            std::min(s.nextUpdate, std::max(s.scarceSince + SPLIT_AFTER_DAYS, now + 5.0));
-    if (now - s.scarceSince < SPLIT_AFTER_DAYS || (int)pf.bands.size() >= MAX_BANDS) return;
+            std::min(s.nextUpdate, std::max(s.scarceSince + s.lookAgainDays, now + 5.0));
+    if (now - s.scarceSince < s.lookAgainDays || (int)pf.bands.size() >= MAX_BANDS) return;
     s.scarceSince = now; // whether or not anyone leaves, the pressure resets
-    if (starving) s.nextUpdate = std::min(s.nextUpdate, now + SPLIT_AFTER_DAYS);
+    if (starving) s.nextUpdate = std::min(s.nextUpdate, now + s.lookAgainDays);
     if (s.P < BAND_MIN_P) return; // too few to survive any journey
     float fExp = technology::expertise(s.tech[TECH_FARMING], now);
     float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
@@ -540,7 +548,10 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
                            settlementAwareKm(now - s.founded, prominenceM(hy, clim, s.cell)), now,
                            fExp, hExp, &est);
     s.noProspect = tgt < 0;
-    if (tgt < 0) return;
+    if (tgt < 0) {
+        s.lookAgainDays = std::min(s.lookAgainDays * 2.0, LOOK_BACKOFF_MAX);
+        return;
+    }
 
     // Judged on the rumour, not the truth: a group deciding whether to pick
     // up and leave knows only what it has heard, and distant ground is
@@ -552,7 +563,11 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     float homeSupport = keff * s.R; // what this place carries in its present state
     float anchor = 1.0f + RELOC_ANCHOR_GRANARY * s.granaries + RELOC_ANCHOR_FARM * fExp;
     bool wholeGroup = targetSupport >= s.P && targetSupport >= anchor * homeSupport;
-    if (!wholeGroup && s.P < SPLIT_MIN_P) return; // nowhere for all, too few to divide: endure
+    if (!wholeGroup && s.P < SPLIT_MIN_P) { // nowhere for all, too few to divide: endure
+        s.lookAgainDays = std::min(s.lookAgainDays * 2.0, LOOK_BACKOFF_MAX);
+        return;
+    }
+    s.lookAgainDays = SPLIT_AFTER_DAYS; // something came of it: keep looking
 
     Band b{};
     b.id = pf.nextBandId++;
