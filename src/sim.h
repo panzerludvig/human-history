@@ -83,6 +83,11 @@ inline void note(population::Field& pf, int kind, double t, uint32_t sid, uint32
     Event e;
     e.kind = (uint8_t)kind;
     e.t = t;
+    // Note where it happened while the people involved are still findable:
+    // they may be gone by the time anyone reads this.
+    int at = indexById(pf, sid);
+    if (at < 0) at = indexById(pf, sid2);
+    if (at >= 0) e.cell = pf.settlements[at].cell;
     e.sid = sid;
     e.sid2 = sid2;
     e.bandId = bandId;
@@ -398,7 +403,9 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
                             const population::Band& b, int cell, double now) {
     using namespace population;
     Settlement s{cell, 0, false, b.pop, b.P, cellCondition(pf, cell, now), now, now};
-    s.id = pf.nextSettlementId++;
+    // A community that picked up and moved keeps its identity along with
+    // its name; only colonists are somebody new.
+    s.id = b.sid ? b.sid : pf.nextSettlementId++;
     s.culture = b.culture;
     s.aff = b.aff;
     // A name follows a community, not a site: people who picked up and
@@ -856,6 +863,7 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     b.nextUpdate = now + BAND_STEP_DAYS;
     for (int t = 0; t < NTECH; t++) b.tech[t] = s.tech[t];
     if (wholeGroup) {
+        b.sid = s.id; // they are still themselves, wherever they end up
         // What this place could still feed, in the same measure a candidate
         // site is judged by -- the bar the new ground has to clear.
         b.leftCap = moverCap(pf, s.cell, fExp, hExp, now) * s.R;

@@ -277,6 +277,7 @@ struct Event {
     uint32_t sid = 0;    // whoever it happened to
     uint32_t sid2 = 0;   // the other party, if there was one
     uint32_t bandId = 0; // the band involved, if any
+    int cell = -1;       // where it happened, so it can always be found again
     float amount = 0;    // people, rations -- whatever the kind means
     char text[96] = {};
 };
@@ -391,6 +392,9 @@ struct Band {
     int purpose = BAND_MIGRATE;
     uint32_t homeId = 0;     // the settlement a raiding party returns to
     uint32_t targetId = 0;   // the settlement it set out to rob
+    uint32_t sid = 0;        // for a whole community on the move, its own
+                             // settlement id, carried so identity survives
+                             // the journey (0 for colonists, who are new)
     bool returning = false;  // homeward, with whatever it got
     float loot = 0;          // rations carried
     float lootHerd = 0;      // livestock driven along

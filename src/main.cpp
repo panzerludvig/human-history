@@ -348,7 +348,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 16\n";
+    f << "version 17\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -377,7 +377,7 @@ static bool saveWorld(const World& w, const Camera& c) {
             f << " " << (int)b.tech[t].aware << " " << (int)b.tech[t].practising << " "
               << b.tech[t].practiceT;
         f << " " << b.bows << " " << b.purpose << " " << b.homeId << " " << b.targetId << " "
-          << (int)b.returning << " " << b.loot << " " << b.lootHerd << "\n";
+          << (int)b.returning << " " << b.loot << " " << b.lootHerd << " " << b.sid << "\n";
     }
     f << "nextsid " << w.pop.nextSettlementId << "\n";
     for (const population::Culture& c : w.pop.cultures) {
@@ -419,7 +419,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     struct SavedBand {
         double id = 0, px = 0, py = 0, pz = 0, P = 0, S = 0;
         double target = -1, resting = 0, restStart = 0, bows = 0;
-        double purpose = 0, homeId = 0, targetId = 0, returning = 0, loot = 0, lootHerd = 0;
+        double purpose = 0, homeId = 0, targetId = 0, returning = 0, loot = 0, lootHerd = 0,
+               sid = 0;
         double children = 0, men = 0, women = 0, elderly = 0;
         double tech[population::NTECH][3] = {};
     };
@@ -478,6 +479,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             if (version >= 14)
                 f >> bv.purpose >> bv.homeId >> bv.targetId >> bv.returning >> bv.loot >>
                     bv.lootHerd;
+            if (version >= 17) f >> bv.sid;
             savedBands.push_back(bv);
         }
         else if (key == "nextsid") f >> w.pop.nextSettlementId;
@@ -600,6 +602,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             b.purpose = (int)bv.purpose;
             b.homeId = (uint32_t)bv.homeId;
             b.targetId = (uint32_t)bv.targetId;
+            b.sid = (uint32_t)bv.sid;
             b.returning = bv.returning > 0.5;
             b.loot = (float)bv.loot;
             b.lootHerd = (float)bv.lootHerd;
@@ -1703,8 +1706,8 @@ inline int newsWidth() { return app.newsOpen ? NEWS_W : NEWS_TAB_W; }
 static void layoutNews() {
     if (!app.news) return;
     int w = newsWidth();
-    SetWindowPos(app.news, nullptr, app.cam.width - w, 56, w, app.cam.height - 76,
-                 SWP_NOZORDER);
+    int h = app.newsOpen ? app.cam.height - 76 : NEWS_TAB_W; // shut: a small square
+    SetWindowPos(app.news, nullptr, app.cam.width - w, 56, w, h, SWP_NOZORDER);
     InvalidateRect(app.news, nullptr, TRUE);
 }
 static const char* NEWS_LABEL[population::EV_KINDS][2] = {
@@ -1746,6 +1749,10 @@ static void goToEvent(const population::Event& e) {
         if (i < 0) i = settlementIndexById(e.sid2);
         if (i >= 0) { at = sim::cellCentre(app.world.pop.settlements[i].cell); found = true; }
     }
+    if (!found && e.cell >= 0) { // everyone involved is gone: go to the place
+        at = sim::cellCentre(e.cell);
+        found = true;
+    }
     if (!found) return;
     app.cam.lat = std::asin(std::clamp(at.z, -1.0f, 1.0f));
     app.cam.lon = std::atan2(at.y, at.x);
@@ -1762,19 +1769,12 @@ static void paintNews(HWND h) {
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, app.panelBold);
     if (!app.newsOpen) {
-        // A tab on the edge: which way it opens, and how much is waiting.
-        SetTextColor(dc, RGB(255, 215, 130));
-        TextOutA(dc, 10, 10, "<", 1);
+        // Shut, the feed is a small square with the way back in. Whether
+        // there is news at all shows as the colour of the chevron.
         int total = 0;
         for (int k = 0; k < population::EV_KINDS; k++) total += app.world.pop.eventCount[k];
-        if (total) {
-            char n[8];
-            if (total > 999) snprintf(n, sizeof n, "%dk", total / 1000);
-            else snprintf(n, sizeof n, "%d", total);
-            SelectObject(dc, app.panelFont);
-            SetTextColor(dc, RGB(230, 230, 235));
-            TextOutA(dc, 6, 34, n, (int)strlen(n));
-        }
+        SetTextColor(dc, total ? RGB(255, 215, 130) : RGB(140, 140, 155));
+        TextOutA(dc, 12, 7, "<", 1);
         EndPaint(h, &ps);
         return;
     }
