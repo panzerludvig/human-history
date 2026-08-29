@@ -7,7 +7,9 @@ Renamed the game from *Iron and Blood* to **Human History**: window title and
 main menu, the Win32 window class, the build artifact (`humanhistory.exe`), and
 every design and technical note. The GitHub remote is still
 `panzerludvig/iron-and-blood` and earlier dev-log entries keep the old name,
-being the record of what happened at the time.
+being the record of what happened at the time. (Renamed to
+`panzerludvig/human-history` the next day, 2026-08-29; GitHub redirects the
+old URL.)
 
 ### Decisions and reasoning
 

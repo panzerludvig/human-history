@@ -11,7 +11,7 @@
 - [[Meta/Open Threads]] — Undecided questions
 
 ## Repository
-- **GitHub:** https://github.com/panzerludvig/iron-and-blood
+- **GitHub:** https://github.com/panzerludvig/human-history
 - **Local vault:** C:\Users\axell\Documents\code\ludvig\ib
 
 ## Status
