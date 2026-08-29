@@ -65,6 +65,39 @@ inline double urand(uint64_t& state) {
 
 inline double expDraw(uint64_t& rng, double meanDays) { return -meanDays * std::log(urand(rng)); }
 
+// Build a culture: a handful of sounds it favours, and its own name.
+inline population::Culture makeCulture(uint64_t& rng) {
+    using namespace population;
+    Culture c;
+    for (int i = 0; i < 5; i++) c.onset[i] = (uint8_t)(urand(rng) * N_ONSET);
+    for (int i = 0; i < 4; i++) c.nucleus[i] = (uint8_t)(urand(rng) * N_NUCLEUS);
+    for (int i = 0; i < 3; i++) c.coda[i] = (uint8_t)(urand(rng) * N_CODA);
+    for (int i = 0; i < 2; i++) c.ending[i] = (uint8_t)(urand(rng) * N_ENDING);
+    return c;
+}
+
+// A name drawn from a culture's sounds: two or three syllables and one of
+// its endings, so everything it names sounds related.
+inline void makeName(const population::Culture& c, uint64_t& rng, char out[16]) {
+    using namespace population;
+    char buf[32] = {};
+    int n = 0;
+    int syllables = urand(rng) < 0.55 ? 2 : 1; // plus the ending
+    for (int s = 0; s < syllables; s++) {
+        const char* on = NAME_ONSET[c.onset[(int)(urand(rng) * 5)] % N_ONSET];
+        const char* nu = NAME_NUCLEUS[c.nucleus[(int)(urand(rng) * 4)] % N_NUCLEUS];
+        const char* co = urand(rng) < 0.4 ? NAME_CODA[c.coda[(int)(urand(rng) * 3)] % N_CODA] : "";
+        for (const char* q = on; *q && n < 12; q++) buf[n++] = *q;
+        for (const char* q = nu; *q && n < 12; q++) buf[n++] = *q;
+        for (const char* q = co; *q && n < 12; q++) buf[n++] = *q;
+    }
+    const char* en = NAME_ENDING[c.ending[(int)(urand(rng) * 2)] % N_ENDING];
+    for (const char* q = en; *q && n < 15; q++) buf[n++] = *q;
+    buf[0] = (char)std::toupper((unsigned char)buf[0]);
+    buf[n] = 0;
+    for (int i = 0; i < 16; i++) out[i] = i <= n ? buf[i] : 0;
+}
+
 inline float expertise(const population::TechState& ts, double now) {
     if (!ts.practising) return 0.0f;
     return 1.0f - (1.0f - EXPERTISE_START) * (float)std::exp(-(now - ts.practiceT) / EXPERTISE_TAU);
@@ -239,6 +272,18 @@ inline int pickInventor(population::Field& pf, WorldState& ws, int tech, double 
 
 inline void init(population::Field& pf, WorldState& ws, uint32_t seed, double now) {
     ws.rng = (uint64_t)seed * 0x2545F4914F6CDD1Dull + 0x853C49E6748FEA9Bull;
+    // Every settlement the world opens with is its own people, with its own
+    // name and its own way of speaking. Cultures spread from here by
+    // colonisation, so they end up mapping the lineages of expansion.
+    if (pf.cultures.empty()) {
+        for (size_t i = 0; i < pf.settlements.size(); i++) {
+            population::Culture c = makeCulture(ws.rng);
+            makeName(c, ws.rng, c.name);
+            pf.cultures.push_back(c);
+            pf.settlements[i].culture = (uint16_t)i;
+            makeName(c, ws.rng, pf.settlements[i].name);
+        }
+    }
     // Archery is not invented here: the bow is far older than anything else
     // this simulation models, so everyone starts knowing it, at the base
     // expertise. What varies from place to place is bows, not knowing how.

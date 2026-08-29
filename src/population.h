@@ -211,6 +211,43 @@ inline float storageCapDays(float P, float granaries) {
     return CAP_DAYS_SETTLED + granaries * GRANARY_STORE / std::max(P, 1.0f);
 }
 
+// Cultures and names (Design/Culture.md). A culture owns a small sound
+// inventory, and every settlement descended from it draws its name from
+// that inventory -- so Gervatti and Poetti share an ending without anyone
+// coordinating it. Overlap between distant cultures is expected and
+// harmless at this scale.
+constexpr const char* NAME_ONSET[] = {"b",  "d",  "g",  "k",  "m",  "n",  "p",  "r",
+                                      "s",  "t",  "v",  "z",  "br", "dr", "gr", "kr",
+                                      "pr", "tr", "st", "sk", "th", "sh", "ch", "l",
+                                      "f",  "h",  "j",  "w",  "kh", "ts", "vr", "gv"};
+constexpr const char* NAME_NUCLEUS[] = {"a", "e", "i", "o", "u", "ai", "ei", "ou", "ia", "ae"};
+constexpr const char* NAME_CODA[] = {"", "", "", "n", "r", "s", "l", "m", "k", "t"};
+constexpr const char* NAME_ENDING[] = {"i",  "a",   "o",  "ti", "tti", "ni", "na", "os",
+                                       "us", "ar",  "en", "ia", "eth", "or", "an", "il"};
+constexpr int N_ONSET = 32, N_NUCLEUS = 10, N_CODA = 10, N_ENDING = 16;
+
+struct Culture {
+    char name[16] = {};   // what these people are called, as a people
+    uint8_t onset[5] = {};
+    uint8_t nucleus[4] = {};
+    uint8_t coda[3] = {};
+    uint8_t ending[2] = {};
+};
+
+// What a settlement has come to be good at, by doing it. Affinities drift
+// toward what a group actually lives on, over generations, and feed back
+// as a small bonus -- enough to make two settlements on identical land
+// diverge, not enough to run away with the simulation.
+struct Affinity {
+    float hunt = 0, gather = 0, farm = 0, herd = 0, fight = 0;
+};
+constexpr float AFFINITY_GAIN = 0.15f;      // at full devotion
+constexpr float AFFINITY_TAU_YEARS = 100.0f; // a few generations to settle
+constexpr float FIGHT_LEARN = 0.06f;        // per raid, given or received
+constexpr float FIGHT_FORGET_YEARS = 200.0f; // peace makes people soft
+
+inline float affinityBonus(float a) { return 1.0f + AFFINITY_GAIN * std::clamp(a, 0.0f, 1.0f); }
+
 // The technology table (Design/Technology.md): per-settlement state for each
 // technology. Farming's original fields generalized when husbandry arrived.
 enum : int {
@@ -294,6 +331,11 @@ struct Settlement {
                                    // (need-driven granary invention)
     float starvedYr = 0;           // people lost to hunger in the trailing year
     double lookAgainDays = SPLIT_AFTER_DAYS; // patience before the next survey
+    // Appended deliberately: several call sites build a Settlement with
+    // positional initialisers, and inserting a member above shifts them all.
+    uint16_t culture = 0;
+    char name[16] = {};
+    Affinity aff;
     // Technology state (see technology.h / Design/Technology.md):
     TechState tech[NTECH];
     double nextTech[NTECH] = {1e18, 1e18, 1e18, 1e18}; // next draw or resample moment
@@ -328,6 +370,10 @@ struct Band {
     // cannot be the place they settle again. Journey state, not saved.
     float leftCap = 0;
     float bows = 0; // carried: the first possession that travels
+    uint16_t culture = 0;
+    char name[16] = {};  // the community's name; the suffix comes from purpose
+    bool colonists = false; // a splinter, who will name their own new home
+    Affinity aff;           // carried, so what a people is good at travels
     // Technology carried (demic diffusion):
     TechState tech[NTECH];
 };
@@ -347,11 +393,12 @@ struct Field {
     struct LandScar { float R; double t; };
     std::unordered_map<int, LandScar> scars;
     // What is left standing where an invested settlement walked away.
-    struct Ruin { int cell; double abandoned; };
+    struct Ruin { int cell; double abandoned; char name[16]; };
     std::vector<Ruin> ruins;
     // Per-cell local properties, kept for founding settlements at runtime:
     std::vector<float> kFoodPMap, kWaterMap, sFarmMap, pastureMap, buildMatMap, kGameMap,
         kSmallMap;
+    std::vector<Culture> cultures;
     // Regional wild game pools, on the climate grid (atmosphere::W x H):
     std::vector<float> gameG;    // health 0..1 per region
     std::vector<float> gameDmax; // sustainable draw per region, people
@@ -643,6 +690,7 @@ struct SeasonCtx {
     float farmMult = 1; // 1 + gain*s*expertise, from technology
     float husbExp = 0;  // husbandry expertise
     float granExp = 0;  // granary expertise, 0 unless practising (build pace)
+    Affinity aff;       // what these people are good at, from doing it
     float gameG = 1;    // regional game pool health (Settlement::gameNow)
     float bowCover = 0;  // share of hunters carrying a bow
     float archExp = 0;   // archery expertise
@@ -714,8 +762,9 @@ inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double
     // Three kinds of food from the land: plants, the herds of the regional
     // pool, and the small game a bow is for.
     float bigEff = huntEff(ctx.gameG) * (1.0f + BOW_BIG_GAIN * ctx.bowCover * ctx.archExp);
-    float forage = s.kFoodP - s.kGame - s.kSmall + s.kGame * bigEff +
-                   s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp);
+    float hunted = (s.kGame * bigEff + s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp)) *
+                   affinityBonus(ctx.aff.hunt);
+    float forage = (s.kFoodP - s.kGame - s.kSmall) * affinityBonus(ctx.aff.gather) + hunted;
     float farm = s.kFoodP * (ctx.farmMult - 1.0f);
     float fF = s.meanF, fG2 = 1.0f;
     if (ctx.clim) {
@@ -728,8 +777,10 @@ inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double
     // winter (fodder and slaughter). Plus the pasture-free farmyard animals.
     float gNow = std::clamp((fF - 0.12f) / 0.88f, 0.0f, 1.0f);
     float husb = (s.herd * (0.7f + 0.3f * gNow) +
-                  FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp) * R;
-    return std::min((forage * fF + farm * fG2) * R + husb, s.kWater);
+                  FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp) *
+                 R * affinityBonus(ctx.aff.herd);
+    return std::min((forage * fF + farm * fG2 * affinityBonus(ctx.aff.farm)) * R + husb,
+                    s.kWater);
 }
 
 // Integrate a settlement from its valid time to `now` and schedule the next
@@ -819,6 +870,22 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     }
     bool changed = std::fabs(P - s.P) > 0.5f || std::fabs(R - s.R) > 0.002f ||
                    granaries != s.granaries;
+    // What they have been living on pulls their affinities that way, over
+    // generations. Fighting is not fed from food; it comes from raiding
+    // and being raided, and fades in peace (sim.h).
+    {
+        float plant = (s.kFoodP - s.kGame - s.kSmall) * s.meanF;
+        float game = (s.kGame + s.kSmall) * s.meanF;
+        float crop = s.kFoodP * (ctx.farmMult - 1.0f);
+        float stock = s.herd * 0.85f + FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp;
+        float tot = std::max(plant + game + crop + stock, 1e-3f);
+        float k = std::min((float)(span / (AFFINITY_TAU_YEARS * 365.0)), 1.0f);
+        s.aff.gather += (plant / tot - s.aff.gather) * k;
+        s.aff.hunt += (game / tot - s.aff.hunt) * k;
+        s.aff.farm += (crop / tot - s.aff.farm) * k;
+        s.aff.herd += (stock / tot - s.aff.herd) * k;
+        s.aff.fight *= std::exp(-(float)(span / (FIGHT_FORGET_YEARS * 365.0)));
+    }
     s.pop = pop;
     s.P = P;
     s.R = R;
@@ -836,8 +903,10 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     // Horizon from the ANNUAL-MEAN flow: the seasonal oscillation is
     // recurring, so a settlement in seasonal equilibrium still sleeps long.
     float bigEffMean = huntEff(ctx.gameG) * (1.0f + BOW_BIG_GAIN * ctx.bowCover * ctx.archExp);
-    float forageBase = s.kFoodP - s.kGame - s.kSmall + s.kGame * bigEffMean +
-                       s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp);
+    float forageBase =
+        (s.kFoodP - s.kGame - s.kSmall) * affinityBonus(ctx.aff.gather) +
+        (s.kGame * bigEffMean + s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp)) *
+            affinityBonus(ctx.aff.hunt);
     float meanFlow = std::min(
         (forageBase * s.meanF + s.kFoodP * (ctx.farmMult - 1.0f)) * s.R, s.kWater);
     float dP, dR, dS, dStarveMean;

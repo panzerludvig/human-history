@@ -348,7 +348,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 15\n";
+    f << "version 16\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -364,7 +364,10 @@ static bool saveWorld(const World& w, const Camera& c) {
               << s.tech[t].practiceT << " ";
         f << s.S << " " << s.scarceSince << " " << s.founded << " " << s.herd << " "
           << s.granaries << " " << s.buildWork << " " << s.fillLo << " " << s.fillHi << " "
-          << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << " " << s.id << " " << s.starvedYr << " " << s.bows << "\n";
+          << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << " " << s.id << " "
+          << s.starvedYr << " " << s.bows << " " << (s.name[0] ? s.name : "-") << " "
+          << s.culture << " " << s.aff.hunt << " " << s.aff.gather << " " << s.aff.farm << " "
+          << s.aff.herd << " " << s.aff.fight << "\n";
     }
     for (const population::Band& b : w.pop.bands) {
         f << "band " << b.id << " " << b.pop.C << " " << b.pop.M << " " << b.pop.W << " "
@@ -377,6 +380,14 @@ static bool saveWorld(const World& w, const Camera& c) {
           << (int)b.returning << " " << b.loot << " " << b.lootHerd << "\n";
     }
     f << "nextsid " << w.pop.nextSettlementId << "\n";
+    for (const population::Culture& c : w.pop.cultures) {
+        f << "culture " << c.name;
+        for (int i = 0; i < 5; i++) f << " " << (int)c.onset[i];
+        for (int i = 0; i < 4; i++) f << " " << (int)c.nucleus[i];
+        for (int i = 0; i < 3; i++) f << " " << (int)c.coda[i];
+        for (int i = 0; i < 2; i++) f << " " << (int)c.ending[i];
+        f << "\n";
+    }
     // Land memory and ruins: where people have lived and left.
     for (const auto& kv : w.pop.scars)
         f << "scar " << kv.first << " " << kv.second.R << " " << kv.second.t << "\n";
@@ -401,6 +412,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         double granaries = 0, buildWork = 0, fillLo = 2, fillHi = -1, cycleT = 0;
         double hungrySince = -1, granNeed = 0, id = 0, starved = 0, bows = 0;
         double children = 0, men = 0, women = 0, elderly = 0;
+        std::string name;
+        double culture = 0, affHunt = 0, affGather = 0, affFarm = 0, affHerd = 0, affFight = 0;
         double tech[population::NTECH][3] = {};
     };
     struct SavedBand {
@@ -413,6 +426,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     std::vector<SavedSettlement> savedSettlements;
     std::vector<SavedBand> savedBands;
     std::vector<std::pair<size_t, double>> savedGame;
+    std::vector<population::Culture> savedCultures;
     std::vector<std::array<double, 3>> savedScars;
     std::vector<std::pair<int, double>> savedRuins;
     double savedTime = 0;
@@ -441,6 +455,9 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
                 if (version >= 11) f >> sv.id;
                 if (version >= 12) f >> sv.starved;
                 if (version >= 13) f >> sv.bows;
+                if (version >= 16)
+                    f >> sv.name >> sv.culture >> sv.affHunt >> sv.affGather >> sv.affFarm >>
+                        sv.affHerd >> sv.affFight;
             } else {
                 if (version >= 4) f >> sv.S >> sv.scarce;
                 else sv.S = 0.5 * population::CAP_DAYS_SETTLED * sv.P;
@@ -464,6 +481,18 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             savedBands.push_back(bv);
         }
         else if (key == "nextsid") f >> w.pop.nextSettlementId;
+        else if (key == "culture") {
+            population::Culture c{};
+            std::string nm;
+            f >> nm;
+            for (int i = 0; i < 15 && i < (int)nm.size(); i++) c.name[i] = nm[i];
+            int v;
+            for (int i = 0; i < 5; i++) { f >> v; c.onset[i] = (uint8_t)v; }
+            for (int i = 0; i < 4; i++) { f >> v; c.nucleus[i] = (uint8_t)v; }
+            for (int i = 0; i < 3; i++) { f >> v; c.coda[i] = (uint8_t)v; }
+            for (int i = 0; i < 2; i++) { f >> v; c.ending[i] = (uint8_t)v; }
+            savedCultures.push_back(c);
+        }
         else if (key == "scar") {
             double cell, R, t;
             f >> cell >> R >> t;
@@ -537,6 +566,11 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.granNeedYrs = (float)sv.granNeed;
             st.starvedYr = (float)sv.starved;
             st.bows = (float)sv.bows;
+            st.culture = (uint16_t)sv.culture;
+            st.aff = {(float)sv.affHunt, (float)sv.affGather, (float)sv.affFarm,
+                      (float)sv.affHerd, (float)sv.affFight};
+            if (sv.name.size() && sv.name != "-")
+                for (int i = 0; i < 15 && i < (int)sv.name.size(); i++) st.name[i] = sv.name[i];
             st.id = sv.id > 0 ? (uint32_t)sv.id : w.pop.nextSettlementId++;
             w.pop.nextSettlementId = std::max(w.pop.nextSettlementId, st.id + 1);
             if (st.tech[population::TECH_HUSBANDRY].practising && st.herd <= 0)
@@ -583,6 +617,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         }
         population::computeNeighbours(w.pop);
     }
+    if (!savedCultures.empty()) w.pop.cultures = savedCultures;
     for (auto& sc : savedScars)
         if (sc[0] >= 0 && sc[0] < population::W * population::H)
             w.pop.scars[(int)sc[0]] = {(float)sc[1], sc[2]};
@@ -1244,8 +1279,12 @@ static std::string describePoint(Vec3 n) {
         for (const population::Field::Ruin& r : wd.pop.ruins)
             if (sim::distKm(nf, sim::cellCentre(r.cell)) < pickR) {
                 char rb[64];
-                snprintf(rb, sizeof rb, "Ruins, abandoned year %d  |  ",
-                         (int)(r.abandoned / 365.0) + 1);
+                if (r.name[0])
+                    snprintf(rb, sizeof rb, "Ruins of %s, abandoned year %d  |  ", r.name,
+                             (int)(r.abandoned / 365.0) + 1);
+                else
+                    snprintf(rb, sizeof rb, "Ruins, abandoned year %d  |  ",
+                             (int)(r.abandoned / 365.0) + 1);
                 building = rb;
                 break;
             }
@@ -1408,6 +1447,23 @@ static std::string envText(const population::Settlement& st) {
     if (st.herd > 0.5f) {
         snprintf(b, sizeof b, "Livestock: feeds %d\n", (int)st.herd);
         out += b;
+    }
+    if (st.culture < wd.pop.cultures.size()) {
+        snprintf(b, sizeof b, "%s culture\n", wd.pop.cultures[st.culture].name);
+        out += b;
+    }
+    {
+        struct { const char* n; float v; } af[5] = {
+            {"hunting", st.aff.hunt},   {"gathering", st.aff.gather}, {"farming", st.aff.farm},
+            {"herding", st.aff.herd},   {"fighting", st.aff.fight}};
+        int bi = 0;
+        for (int i = 1; i < 5; i++)
+            if (af[i].v > af[bi].v) bi = i;
+        if (af[bi].v > 0.05f) {
+            snprintf(b, sizeof b, "Known for: %s (%d%%)\n", af[bi].n,
+                     (int)std::lround(af[bi].v * 100));
+            out += b;
+        }
     }
     if (st.kSmall > 0.02f * st.kFoodP) {
         snprintf(b, sizeof b, "Bows: %d (%d%% of hunters)\n", (int)st.bows,
@@ -1625,8 +1681,23 @@ static void paintPanel(HWND h) {
     Panel* pn = panelFor(h);
     if (pn) {
         char title[48];
-        if (pn->kind == 0) snprintf(title, sizeof title, "Settlement %u", pn->sid);
-        else snprintf(title, sizeof title, "Band %u", pn->bandId);
+        if (pn->kind == 0) {
+            int si = settlementIndexById(pn->sid);
+            const char* nm = si >= 0 ? app.world.pop.settlements[si].name : "";
+            snprintf(title, sizeof title, "%s", nm[0] ? nm : "Settlement");
+        } else {
+            const char* nm = "";
+            const char* what = "Band";
+            for (const population::Band& bd : app.world.pop.bands)
+                if (bd.id == pn->bandId) {
+                    nm = bd.name;
+                    what = bd.purpose == population::BAND_RAID ? "raiders"
+                           : bd.colonists                      ? "colonists"
+                                                               : "on the move";
+                }
+            if (nm[0]) snprintf(title, sizeof title, "%s %s", nm, what);
+            else snprintf(title, sizeof title, "Band %u", pn->bandId);
+        }
         SelectObject(dc, app.panelBold);
         SetTextColor(dc, RGB(235, 235, 240));
         TextOutA(dc, PANEL_PAD, 8, title, (int)strlen(title));
@@ -2033,6 +2104,14 @@ int main(int argc, char** argv) {
             for (const population::Settlement& s : app.world.pop.settlements) {
                 totalP += s.P;
                 all.add(s.pop);
+            }
+            for (int i = 0; i < 6 && i < (int)app.world.pop.settlements.size(); i++) {
+                const population::Settlement& sx =
+                    app.world.pop.settlements[i * app.world.pop.settlements.size() / 6];
+                fprintf(stderr, "  %s of the %s\n", sx.name,
+                        sx.culture < app.world.pop.cultures.size()
+                            ? app.world.pop.cultures[sx.culture].name
+                            : "?");
             }
             double tp = std::max(totalP, 1.0);
             fprintf(stderr,

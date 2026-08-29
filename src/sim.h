@@ -235,6 +235,7 @@ inline population::SeasonCtx seasonCtx(const population::Settlement& s,
     ctx.gameG = s.gameNow;
     ctx.archExp = technology::expertise(s.tech[population::TECH_ARCHERY], now);
     ctx.bowCover = population::bowCoverage(s.bows, s.P);
+    ctx.aff = s.aff;
     return ctx;
 }
 
@@ -292,11 +293,13 @@ inline void integrateBand(population::Band& b, float flowBase, double span, bool
 // a settlement's people are why it is harder to rob than a raiding party
 // of the same headcount is to beat -- so there is no separate defender
 // bonus any more; the advantage is the population itself.
-inline float fightStrength(const population::Cohorts& c, float bows, float archExp) {
+inline float fightStrength(const population::Cohorts& c, float bows, float archExp,
+                           float fightAff = 0) {
     using namespace population;
     float able = cohortStrength(c);
     float cover = bowCoverage(bows, std::max(c.M, 1.0f)); // bows are carried by the men
-    return able * (FIGHT_UNARMED + (1.0f - FIGHT_UNARMED) * cover * archExp);
+    return able * (FIGHT_UNARMED + (1.0f - FIGHT_UNARMED) * cover * archExp) *
+           affinityBonus(fightAff);
 }
 
 // The raid: reached them, now settle it. Heavily chanced -- a party twice
@@ -309,8 +312,8 @@ inline void resolveRaid(population::Field& pf, technology::WorldState& ws,
     Settlement& t = pf.settlements[ti];
     float aExp = technology::expertise(b.tech[TECH_ARCHERY], now);
     float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
-    float A = fightStrength(b.pop, b.bows, aExp) * RAID_INITIATIVE;
-    float D = fightStrength(t.pop, t.bows, dExp);
+    float A = fightStrength(b.pop, b.bows, aExp, b.aff.fight) * RAID_INITIATIVE;
+    float D = fightStrength(t.pop, t.bows, dExp, t.aff.fight);
     double pa = std::pow(std::max(A, 1e-3f), RAID_ODDS_POWER);
     double pd = std::pow(std::max(D, 1e-3f), RAID_ODDS_POWER);
     bool won = technology::urand(ws.rng) < pa / (pa + pd);
@@ -335,6 +338,10 @@ inline void resolveRaid(population::Field& pf, technology::WorldState& ws,
         t.S = std::max(t.S - b.loot, 0.0f);
         t.herd = std::max(t.herd - b.lootHerd, 0.0f);
     }
+    // Both sides learn the trade, whichever way it went. Being raided
+    // makes a people dangerous, not merely poorer.
+    b.aff.fight += (1.0f - b.aff.fight) * FIGHT_LEARN;
+    t.aff.fight += (1.0f - t.aff.fight) * FIGHT_LEARN;
     b.returning = true;
     fprintf(stderr, "raid: %s settlement %u, %d rations %d livestock, day %.0f\n",
             won ? "sacked" : "beaten off by", t.id, (int)b.loot, (int)b.lootHerd, now);
@@ -347,6 +354,15 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     using namespace population;
     Settlement s{cell, 0, false, b.pop, b.P, cellCondition(pf, cell, now), now, now};
     s.id = pf.nextSettlementId++;
+    s.culture = b.culture;
+    s.aff = b.aff;
+    // A name follows a community, not a site: people who picked up and
+    // moved are still themselves, while colonists who split away name the
+    // place they have made their own.
+    if (b.colonists && b.culture < pf.cultures.size())
+        technology::makeName(pf.cultures[b.culture], ws.rng, s.name);
+    else
+        for (int i = 0; i < 16; i++) s.name[i] = b.name[i];
     s.founded = now;
     pf.scars.erase(cell); // the land's condition is live state again
     for (int i = (int)pf.ruins.size() - 1; i >= 0; i--)
@@ -482,6 +498,7 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
             if (distKm(pos, cellCentre(b.targetCell)) < 20.0f) {
                 Settlement& h = pf.settlements[hi];
                 h.pop.add(b.pop); // the survivors, back among their people
+                h.aff.fight = std::max(h.aff.fight, b.aff.fight);
                 h.P = h.pop.total();
                 h.bows += b.bows;
                 h.herd += b.lootHerd;
@@ -594,7 +611,7 @@ inline int raidTarget(const population::Field& pf, int si, double now, float str
         float prize = t.S * LOOT_STORE_SHARE + t.herd * LOOT_HERD_SHARE * LOOT_CARRY_DAYS;
         if (prize < RAID_WORTH_IT) continue; // not worth the walk
         float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
-        float def = fightStrength(t.pop, t.bows, dExp);
+        float def = fightStrength(t.pop, t.bows, dExp, t.aff.fight);
         float score = prize / std::max(def, 1.0f);
         if (score > bestScore) { bestScore = score; best = j; }
     }
@@ -604,7 +621,7 @@ inline int raidTarget(const population::Field& pf, int si, double now, float str
     if (best >= 0) {
         const Settlement& t = pf.settlements[best];
         float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
-        if (fightStrength(t.pop, t.bows, dExp) > strength) return -1;
+        if (fightStrength(t.pop, t.bows, dExp, t.aff.fight) > strength) return -1;
     }
     return best;
 }
@@ -618,7 +635,8 @@ inline bool maybeRaid(population::Field& pf, technology::WorldState& ws, int si,
     float archExp = technology::expertise(s.tech[TECH_ARCHERY], now);
     Cohorts party{};
     party.M = s.pop.M * RAID_MEN_SHARE; // the men go; the rest stay
-    float strength = fightStrength(party, s.bows * RAID_MEN_SHARE, archExp) * RAID_INITIATIVE;
+    float strength =
+        fightStrength(party, s.bows * RAID_MEN_SHARE, archExp, s.aff.fight) * RAID_INITIATIVE;
     int ti = raidTarget(pf, si, now, strength);
     if (ti < 0) return false;
     terrain::V3 home = cellCentre(s.cell);
@@ -630,6 +648,9 @@ inline bool maybeRaid(population::Field& pf, technology::WorldState& ws, int si,
     b.px = home.x;
     b.py = home.y;
     b.pz = home.z;
+    b.culture = s.culture;
+    b.aff = s.aff;
+    for (int i = 0; i < 16; i++) b.name[i] = s.name[i];
     b.pop = party;
     b.P = party.total();
     b.bows = s.bows * RAID_MEN_SHARE;
@@ -751,6 +772,10 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     b.px = home.x;
     b.py = home.y;
     b.pz = home.z;
+    b.culture = s.culture;
+    b.aff = s.aff;
+    b.colonists = !wholeGroup; // a splinter, not the town on the move
+    for (int i = 0; i < 16; i++) b.name[i] = s.name[i];
     b.pop = s.pop;
     if (!wholeGroup) b.pop.scale(SPLIT_SHARE);
     b.P = b.pop.total();
@@ -767,8 +792,11 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
         // The land remembers what it was left in; only a place that was
         // invested in leaves anything to find.
         markScar(pf, s.cell, s.R, now);
-        if (s.granaries >= 1.0f || now - s.founded > RUIN_MIN_AGE_DAYS)
-            pf.ruins.push_back({s.cell, now});
+        if (s.granaries >= 1.0f || now - s.founded > RUIN_MIN_AGE_DAYS) {
+            Field::Ruin r{s.cell, now, {}};
+            for (int i = 0; i < 16; i++) r.name[i] = s.name[i];
+            pf.ruins.push_back(r);
+        }
         s.leaving = true; // swept once the step's events are done
         s.P = 0;
         s.S = 0;
