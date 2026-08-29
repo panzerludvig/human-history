@@ -348,7 +348,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 13\n";
+    f << "version 14\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -371,7 +371,8 @@ static bool saveWorld(const World& w, const Camera& c) {
         for (int t = 0; t < population::NTECH; t++)
             f << " " << (int)b.tech[t].aware << " " << (int)b.tech[t].practising << " "
               << b.tech[t].practiceT;
-        f << " " << b.bows << "\n";
+        f << " " << b.bows << " " << b.purpose << " " << b.homeId << " " << b.targetId << " "
+          << (int)b.returning << " " << b.loot << " " << b.lootHerd << "\n";
     }
     f << "nextsid " << w.pop.nextSettlementId << "\n";
     // Land memory and ruins: where people have lived and left.
@@ -402,6 +403,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     struct SavedBand {
         double id = 0, px = 0, py = 0, pz = 0, P = 0, S = 0;
         double target = -1, resting = 0, restStart = 0, bows = 0;
+        double purpose = 0, homeId = 0, targetId = 0, returning = 0, loot = 0, lootHerd = 0;
         double tech[population::NTECH][3] = {};
     };
     std::vector<SavedSettlement> savedSettlements;
@@ -450,6 +452,9 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             for (int t = 0; t < nt; t++)
                 f >> bv.tech[t][0] >> bv.tech[t][1] >> bv.tech[t][2];
             if (version >= 13) f >> bv.bows;
+            if (version >= 14)
+                f >> bv.purpose >> bv.homeId >> bv.targetId >> bv.returning >> bv.loot >>
+                    bv.lootHerd;
             savedBands.push_back(bv);
         }
         else if (key == "nextsid") f >> w.pop.nextSettlementId;
@@ -540,6 +545,12 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             b.resting = bv.resting > 0.5;
             b.restStart = bv.restStart;
             b.bows = (float)bv.bows;
+            b.purpose = (int)bv.purpose;
+            b.homeId = (uint32_t)bv.homeId;
+            b.targetId = (uint32_t)bv.targetId;
+            b.returning = bv.returning > 0.5;
+            b.loot = (float)bv.loot;
+            b.lootHerd = (float)bv.lootHerd;
             for (int t = 0; t < population::NTECH; t++) {
                 b.tech[t].aware = bv.tech[t][0] > 0.5;
                 b.tech[t].practising = bv.tech[t][1] > 0.5;
@@ -1541,9 +1552,17 @@ static std::string bandText(uint32_t bandId) {
             double rest = bd.resting ? now - bd.restStart : 0.0;
             float awareKm = population::bandAwareKm(
                 rest, sim::prominenceM(wd.hydro, wd.clim, sim::cellOf({bd.px, bd.py, bd.pz})));
-            snprintf(b, sizeof b, "People: %d\nStores: %d days\nState: %s\nTarget: %d km away\n",
-                     (int)bd.P, (int)(bd.S / std::max(bd.P, 1.0f)),
-                     bd.resting ? "resting" : "moving", (int)away);
+            if (bd.purpose == population::BAND_RAID)
+                snprintf(b, sizeof b,
+                         "Raiding party\nPeople: %d\nState: %s\n%s: %d km away\n"
+                         "Carrying: %d rations, %d livestock\n",
+                         (int)bd.P, bd.returning ? "homeward" : "outward",
+                         bd.returning ? "Home" : "Their mark", (int)away, (int)bd.loot,
+                         (int)bd.lootHerd);
+            else
+                snprintf(b, sizeof b, "People: %d\nStores: %d days\nState: %s\nTarget: %d km away\n",
+                         (int)bd.P, (int)(bd.S / std::max(bd.P, 1.0f)),
+                         bd.resting ? "resting" : "moving", (int)away);
             out += b;
             for (int t = 0; t < population::NTECH; t++)
                 out += techStateLine(bd.tech[t], t, now) + "\n";

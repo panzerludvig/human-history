@@ -284,6 +284,48 @@ inline void integrateBand(population::Band& b, float flowBase, double span, bool
     }
 }
 
+// What a group can bring to a fight: people, armed by their bows. Archery
+// is dual-use, so the bow-making labour is a real choice between hunting
+// better and being harder to rob.
+inline float fightStrength(float P, float bows, float archExp) {
+    using namespace population;
+    float cover = bowCoverage(bows, P);
+    return P * (FIGHT_UNARMED + (1.0f - FIGHT_UNARMED) * cover * archExp);
+}
+
+// The raid: reached them, now settle it. Heavily chanced -- a party twice
+// the strength wins about seven times in ten, not always -- and cheap in
+// lives, because people run rather than fight to the end. What is taken is
+// limited by what can be carried, except livestock, which walks itself.
+inline void resolveRaid(population::Field& pf, technology::WorldState& ws,
+                        population::Band& b, int ti, double now) {
+    using namespace population;
+    Settlement& t = pf.settlements[ti];
+    float aExp = technology::expertise(b.tech[TECH_ARCHERY], now);
+    float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
+    float A = fightStrength(b.P, b.bows, aExp);
+    float D = fightStrength(t.P, t.bows, dExp) * DEFENDER_EDGE;
+    double pa = std::pow(std::max(A, 1e-3f), RAID_ODDS_POWER);
+    double pd = std::pow(std::max(D, 1e-3f), RAID_ODDS_POWER);
+    bool won = technology::urand(ws.rng) < pa / (pa + pd);
+    float lossA = won ? RAID_LOSS_WINNER : RAID_LOSS_LOSER;
+    float lossD = won ? RAID_LOSS_LOSER : RAID_LOSS_WINNER;
+    b.P = std::max(b.P * (1.0f - lossA), 0.0f);
+    t.P = std::max(t.P * (1.0f - lossD), 0.0f);
+    b.bows *= 1.0f - lossA;
+    t.bows *= 1.0f - lossD;
+    if (won) {
+        float carry = b.P * LOOT_CARRY_DAYS;
+        b.loot = std::min(t.S * LOOT_STORE_SHARE, carry);
+        b.lootHerd = t.herd * LOOT_HERD_SHARE;
+        t.S = std::max(t.S - b.loot, 0.0f);
+        t.herd = std::max(t.herd - b.lootHerd, 0.0f);
+    }
+    b.returning = true;
+    fprintf(stderr, "raid: %s settlement %u, %d rations %d livestock, day %.0f\n",
+            won ? "sacked" : "beaten off by", t.id, (int)b.loot, (int)b.lootHerd, now);
+}
+
 // A band that arrives (or gives up) becomes a settlement on unclaimed ground.
 inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
                             const hydrology::Result& hy, const atmosphere::Climatology& clim,
@@ -402,6 +444,39 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
         pf.bands.erase(pf.bands.begin() + bi);
         return false;
     }
+    // A raiding party has somewhere to be and does not settle en route:
+    // outward to its mark, then home with whatever it took.
+    if (b.purpose == BAND_RAID) {
+        int hi = indexById(pf, b.homeId);
+        if (!b.returning) {
+            int ti = indexById(pf, b.targetId);
+            if (ti < 0) b.returning = true; // they moved on; nothing to rob
+            else {
+                b.targetCell = pf.settlements[ti].cell;
+                if (distKm(pos, cellCentre(b.targetCell)) < 20.0f)
+                    resolveRaid(pf, ws, b, ti, now);
+            }
+        }
+        if (b.returning) {
+            if (hi < 0) { // home is gone: join whoever will have them
+                if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
+                pf.bands.erase(pf.bands.begin() + bi);
+                return false;
+            }
+            b.targetCell = pf.settlements[hi].cell;
+            if (distKm(pos, cellCentre(b.targetCell)) < 20.0f) {
+                Settlement& h = pf.settlements[hi];
+                h.P += b.P;
+                h.bows += b.bows;
+                h.herd += b.lootHerd;
+                h.S = std::min(h.S + b.S + b.loot, storageCapDays(h.P, h.granaries) * h.P);
+                logAt("raiders home to settlement", hi, pos, b.P, now);
+                pf.bands.erase(pf.bands.begin() + bi);
+                return false;
+            }
+        }
+    }
+
     terrain::V3 tgt = cellCentre(b.targetCell);
     if (!b.resting) {
         // Terrain under our feet sets the pace: rafting is slow, ice walks,
@@ -428,6 +503,10 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
         b.pz = pos.z;
     }
     int cell = cellOf(pos);
+    if (b.purpose == BAND_RAID) { // no resting, no founding: keep marching
+        b.nextUpdate = now + BAND_STEP_DAYS;
+        return true;
+    }
     float fill = b.S / (CAP_DAYS_BAND * std::max(b.P, 1.0f));
     if (b.resting) {
         if (fill >= 0.95f || now - b.restStart > 90.0) b.resting = false;
@@ -484,6 +563,69 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
 
 // Sustained scarcity with enough people: a third leaves as a band, taking the
 // settlement's knowledge and technology with it.
+// Who is worth robbing: the richest neighbour we could plausibly beat.
+// Only settlements within contact range are candidates -- you rob the
+// people you know about -- and livestock counts double, being wealth that
+// carries itself home.
+inline int raidTarget(const population::Field& pf, int si, double now, float strength) {
+    using namespace population;
+    const Settlement& s = pf.settlements[si];
+    int best = -1;
+    float bestScore = 0;
+    for (int j : pf.neighbours[si]) {
+        const Settlement& t = pf.settlements[j];
+        if (t.leaving || t.P < BAND_MIN_P) continue;
+        float prize = t.S * LOOT_STORE_SHARE + t.herd * LOOT_HERD_SHARE * LOOT_CARRY_DAYS;
+        if (prize <= 0) continue;
+        float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
+        float def = fightStrength(t.P, t.bows, dExp) * DEFENDER_EDGE;
+        float score = prize / std::max(def, 1.0f);
+        if (score > bestScore) { bestScore = score; best = j; }
+    }
+    // Not worth it if they are much stronger than the party we could send.
+    if (best >= 0) {
+        const Settlement& t = pf.settlements[best];
+        float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
+        if (fightStrength(t.P, t.bows, dExp) * DEFENDER_EDGE > 2.0f * strength) return -1;
+    }
+    return best;
+}
+
+// Nowhere to go, and hungry: the third answer. Sends a party to rob the
+// best neighbour within reach. Returns true if one set out.
+inline bool maybeRaid(population::Field& pf, technology::WorldState& ws, int si, double now) {
+    using namespace population;
+    Settlement& s = pf.settlements[si];
+    if (s.P < RAID_MIN_P / RAID_SHARE) return false;
+    float archExp = technology::expertise(s.tech[TECH_ARCHERY], now);
+    float party = s.P * RAID_SHARE;
+    float strength = fightStrength(party, s.bows * RAID_SHARE, archExp);
+    int ti = raidTarget(pf, si, now, strength);
+    if (ti < 0) return false;
+    terrain::V3 home = cellCentre(s.cell);
+    Band b{};
+    b.id = pf.nextBandId++;
+    b.purpose = BAND_RAID;
+    b.homeId = s.id;
+    b.targetId = pf.settlements[ti].id;
+    b.px = home.x;
+    b.py = home.y;
+    b.pz = home.z;
+    b.P = party;
+    b.bows = s.bows * RAID_SHARE;
+    b.S = std::min(s.S * RAID_SHARE, CAP_DAYS_BAND * b.P);
+    b.targetCell = pf.settlements[ti].cell;
+    b.t = now;
+    b.nextUpdate = now + BAND_STEP_DAYS;
+    for (int t = 0; t < NTECH; t++) b.tech[t] = s.tech[t];
+    s.P -= b.P;
+    s.S -= b.S;
+    s.bows -= b.bows;
+    pf.bands.push_back(b);
+    logAt("raiding party leaves settlement", si, home, b.P, now);
+    return true;
+}
+
 // Sustained scarcity forces a choice, and the default answer is to move as
 // a whole: people are kin, and a place that has failed fails for everyone,
 // so the group first looks for ground that can carry all of them. Fission
@@ -555,8 +697,16 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     int tgt = bestProspect(pf, home, ws.rng,
                            settlementAwareKm(now - s.founded, prominenceM(hy, clim, s.cell)), now,
                            fExp, hExp, &est);
+    bool wasStuck = s.noProspect; // the last survey came up empty too
     s.noProspect = tgt < 0;
     if (tgt < 0) {
+        // Circumscription: hemmed in, hungry, and nowhere to go. This is
+        // where raiding comes from -- but only once it is clear there is no
+        // land to be had, not on the first disappointing look around.
+        if (wasStuck && maybeRaid(pf, ws, si, now)) {
+            s.lookAgainDays = SPLIT_AFTER_DAYS;
+            return;
+        }
         s.lookAgainDays = std::min(s.lookAgainDays * 2.0, LOOK_BACKOFF_MAX);
         return;
     }

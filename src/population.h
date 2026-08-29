@@ -148,6 +148,21 @@ constexpr float RELOC_ANCHOR_FARM = 0.5f;     // per unit farming expertise
 // away. A camp of thirty that stood a decade leaves nothing to find.
 constexpr double RUIN_MIN_AGE_DAYS = 60.0 * 365.0;
 constexpr double RUIN_LIFE_DAYS = 400.0 * 365.0;
+// Raiding (Design/Conflict.md). The trigger is circumscription: a group
+// that must move or divide and has nowhere to go. Raids are journeys with
+// a task -- reach them, fight, carry it home -- so distance is a real cost
+// and only neighbours are worth robbing. Casualties are low because people
+// run rather than die: a raid impoverishes, it does not annihilate.
+constexpr float RAID_SHARE = 0.3f;        // of the settlement's people go
+constexpr float RAID_MIN_P = 25.0f;       // a smaller party achieves nothing
+constexpr float FIGHT_UNARMED = 0.3f;     // strength with no bows at all
+constexpr float DEFENDER_EDGE = 1.3f;     // home ground, and somewhere to hide
+constexpr float RAID_ODDS_POWER = 1.5f;   // 2:1 strength is ~70%, not a certainty
+constexpr float RAID_LOSS_WINNER = 0.03f; // they break off once it turns
+constexpr float RAID_LOSS_LOSER = 0.08f;
+constexpr float LOOT_CARRY_DAYS = 30.0f;  // rations one raider hauls home
+constexpr float LOOT_STORE_SHARE = 0.6f;  // of what is found; the rest is hidden
+constexpr float LOOT_HERD_SHARE = 0.35f;  // livestock needs no carrying
 constexpr float FARMYARD_SHARE_POP = 0.05f; // household animals, no pasture needed
 constexpr float HERD_GROWTH_YR = 0.25f;     // logistic growth rate
 constexpr float HERD_PASTURE_K = 2.0f;      // people/km2 on pure pasture at full expertise
@@ -235,8 +250,16 @@ struct Settlement {
 // A migrating group: a settlement with velocity (Design/Migration.md). It
 // forages the cell it stands on with a reduced time budget, carries a small
 // store, and re-evaluates every few days. The first agent.
+enum : int { BAND_MIGRATE = 0, BAND_RAID = 1 };
+
 struct Band {
     uint32_t id = 0;         // stable identity (indices shift as bands die)
+    int purpose = BAND_MIGRATE;
+    uint32_t homeId = 0;     // the settlement a raiding party returns to
+    uint32_t targetId = 0;   // the settlement it set out to rob
+    bool returning = false;  // homeward, with whatever it got
+    float loot = 0;          // rations carried
+    float lootHerd = 0;      // livestock driven along
     float px, py, pz;        // unit-sphere position
     float P = 0;             // people
     float S = 0;             // food store, rations
@@ -295,6 +318,15 @@ inline float cellCondition(const Field& f, int cell, double now) {
 
 inline void markScar(Field& f, int cell, float R, double now) {
     f.scars[cell] = {R, now};
+}
+
+// Settlements are erased when they move, so anything that outlives one
+// decision (a raiding party's home and its mark) refers to them by id.
+inline int indexById(const Field& f, uint32_t id) {
+    if (!id) return -1;
+    for (int i = 0; i < (int)f.settlements.size(); i++)
+        if (f.settlements[i].id == id) return i;
+    return -1;
 }
 
 constexpr float CONTACT_KM = 160.0f; // twice the minimum settlement spacing
