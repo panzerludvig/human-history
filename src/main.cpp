@@ -727,6 +727,7 @@ struct App {
     int newsKind = 0;      // which kind is open
     int newsPick = 0;      // which entry is open
     int newsScroll = 0;
+    bool newsOpen = true;  // collapsed to a tab on the right edge when false
     std::vector<std::pair<int, HWND>> controls;
 };
 static App app;
@@ -1356,6 +1357,8 @@ static std::string describePoint(Vec3 n) {
     return buf;
 }
 
+inline int newsWidth(); // defined with the news feed, below
+
 static void updateTooltip(int x, int y) {
     HWND tip = control(ID_TOOLTIP);
     Vec3 hit;
@@ -1366,7 +1369,10 @@ static void updateTooltip(int x, int y) {
     std::string txt = describePoint(hit);
     SetWindowTextA(tip, txt.c_str());
     int wdt = 12 + (int)txt.size() * 9;
-    int tx = std::min(x + 18, app.cam.width - wdt - 4), ty = y + 22;
+    // Keep clear of the news feed: the tooltip follows the cursor, and the
+    // feed is a window above it, so an unclamped label hides two lines of news.
+    int right = app.cam.width - (app.news && IsWindowVisible(app.news) ? newsWidth() : 0) - 4;
+    int tx = std::min(x + 18, right - wdt), ty = y + 22;
     if (ty + 26 > app.cam.height) ty = y - 30;
     SetWindowPos(tip, HWND_TOP, tx, ty, wdt, 26, SWP_SHOWWINDOW | SWP_NOACTIVATE);
 }
@@ -1683,6 +1689,24 @@ static Panel* panelFor(HWND h) {
 // put the camera on whoever it happened to.
 
 constexpr int NEWS_W = 320, NEWS_LINE = 20, NEWS_TOP = 40;
+// Collapsed, the feed is a tab just wide enough for the chevron and a
+// three-character count, and wide enough to be an easy click target.
+constexpr int NEWS_TAB_W = 34;
+// The chevron sits in the top-right of the open panel. Its hit box must
+// stay clear of the title, which is the way back up a level -- these two
+// x-ranges are the invariant: [12, NEWS_W-30) is the title, and
+// [NEWS_W-26, NEWS_W-6) is the chevron.
+constexpr int NEWS_CHEVRON_X = NEWS_W - 26, NEWS_CHEVRON_R = NEWS_W - 6;
+
+inline int newsWidth() { return app.newsOpen ? NEWS_W : NEWS_TAB_W; }
+
+static void layoutNews() {
+    if (!app.news) return;
+    int w = newsWidth();
+    SetWindowPos(app.news, nullptr, app.cam.width - w, 56, w, app.cam.height - 76,
+                 SWP_NOZORDER);
+    InvalidateRect(app.news, nullptr, TRUE);
+}
 static const char* NEWS_LABEL[population::EV_KINDS][2] = {
     {"tribe abandoned its home", "tribes abandoned their homes"},
     {"band of colonists set out", "bands of colonists set out"},
@@ -1737,9 +1761,28 @@ static void paintNews(HWND h) {
     FillRect(dc, &rc, app.bgBrush);
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, app.panelBold);
+    if (!app.newsOpen) {
+        // A tab on the edge: which way it opens, and how much is waiting.
+        SetTextColor(dc, RGB(255, 215, 130));
+        TextOutA(dc, 10, 10, "<", 1);
+        int total = 0;
+        for (int k = 0; k < population::EV_KINDS; k++) total += app.world.pop.eventCount[k];
+        if (total) {
+            char n[8];
+            if (total > 999) snprintf(n, sizeof n, "%dk", total / 1000);
+            else snprintf(n, sizeof n, "%d", total);
+            SelectObject(dc, app.panelFont);
+            SetTextColor(dc, RGB(230, 230, 235));
+            TextOutA(dc, 6, 34, n, (int)strlen(n));
+        }
+        EndPaint(h, &ps);
+        return;
+    }
     SetTextColor(dc, RGB(235, 235, 240));
     const char* title = app.newsLevel == 0 ? "What happened" : "< back";
     TextOutA(dc, 12, 10, title, (int)strlen(title));
+    SetTextColor(dc, RGB(255, 215, 130));
+    TextOutA(dc, NEWS_CHEVRON_X, 10, ">", 1);
     SelectObject(dc, app.panelFont);
     int y = NEWS_TOP;
     int maxLines = (rc.bottom - NEWS_TOP) / NEWS_LINE - 1;
@@ -1837,7 +1880,17 @@ static LRESULT CALLBACK newsProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_LBUTTONDOWN: {
-        int my = GET_Y_LPARAM(lp);
+        int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
+        if (!app.newsOpen) { // the whole tab opens it again
+            app.newsOpen = true;
+            layoutNews();
+            return 0;
+        }
+        if (my < NEWS_TOP && mx >= NEWS_CHEVRON_X && mx < NEWS_CHEVRON_R) {
+            app.newsOpen = false; // out of the way, without losing the news
+            layoutNews();
+            return 0;
+        }
         if (my < NEWS_TOP) { // the title doubles as the way back
             if (app.newsLevel > 0) app.newsLevel--;
             app.newsScroll = 0;
@@ -2143,8 +2196,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         glViewport(0, 0, app.cam.width, app.cam.height);
         if (!app.controls.empty()) layoutControls();
         if (app.news)
-            SetWindowPos(app.news, nullptr, app.cam.width - NEWS_W, 56, NEWS_W,
-                         app.cam.height - 76, SWP_NOZORDER);
+            layoutNews();
         return 0;
     case WM_COMMAND:
         if (HIWORD(wp) == BN_CLICKED) onCommand(LOWORD(wp));
