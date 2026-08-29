@@ -452,8 +452,7 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
     if (distKm(pos, tgt) < 20.0f) {
         // Arrived: the rumour meets reality.
         if (pf.settlementAt[cell] < 0 && moverCap(pf, cell, fExp, hExp, now) >= MIN_SETTLEMENT_K &&
-            canHold(cell) && spacingOK(pf, pos) &&
-            (int)pf.settlements.size() < MAX_TOTAL_SETTLEMENTS) {
+            canHold(cell) && spacingOK(pf, pos)) {
             foundSettlement(pf, ws, hy, clim, b, cell, now);
             done = true;
         } else {
@@ -470,7 +469,7 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
                moverCap(pf, cell, fExp, hExp, now) >= MIN_SETTLEMENT_K && canHold(cell) &&
                moverCap(pf, cell, fExp, hExp, now) >=
                    0.9f * moverCap(pf, b.targetCell, fExp, hExp, now) &&
-               spacingOK(pf, pos) && (int)pf.settlements.size() < MAX_TOTAL_SETTLEMENTS) {
+               spacingOK(pf, pos)) {
         // Good enough ground under their feet beats a distant rumour.
         foundSettlement(pf, ws, hy, clim, b, cell, now);
         done = true;
@@ -545,7 +544,7 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     if (starving)
         s.nextUpdate =
             std::min(s.nextUpdate, std::max(s.scarceSince + s.lookAgainDays, now + 5.0));
-    if (now - s.scarceSince < s.lookAgainDays || (int)pf.bands.size() >= MAX_BANDS) return;
+    if (now - s.scarceSince < s.lookAgainDays) return;
     s.scarceSince = now; // whether or not anyone leaves, the pressure resets
     if (starving) s.nextUpdate = std::min(s.nextUpdate, now + s.lookAgainDays);
     if (s.P < BAND_MIN_P) return; // too few to survive any journey
@@ -697,6 +696,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
     if (!pf.gameG.empty()) q.push({pf.gameT + GAME_TICK_DAYS, 4, 0, 0});
 
     while (!q.empty() && q.top().t <= now) {
+        pf.peakBands = std::max(pf.peakBands, pf.bands.size()); // high-water mark
         Ev ev = q.top();
         q.pop();
         double t = ev.t;

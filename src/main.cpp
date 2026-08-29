@@ -1992,10 +1992,11 @@ int main(int argc, char** argv) {
             for (const population::Settlement& s : app.world.pop.settlements) totalP += s.P;
             fprintf(stderr,
                     "granaries built: %d, under construction: %d\n"
-                    "settlements: %d, people: %.0f, bands: %d, ruins: %d, worked sites: %d\n",
+                    "settlements: %d, people: %.0f, bands: %d (peak %d), ruins: %d, "
+                    "worked sites: %d\n",
                     gran, building, (int)app.world.pop.settlements.size(), totalP,
-                    (int)app.world.pop.bands.size(), (int)app.world.pop.ruins.size(),
-                    (int)app.world.pop.scars.size());
+                    (int)app.world.pop.bands.size(), (int)app.world.pop.peakBands,
+                    (int)app.world.pop.ruins.size(), (int)app.world.pop.scars.size());
         }
         if (argc >= 10) app.shotPath = argv[9];            // save a frame, then keep running
     } else {

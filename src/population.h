@@ -32,8 +32,12 @@ constexpr float R_DEPLETE_YEARS = 22.0f;      // land depletion at P = K
 // stored in K is table / R*; displayed capacity is K * R*.
 constexpr float SUSTAIN_R = 0.5486f;
 constexpr float MIN_SETTLEMENT_K = 150.0f;
-constexpr int MAX_SETTLEMENTS = 400;        // initial placement
-constexpr int MAX_TOTAL_SETTLEMENTS = 8000; // founding stops at geography, not here
+// How many groups the world opens with. This is a starting condition, not
+// a ceiling: founding and migration afterwards are limited by geography
+// alone -- there is no cap on how many settlements or bands may exist, since
+// no number we could name would be informative, and a cap that binds stops
+// the simulation silently and everywhere at once.
+constexpr int MAX_SETTLEMENTS = 400;
 
 // Storage and famine (Design/Migration.md). The land offers a flow (K*R
 // rations/day); the group holds a stock S of harvested rations. Famine is not
@@ -132,7 +136,6 @@ inline float bandAwareKm(double restDays, float promM) {
     float r = AWARE_BASE_KM + AWARE_REST_KM * (1.0f - (float)std::exp(-restDays / AWARE_REST_TAU_DAYS));
     return std::min(r + vantageKm(promM), AWARE_CAP_KM);
 }
-constexpr int MAX_BANDS = 200;
 // Relocation (Design/Migration.md): moving as a whole is the DEFAULT answer
 // to a failing place -- people are kin and stay together -- and fission is
 // the fallback for when no known ground can hold everyone. What anchors a
@@ -276,6 +279,7 @@ struct Field {
     std::vector<float> gameG;    // health 0..1 per region
     std::vector<float> gameDmax; // sustainable draw per region, people
     double gameT = 0;            // sim day the pools are valid
+    size_t peakBands = 0;        // most bands ever in flight at once (diagnostic)
 };
 
 // The land condition a cell offers now: pristine unless someone has lived
