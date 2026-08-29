@@ -348,7 +348,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 14\n";
+    f << "version 15\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -357,7 +357,8 @@ static bool saveWorld(const World& w, const Camera& c) {
     f << "lon " << c.lon << "\n";
     f << "altitude " << c.altitude << "\n";
     for (const population::Settlement& s : w.pop.settlements) {
-        f << "settlement " << s.cell << " " << s.P << " " << s.R << " ";
+        f << "settlement " << s.cell << " " << s.P << " " << s.R << " " << s.pop.C << " "
+          << s.pop.M << " " << s.pop.W << " " << s.pop.E << " ";
         for (int t = 0; t < population::NTECH; t++)
             f << (int)s.tech[t].aware << " " << (int)s.tech[t].practising << " "
               << s.tech[t].practiceT << " ";
@@ -366,7 +367,8 @@ static bool saveWorld(const World& w, const Camera& c) {
           << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << " " << s.id << " " << s.starvedYr << " " << s.bows << "\n";
     }
     for (const population::Band& b : w.pop.bands) {
-        f << "band " << b.id << " " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
+        f << "band " << b.id << " " << b.pop.C << " " << b.pop.M << " " << b.pop.W << " "
+          << b.pop.E << " " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
           << b.targetCell << " " << (int)b.resting << " " << b.restStart;
         for (int t = 0; t < population::NTECH; t++)
             f << " " << (int)b.tech[t].aware << " " << (int)b.tech[t].practising << " "
@@ -398,12 +400,14 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         double P = 0, R = 0, S = 0, scarce = -1, founded = 0, herd = 0;
         double granaries = 0, buildWork = 0, fillLo = 2, fillHi = -1, cycleT = 0;
         double hungrySince = -1, granNeed = 0, id = 0, starved = 0, bows = 0;
+        double children = 0, men = 0, women = 0, elderly = 0;
         double tech[population::NTECH][3] = {};
     };
     struct SavedBand {
         double id = 0, px = 0, py = 0, pz = 0, P = 0, S = 0;
         double target = -1, resting = 0, restStart = 0, bows = 0;
         double purpose = 0, homeId = 0, targetId = 0, returning = 0, loot = 0, lootHerd = 0;
+        double children = 0, men = 0, women = 0, elderly = 0;
         double tech[population::NTECH][3] = {};
     };
     std::vector<SavedSettlement> savedSettlements;
@@ -425,6 +429,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             // that version knew them, then the scalars each version added.
             SavedSettlement sv{};
             f >> sv.cell >> sv.P >> sv.R;
+            if (version >= 15) f >> sv.children >> sv.men >> sv.women >> sv.elderly;
             int nt = version >= 13 ? 4 : version >= 8 ? 3 : version >= 3 ? 1 : 0;
             for (int t = 0; t < nt; t++)
                 f >> sv.tech[t][0] >> sv.tech[t][1] >> sv.tech[t][2];
@@ -446,6 +451,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         else if (key == "band") {
             SavedBand bv{};
             if (version >= 5) f >> bv.id;
+            if (version >= 15) f >> bv.children >> bv.men >> bv.women >> bv.elderly;
             f >> bv.px >> bv.py >> bv.pz >> bv.P >> bv.S >> bv.target >> bv.resting >>
                 bv.restStart;
             int nt = version >= 13 ? 4 : version >= 8 ? 3 : version >= 7 ? 2 : 0;
@@ -493,8 +499,15 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         for (auto& sv : savedSettlements) {
             int cell = sv.cell;
             if (cell < 0 || cell >= population::W * population::H) continue;
-            population::Settlement st{cell,   0,          false, (float)sv.P,
-                                      (float)sv.R, savedTime, savedTime};
+            population::Settlement st{cell,     0,          false,     {},
+                                      (float)sv.P, (float)sv.R, savedTime, savedTime};
+            // Older saves are headcounts only: give them the equilibrium
+            // structure and let the flows take it from there.
+            st.pop = sv.men + sv.women + sv.children + sv.elderly > 0.5
+                         ? population::Cohorts{(float)sv.children, (float)sv.men,
+                                               (float)sv.women, (float)sv.elderly}
+                         : population::seedCohorts((float)sv.P);
+            st.P = st.pop.total();
             st.kFoodP = w.pop.kFoodPMap[cell];
             st.kWater = w.pop.kWaterMap[cell];
             st.sFarm = w.pop.sFarmMap[cell];
@@ -541,6 +554,11 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             w.pop.nextBandId = std::max(w.pop.nextBandId, b.id + 1);
             b.px = (float)bv.px; b.py = (float)bv.py; b.pz = (float)bv.pz;
             b.P = (float)bv.P; b.S = (float)bv.S;
+            b.pop = bv.children + bv.men + bv.women + bv.elderly > 0.5
+                        ? population::Cohorts{(float)bv.children, (float)bv.men,
+                                              (float)bv.women, (float)bv.elderly}
+                        : population::seedCohorts(b.P);
+            b.P = b.pop.total();
             b.targetCell = (int)bv.target;
             b.resting = bv.resting > 0.5;
             b.restStart = bv.restStart;
@@ -1363,6 +1381,9 @@ static std::string envText(const population::Settlement& st) {
     snprintf(b, sizeof b, "People: %d (capacity %d)\n", (int)st.P,
              (int)(technology::effectiveK(st, now) * population::SUSTAIN_R));
     out += b;
+    snprintf(b, sizeof b, "  %d men, %d women, %d children, %d elderly\n",
+             (int)st.pop.M, (int)st.pop.W, (int)st.pop.C, (int)st.pop.E);
+    out += b;
     snprintf(b, sizeof b, "Stores: %d of %d days\n", (int)(st.S / std::max(st.P, 1.0f)),
              (int)population::storageCapDays(st.P, st.granaries));
     out += b;
@@ -2008,7 +2029,15 @@ int main(int argc, char** argv) {
                 building += s.buildWork > 0 ? 1 : 0;
             }
             double totalP = 0;
-            for (const population::Settlement& s : app.world.pop.settlements) totalP += s.P;
+            population::Cohorts all{};
+            for (const population::Settlement& s : app.world.pop.settlements) {
+                totalP += s.P;
+                all.add(s.pop);
+            }
+            double tp = std::max(totalP, 1.0);
+            fprintf(stderr,
+                    "people: %.0f%% children, %.0f%% men, %.0f%% women, %.0f%% elderly\n",
+                    all.C / tp * 100, all.M / tp * 100, all.W / tp * 100, all.E / tp * 100);
             fprintf(stderr,
                     "granaries built: %d, under construction: %d\n"
                     "settlements: %d, people: %.0f, bands: %d (peak %d), ruins: %d, "

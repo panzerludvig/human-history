@@ -27,9 +27,13 @@ If the mark has relocated by the time they get there — settlements move consta
 
 ## Fighting, and why it is cheap in lives
 
-Strength is people armed by their bows: `P · (0.3 + 0.7 · bow coverage · archery expertise)`. Archery is therefore dual-use, and bow-making becomes a genuine choice between hunting better and being harder to rob.
+Strength counts people by who they are (see [[Design/Population]]'s demography), then arms them with bows: men 1.0, women 0.15, children and elderly 0.05, the whole scaled by `0.3 + 0.7 · bow coverage · archery expertise`. Archery is therefore dual-use, and bow-making becomes a genuine choice between hunting better and being harder to rob.
 
-The defender gets a 1.3× edge — home ground, familiar terrain, and non-combatants who can be hidden rather than defended — and the outcome is **heavily chanced**: odds go as strength^1.5, so twice the strength wins about seven times in ten, not always. Raiders pick targets they think they can beat, and still lose more often than they win.
+**A raiding party is men** — 55% of them, so the rest stay home; sending 30% of a settlement's *people* would have been every man it had. The old flat 1.3× defender bonus is gone, because the defender's advantage is now explicit: it is the rest of the population, who count for something even though they are not fighting men. What the attacker gets instead is **initiative** (1.5×) — surprise, the choice of the moment, and the freedom to break off. The outcome is **heavily chanced**: odds go as strength^1.5, so twice the strength wins about seven times in ten, not always.
+
+Raiders only set out against someone they can beat and a haul worth the walk, which — with non-combatants properly weighted — rejects most neighbours outright. Tuning note: when the cohort weights first landed, defence fell to ~40% of headcount and the old "attack anyone under twice your strength" guard let settlements rob neighbours 1.4× their size; raids went from 577 per millennium to 182,000. The guard is now simply "we are the stronger".
+
+Casualties fall on the men who are in the fight (a quarter as much on everyone else, on the defending side), so **a settlement that loses its men is crippled for a generation** — and the demographic flows are what let that scar heal slowly rather than instantly.
 
 Casualties are deliberately low (3% of the winner, 8% of the loser) because **people run rather than fight to the end**. The consequence matters more than the realism: repeated raiding *impoverishes* rather than annihilates, and impoverishment is exactly what pushes a group to move. Violence became a redistribution and pressure mechanism instead of an extinction one. (Whether a group stands or runs should eventually depend on what it has to lose; deferred.)
 
@@ -46,7 +50,7 @@ A raided settlement has lost its stores, which is precisely the hunger that [[De
 
 ## Measured
 
-First millennium-scale run: 577 raids launched, 235 successful and 341 beaten off, 576 parties home. Migration was unaffected (4,210 moves, 1,005 splits) and the world grew normally (1,287 settlements, 369k people) — no death spiral, which is the low-casualty rule doing its job.
+With demography (2026-08-29): 4,142 raids in a millennium across ~1,240 settlements — about one per settlement every three centuries, episodic rather than habitual — of which 3,049 succeeded and 1,085 were beaten off. Raiders choose fights they can win and still lose one in four. Migration was unaffected (4,321 moves, 963 splits) and the world grew normally (1,239 settlements, 374k people): no death spiral, which is the low-casualty rule doing its job.
 
 ## Deferred
 

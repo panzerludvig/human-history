@@ -20,6 +20,30 @@ constexpr float FORAGE_KM2 = 314.0f;          // 10 km radius disc
 constexpr float WATER_L_PER_PERSON = 20.0f;   // per day
 constexpr float USABLE_WATER = 0.05f;         // fraction of discharge usable
 constexpr float GROWTH_MAX = 0.028f;          // per year at full surplus
+// Demography (Design/Population.md). People are counted in four stocks --
+// children, adult men, adult women, elderly -- and every share is emergent:
+// nothing enforces a ratio. Births come from women, children take fifteen
+// years to become adults and many do not, adults age out over a working
+// lifetime, and the old die quickly, which is what keeps them few.
+constexpr float CHILD_YEARS = 15.0f;   // to adulthood
+constexpr float ADULT_YEARS = 45.0f;   // adulthood to old age
+constexpr float MORT_CHILD = 0.0359f;  // /yr: about a third never grow up
+constexpr float MORT_ADULT = 0.010f;   // /yr, outside famine
+constexpr float MORT_ELDER = 0.25f;    // /yr: a few years past sixty
+constexpr float BOY_SHARE = 0.512f;    // slightly more boys are born
+// Replacement fertility for the stage durations above, per woman per year;
+// food multiplies it, and the multiplier is what growth actually is now.
+constexpr float BIRTHS_REPLACE = 0.1015f;
+constexpr float FERT_SURPLUS = 1.35f;  // extra births at full surplus
+// Famine takes the weak first.
+constexpr float FAMINE_W_CHILD = 1.5f;
+constexpr float FAMINE_W_ADULT = 1.0f;
+constexpr float FAMINE_W_ELDER = 2.0f;
+// Fighting (Design/Conflict.md): men do most of it, everyone else does some.
+constexpr float FIGHT_W_MAN = 1.0f;
+constexpr float FIGHT_W_WOMAN = 0.15f;
+constexpr float FIGHT_W_OTHER = 0.05f;
+constexpr float RAID_MEN_SHARE = 0.55f; // of the men; the rest stay home
 constexpr float DECLINE_MAX = 0.07f;          // per year in famine
 // The land timescales are slow relative to growth so populations overshoot
 // visibly (~18% peak around year 33 from a half-capacity start) before the
@@ -153,14 +177,14 @@ constexpr double RUIN_LIFE_DAYS = 400.0 * 365.0;
 // a task -- reach them, fight, carry it home -- so distance is a real cost
 // and only neighbours are worth robbing. Casualties are low because people
 // run rather than die: a raid impoverishes, it does not annihilate.
-constexpr float RAID_SHARE = 0.3f;        // of the settlement's people go
 constexpr float RAID_MIN_P = 25.0f;       // a smaller party achieves nothing
 constexpr float FIGHT_UNARMED = 0.3f;     // strength with no bows at all
-constexpr float DEFENDER_EDGE = 1.3f;     // home ground, and somewhere to hide
+constexpr float RAID_INITIATIVE = 1.5f;   // surprise, and the choice of the moment
 constexpr float RAID_ODDS_POWER = 1.5f;   // 2:1 strength is ~70%, not a certainty
 constexpr float RAID_LOSS_WINNER = 0.03f; // they break off once it turns
 constexpr float RAID_LOSS_LOSER = 0.08f;
 constexpr float LOOT_CARRY_DAYS = 30.0f;  // rations one raider hauls home
+constexpr float RAID_WORTH_IT = 1500.0f;  // a haul worth walking days for
 constexpr float LOOT_STORE_SHARE = 0.6f;  // of what is found; the rest is hidden
 constexpr float LOOT_HERD_SHARE = 0.35f;  // livestock needs no carrying
 constexpr float FARMYARD_SHARE_POP = 0.05f; // household animals, no pasture needed
@@ -202,10 +226,39 @@ struct TechState {
     double practiceT = 0;    // sim day practice began (expertise grows from here)
 };
 
+// Who a group is made of. P is the sum, kept in step so everything that
+// only cares about headcount keeps working.
+struct Cohorts {
+    float C = 0, M = 0, W = 0, E = 0; // children, men, women, elderly
+    float total() const { return C + M + W + E; }
+    void scale(float f) { C *= f; M *= f; W *= f; E *= f; }
+    void add(const Cohorts& o) { C += o.C; M += o.M; W += o.W; E += o.E; }
+    void sub(const Cohorts& o) { C -= o.C; M -= o.M; W -= o.W; E -= o.E; }
+};
+
+// The share a new group starts with, absent any history: the equilibrium
+// of the flows above, used only to seed the world.
+inline Cohorts seedCohorts(float P) {
+    Cohorts c;
+    c.C = 0.307f * P;
+    c.M = 0.326f * P;
+    c.W = 0.310f * P;
+    c.E = 0.057f * P;
+    return c;
+}
+
+// What a group can bring to a fight. Men do most of it; the rest of the
+// people are why a settlement is harder to rob than an equal party of
+// raiders is to beat.
+inline float cohortStrength(const Cohorts& c) {
+    return FIGHT_W_MAN * c.M + FIGHT_W_WOMAN * c.W + FIGHT_W_OTHER * (c.C + c.E);
+}
+
 struct Settlement {
     int cell;
     uint32_t id = 0;   // stable identity (settlements are erased when they move)
     bool leaving = false; // converted to a band this step; swept at step end
+    Cohorts pop;       // who they are; P below is its total
     float P;           // people
     float R;           // land condition 0..1
     double t;          // sim day at which P and R are valid
@@ -254,6 +307,7 @@ enum : int { BAND_MIGRATE = 0, BAND_RAID = 1 };
 
 struct Band {
     uint32_t id = 0;         // stable identity (indices shift as bands die)
+    Cohorts pop;             // a migrating group is families; a raid is men
     int purpose = BAND_MIGRATE;
     uint32_t homeId = 0;     // the settlement a raiding party returns to
     uint32_t targetId = 0;   // the settlement it set out to rob
@@ -529,7 +583,8 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         }
         if (!clear) continue;
         f.settlementAt[c.cell] = (int)f.settlements.size();
-        Settlement s{c.cell, 0, false, c.k * SUSTAIN_R * 0.5f, 1.0f, 0.0, 0.0};
+        Settlement s{c.cell, 0, false, {}, c.k * SUSTAIN_R * 0.5f, 1.0f, 0.0, 0.0};
+        s.pop = seedCohorts(s.P);
         s.id = f.nextSettlementId++;
         s.kFoodP = f.kFoodPMap[c.cell];
         s.kGame = f.kGameMap[c.cell];
@@ -572,6 +627,7 @@ inline void derivatives(float P, float R, float S, float flow, float K, float ca
     float g = phi >= 1 ? GROWTH_MAX / 365.0f * std::min((phi - 1) / 0.11f, 1.0f) : 0.0f;
     dStarve = STARVE_MAX * P * excl * shortfall; // deaths/day, the felt part
     dP = P * g - dStarve;
+    (void)g;
     dR = (1 - R) / (R_REGEN_YEARS * 365) - (P / std::max(K, 1.0f)) * R / (R_DEPLETE_YEARS * 365);
     dS = H - P;
 }
@@ -608,6 +664,43 @@ inline float smallGameEff(float coverage, float archExp) {
     return SMALL_SNARE_FLOOR + (1.0f - SMALL_SNARE_FLOOR) * coverage * archExp;
 }
 
+
+// One day of demography, in place. Births come from the women and are
+// multiplied by food; children take fifteen years to become adults and
+// many die first; adults age into a short old age. Famine deaths are
+// handed out by vulnerability -- the young and the old go first -- which
+// is why a hungry settlement loses its next generation before its
+// workers. No share is enforced anywhere: the structure is what the flows
+// leave behind.
+inline void stepCohorts(Cohorts& c, float phi, float starveDeaths, float dt) {
+    float yr = dt / 365.0f;
+    float surplus = phi >= 1 ? std::min((phi - 1.0f) / 0.11f, 1.0f) : 0.0f;
+    float births = BIRTHS_REPLACE * (1.0f + FERT_SURPLUS * surplus) * c.W * yr;
+    float grow = c.C / CHILD_YEARS * yr;      // reaching adulthood
+    float dieC = MORT_CHILD * c.C * yr;
+    float ageM = c.M / ADULT_YEARS * yr, ageW = c.W / ADULT_YEARS * yr;
+    float dieM = MORT_ADULT * c.M * yr, dieW = MORT_ADULT * c.W * yr;
+    float dieE = MORT_ELDER * c.E * yr;
+    // Famine, weighted by who survives it worst.
+    float wsum = FAMINE_W_CHILD * c.C + FAMINE_W_ADULT * (c.M + c.W) + FAMINE_W_ELDER * c.E;
+    float f = wsum > 1e-6f ? starveDeaths * dt / wsum : 0.0f;
+    c.C = std::max(c.C + births - grow - dieC - f * FAMINE_W_CHILD * c.C, 0.0f);
+    c.M = std::max(c.M + BOY_SHARE * grow - ageM - dieM - f * FAMINE_W_ADULT * c.M, 0.0f);
+    c.W = std::max(c.W + (1.0f - BOY_SHARE) * grow - ageW - dieW - f * FAMINE_W_ADULT * c.W,
+                   0.0f);
+    c.E = std::max(c.E + ageM + ageW - dieE - f * FAMINE_W_ELDER * c.E, 0.0f);
+}
+
+// A band on the road: no births, but famine still takes the weak first.
+inline void bandStarve(Cohorts& c, float deaths) {
+    float wsum = FAMINE_W_CHILD * c.C + FAMINE_W_ADULT * (c.M + c.W) + FAMINE_W_ELDER * c.E;
+    if (wsum <= 1e-6f) return;
+    float f = deaths / wsum;
+    c.C = std::max(c.C - f * FAMINE_W_CHILD * c.C, 0.0f);
+    c.M = std::max(c.M - f * FAMINE_W_ADULT * c.M, 0.0f);
+    c.W = std::max(c.W - f * FAMINE_W_ADULT * c.W, 0.0f);
+    c.E = std::max(c.E - f * FAMINE_W_ELDER * c.E, 0.0f);
+}
 
 // The season-interpolated site temperature from the cached profile.
 inline float cachedSeasonT(const Settlement& s, double t) {
@@ -647,7 +740,8 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     if (K <= 0) { s.t = now; s.nextUpdate = now + 3650; return false; }
     float herdCap = s.pasture * FORAGE_KM2 * HERD_PASTURE_K / SUSTAIN_R *
                     (0.3f + 0.7f * ctx.husbExp);
-    float P = s.P, R = s.R, S = s.S;
+    Cohorts pop = s.pop;
+    float P = pop.total(), R = s.R, S = s.S;
     float granaries = s.granaries, buildWork = s.buildWork;
     float fillLo = s.fillLo, fillHi = s.fillHi, granNeed = s.granNeedYrs;
     float starved = s.starvedYr;
@@ -679,7 +773,8 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
         float act = hstep >= 1.0f
                         ? 1.0f
                         : (float)(daylight::activeDays(lon, a, a + hstep, wh) / hstep);
-        P = std::max(P + dP * hstep, 0.0f);
+        stepCohorts(pop, phiNow, dStarve, hstep);
+        P = pop.total();
         R = std::clamp(R + dR * hstep, 0.0f, 1.0f);
         float cap = capDays * std::max(P, 1.0f);
         S = std::clamp(S + dS * hstep * act, 0.0f, cap);
@@ -724,6 +819,7 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     }
     bool changed = std::fabs(P - s.P) > 0.5f || std::fabs(R - s.R) > 0.002f ||
                    granaries != s.granaries;
+    s.pop = pop;
     s.P = P;
     s.R = R;
     s.S = S;

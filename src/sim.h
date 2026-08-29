@@ -279,7 +279,8 @@ inline void integrateBand(population::Band& b, float flowBase, double span, bool
         double a = startT + k * (double)dt;
         float act =
             dt >= 1.0f ? 1.0f : (float)(daylight::activeDays(lon, a, a + dt, wh) / dt);
-        b.P = std::max(b.P - STARVE_MAX * b.P * excl * shortfall * dt, 0.0f);
+        bandStarve(b.pop, STARVE_MAX * b.P * excl * shortfall * dt);
+        b.P = b.pop.total();
         b.S = std::clamp(b.S + (H - b.P) * dt * act, 0.0f, CAP_DAYS_BAND * std::max(b.P, 1.0f));
     }
 }
@@ -287,10 +288,15 @@ inline void integrateBand(population::Band& b, float flowBase, double span, bool
 // What a group can bring to a fight: people, armed by their bows. Archery
 // is dual-use, so the bow-making labour is a real choice between hunting
 // better and being harder to rob.
-inline float fightStrength(float P, float bows, float archExp) {
+// People weighted by who they are, then armed by their bows. The rest of
+// a settlement's people are why it is harder to rob than a raiding party
+// of the same headcount is to beat -- so there is no separate defender
+// bonus any more; the advantage is the population itself.
+inline float fightStrength(const population::Cohorts& c, float bows, float archExp) {
     using namespace population;
-    float cover = bowCoverage(bows, P);
-    return P * (FIGHT_UNARMED + (1.0f - FIGHT_UNARMED) * cover * archExp);
+    float able = cohortStrength(c);
+    float cover = bowCoverage(bows, std::max(c.M, 1.0f)); // bows are carried by the men
+    return able * (FIGHT_UNARMED + (1.0f - FIGHT_UNARMED) * cover * archExp);
 }
 
 // The raid: reached them, now settle it. Heavily chanced -- a party twice
@@ -303,15 +309,23 @@ inline void resolveRaid(population::Field& pf, technology::WorldState& ws,
     Settlement& t = pf.settlements[ti];
     float aExp = technology::expertise(b.tech[TECH_ARCHERY], now);
     float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
-    float A = fightStrength(b.P, b.bows, aExp);
-    float D = fightStrength(t.P, t.bows, dExp) * DEFENDER_EDGE;
+    float A = fightStrength(b.pop, b.bows, aExp) * RAID_INITIATIVE;
+    float D = fightStrength(t.pop, t.bows, dExp);
     double pa = std::pow(std::max(A, 1e-3f), RAID_ODDS_POWER);
     double pd = std::pow(std::max(D, 1e-3f), RAID_ODDS_POWER);
     bool won = technology::urand(ws.rng) < pa / (pa + pd);
     float lossA = won ? RAID_LOSS_WINNER : RAID_LOSS_LOSER;
     float lossD = won ? RAID_LOSS_LOSER : RAID_LOSS_WINNER;
-    b.P = std::max(b.P * (1.0f - lossA), 0.0f);
-    t.P = std::max(t.P * (1.0f - lossD), 0.0f);
+    // The men are the ones in the fight; a few of the rest are caught up
+    // in it. A settlement that loses its men is crippled for a generation,
+    // and the flows above are what let that scar heal slowly.
+    b.pop.M *= 1.0f - lossA;
+    b.P = b.pop.total();
+    t.pop.M *= 1.0f - lossD;
+    t.pop.C *= 1.0f - lossD * 0.25f;
+    t.pop.W *= 1.0f - lossD * 0.25f;
+    t.pop.E *= 1.0f - lossD * 0.25f;
+    t.P = t.pop.total();
     b.bows *= 1.0f - lossA;
     t.bows *= 1.0f - lossD;
     if (won) {
@@ -331,7 +345,7 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
                             const hydrology::Result& hy, const atmosphere::Climatology& clim,
                             const population::Band& b, int cell, double now) {
     using namespace population;
-    Settlement s{cell, 0, false, b.P, cellCondition(pf, cell, now), now, now};
+    Settlement s{cell, 0, false, b.pop, b.P, cellCondition(pf, cell, now), now, now};
     s.id = pf.nextSettlementId++;
     s.founded = now;
     pf.scars.erase(cell); // the land's condition is live state again
@@ -391,7 +405,8 @@ inline bool mergeBand(population::Field& pf, technology::WorldState& ws,
     }
     if (ti < 0) return false;
     Settlement& t = pf.settlements[ti];
-    t.P += b.P;
+    t.pop.add(b.pop);
+    t.P = t.pop.total();
     t.bows += b.bows;
     t.S = std::min(t.S + b.S, CAP_DAYS_SETTLED * t.P);
     for (int tc = 0; tc < NTECH; tc++) {
@@ -466,7 +481,8 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
             b.targetCell = pf.settlements[hi].cell;
             if (distKm(pos, cellCentre(b.targetCell)) < 20.0f) {
                 Settlement& h = pf.settlements[hi];
-                h.P += b.P;
+                h.pop.add(b.pop); // the survivors, back among their people
+                h.P = h.pop.total();
                 h.bows += b.bows;
                 h.herd += b.lootHerd;
                 h.S = std::min(h.S + b.S + b.loot, storageCapDays(h.P, h.granaries) * h.P);
@@ -576,17 +592,19 @@ inline int raidTarget(const population::Field& pf, int si, double now, float str
         const Settlement& t = pf.settlements[j];
         if (t.leaving || t.P < BAND_MIN_P) continue;
         float prize = t.S * LOOT_STORE_SHARE + t.herd * LOOT_HERD_SHARE * LOOT_CARRY_DAYS;
-        if (prize <= 0) continue;
+        if (prize < RAID_WORTH_IT) continue; // not worth the walk
         float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
-        float def = fightStrength(t.P, t.bows, dExp) * DEFENDER_EDGE;
+        float def = fightStrength(t.pop, t.bows, dExp);
         float score = prize / std::max(def, 1.0f);
         if (score > bestScore) { bestScore = score; best = j; }
     }
-    // Not worth it if they are much stronger than the party we could send.
+    // You rob people you can beat. With non-combatants counted at their
+    // real weight, a settlement defends far better than its headcount
+    // suggests, so this rejects most neighbours outright.
     if (best >= 0) {
         const Settlement& t = pf.settlements[best];
         float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
-        if (fightStrength(t.P, t.bows, dExp) * DEFENDER_EDGE > 2.0f * strength) return -1;
+        if (fightStrength(t.pop, t.bows, dExp) > strength) return -1;
     }
     return best;
 }
@@ -596,10 +614,11 @@ inline int raidTarget(const population::Field& pf, int si, double now, float str
 inline bool maybeRaid(population::Field& pf, technology::WorldState& ws, int si, double now) {
     using namespace population;
     Settlement& s = pf.settlements[si];
-    if (s.P < RAID_MIN_P / RAID_SHARE) return false;
+    if (s.pop.M * RAID_MEN_SHARE < RAID_MIN_P) return false;
     float archExp = technology::expertise(s.tech[TECH_ARCHERY], now);
-    float party = s.P * RAID_SHARE;
-    float strength = fightStrength(party, s.bows * RAID_SHARE, archExp);
+    Cohorts party{};
+    party.M = s.pop.M * RAID_MEN_SHARE; // the men go; the rest stay
+    float strength = fightStrength(party, s.bows * RAID_MEN_SHARE, archExp) * RAID_INITIATIVE;
     int ti = raidTarget(pf, si, now, strength);
     if (ti < 0) return false;
     terrain::V3 home = cellCentre(s.cell);
@@ -611,14 +630,16 @@ inline bool maybeRaid(population::Field& pf, technology::WorldState& ws, int si,
     b.px = home.x;
     b.py = home.y;
     b.pz = home.z;
-    b.P = party;
-    b.bows = s.bows * RAID_SHARE;
-    b.S = std::min(s.S * RAID_SHARE, CAP_DAYS_BAND * b.P);
+    b.pop = party;
+    b.P = party.total();
+    b.bows = s.bows * RAID_MEN_SHARE;
+    b.S = std::min(s.S * RAID_MEN_SHARE, CAP_DAYS_BAND * b.P);
     b.targetCell = pf.settlements[ti].cell;
     b.t = now;
     b.nextUpdate = now + BAND_STEP_DAYS;
     for (int t = 0; t < NTECH; t++) b.tech[t] = s.tech[t];
-    s.P -= b.P;
+    s.pop.M -= party.M;
+    s.P = s.pop.total();
     s.S -= b.S;
     s.bows -= b.bows;
     pf.bands.push_back(b);
@@ -703,11 +724,9 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
         // Circumscription: hemmed in, hungry, and nowhere to go. This is
         // where raiding comes from -- but only once it is clear there is no
         // land to be had, not on the first disappointing look around.
-        if (wasStuck && maybeRaid(pf, ws, si, now)) {
-            s.lookAgainDays = SPLIT_AFTER_DAYS;
-            return;
-        }
+        bool raided = wasStuck && maybeRaid(pf, ws, si, now);
         s.lookAgainDays = std::min(s.lookAgainDays * 2.0, LOOK_BACKOFF_MAX);
+        (void)raided;
         return;
     }
 
@@ -732,7 +751,9 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     b.px = home.x;
     b.py = home.y;
     b.pz = home.z;
-    b.P = wholeGroup ? s.P : s.P * SPLIT_SHARE;
+    b.pop = s.pop;
+    if (!wholeGroup) b.pop.scale(SPLIT_SHARE);
+    b.P = b.pop.total();
     b.S = std::min((wholeGroup ? s.S : s.S * SPLIT_SHARE), CAP_DAYS_BAND * b.P);
     b.bows = wholeGroup ? s.bows : s.bows * SPLIT_SHARE; // people take their bows
     b.targetCell = tgt;
@@ -756,7 +777,8 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
         for (int t = 0; t < NTECH; t++) s.nextTech[t] = 1e18;
         logAt("settlement moves on", si, home, b.P, now);
     } else {
-        s.P -= b.P;
+        s.pop.sub(b.pop);
+        s.P = s.pop.total();
         s.S -= b.S;
         s.bows -= b.bows;
         logAt("split from settlement", si, home, b.P, now);
@@ -925,6 +947,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
             stepBand(pf, ws, hy, clim, i, now);
             changed = true;
         }
+    pf.peakBands = std::max(pf.peakBands, pf.bands.size());
     if (pf.gameT < now - 1e-9) gameTick(pf, now);
     sweepDeparted(pf, now); // settlements that left are erased, not tombstoned
     return changed;

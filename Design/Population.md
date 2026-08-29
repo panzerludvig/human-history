@@ -36,6 +36,22 @@ P can overshoot because R gives way slowly, then falls back as R runs down; depe
 
 ---
 
+## Demography
+
+Decided 2026-08-29. People are four stocks, not a headcount: **children, adult men, adult women, elderly**. Every share is emergent — nothing anywhere enforces a ratio.
+
+- **Births come from the women**, at a replacement rate of ~0.10 per woman per year, multiplied by food: at full surplus fertility is ~2.35x replacement, which is what population growth now *is*. There is no growth term applied to a headcount any more.
+- **Children take fifteen years** to reach adulthood and about a third never do (3.6%/yr child mortality) — the single biggest brake on growth, and a lever for later technologies to move.
+- **Adults** live a 45-year working life at 1%/yr mortality before ageing into the elderly stock.
+- **The elderly die quickly** (25%/yr, a few years past sixty), which is what keeps them scarce without any cap.
+- **Famine takes the weak first**: deaths are handed out by vulnerability (children 1.5, adults 1.0, elderly 2.0), so a hungry settlement loses its next generation before it loses its workers.
+
+Measured in a test world: at year 50, mid-expansion, 42% children / 27% men / 26% women / 4% elderly — young, as a fast-growing population should be. By year 1000, near equilibrium, 34% / 31% / 30% / 5%. The child share falling as growth slows is the structure responding to circumstance, which is the point of tracking it.
+
+`P` remains as the sum of the four, kept in step, so everything that only cares about headcount is unchanged. **Known deviation**: children are unsexed, so an overall "51% women" cannot be stated; among adults the split is ~51% male, since boys are 51.2% of births and adult mortality is currently equal. Differential adult mortality would tip it, and is a one-constant change if wanted.
+
+Deferred: children eating less than adults (the yield table is calibrated in whole people), and the demographic effect of anything other than famine and raiding.
+
 ## Time
 
 No ticks. Each settlement integrates its own P and R forward at scheduled re-evaluations, choosing the next moment as "when will my state have drifted ~5%" (clamped 1 month–5 years). A settlement at equilibrium wakes rarely; one in collapse wakes often. This is the first real client of [[Design/Event-Driven]].
