@@ -72,6 +72,25 @@ inline terrain::V3 moveToward(terrain::V3 p, terrain::V3 q, float km) {
     return norm3(p * (std::sin((1 - t) * ang) / sa) + q * (std::sin(t * ang) / sa));
 }
 
+// Record something worth telling. Counts stay exact; the stored entries
+// stop at a cap so a thousand-year step cannot eat memory.
+inline void note(population::Field& pf, int kind, double t, uint32_t sid, uint32_t sid2,
+                 uint32_t bandId, float amount, const char* text) {
+    using namespace population;
+    if (kind < 0 || kind >= EV_KINDS) return;
+    pf.eventCount[kind]++;
+    if (pf.eventCount[kind] > EVENTS_KEPT_PER_KIND) return;
+    Event e;
+    e.kind = (uint8_t)kind;
+    e.t = t;
+    e.sid = sid;
+    e.sid2 = sid2;
+    e.bandId = bandId;
+    e.amount = amount;
+    for (int i = 0; i < 95 && text[i]; i++) e.text[i] = text[i];
+    pf.events.push_back(e);
+}
+
 inline void logAt(const char* what, int id, terrain::V3 n, float P, double day) {
     float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
     float lon = std::atan2(n.y, n.x) * 180.0f / 3.14159265f;
@@ -181,6 +200,18 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
     return -1;
 }
 
+// A granary finished during the last integration: advance() counts them,
+// the simulation is what tells anyone about it.
+inline void reportGranaries(population::Field& pf, population::Settlement& s, double now) {
+    while (s.builtGranaries > 0) {
+        s.builtGranaries--;
+        char txt[96];
+        snprintf(txt, sizeof txt, "%s finished a granary (%d standing)", s.name,
+                 (int)s.granaries);
+        note(pf, population::EV_GRANARY, now, s.id, 0, 0, s.granaries, txt);
+    }
+}
+
 // Advance every regional game pool to `now` (population.h constants). The
 // draw is what the region's settlements currently eat from the game side of
 // their diet; depletion is proportional to actual kills, recovery is slow,
@@ -214,7 +245,11 @@ inline void gameTick(population::Field& pf, double now) {
         float g = pf.gameG[r];
         float regen = g >= GAME_FLOOR ? (1.0f - g) / (GAME_REGEN_YEARS * 365.0f) : 0.0f;
         float depl = draw[r] / pf.gameDmax[r] / (GAME_DEPLETE_YEARS * 365.0f);
+        float before = g;
         pf.gameG[r] = std::clamp(g + (regen - depl) * (float)dt, 0.0f, 1.0f);
+        if (before >= GAME_FLOOR && pf.gameG[r] < GAME_FLOOR)
+            note(pf, EV_GAME_GONE, now, 0, 0, 0, 0,
+                 "a regional herd was hunted past saving");
     }
     for (Settlement& s : pf.settlements)
         if (s.kGame > 0) s.gameNow = pf.gameG[s.gRegion];
@@ -342,6 +377,16 @@ inline void resolveRaid(population::Field& pf, technology::WorldState& ws,
     // makes a people dangerous, not merely poorer.
     b.aff.fight += (1.0f - b.aff.fight) * FIGHT_LEARN;
     t.aff.fight += (1.0f - t.aff.fight) * FIGHT_LEARN;
+    {
+        char txt[96];
+        if (won)
+            snprintf(txt, sizeof txt, "%s raided %s: %d rations, %d livestock taken", b.name,
+                     t.name, (int)b.loot, (int)b.lootHerd);
+        else
+            snprintf(txt, sizeof txt, "%s beat off a raid by %s", t.name, b.name);
+        note(pf, won ? population::EV_RAID_HIT : population::EV_RAID_HELD, now, t.id, b.homeId,
+             b.id, won ? b.loot : 0.0f, txt);
+    }
     b.returning = true;
     fprintf(stderr, "raid: %s settlement %u, %d rations %d livestock, day %.0f\n",
             won ? "sacked" : "beaten off by", t.id, (int)b.loot, (int)b.lootHerd, now);
@@ -403,6 +448,14 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
         for (int j : pf.neighbours[idx]) technology::redraw(pf, j, ws, t, now);
         technology::scheduleInvention(pf, ws, t, now);
     }
+    {
+        char txt[96];
+        if (b.colonists) snprintf(txt, sizeof txt, "%s was founded by colonists from %s", s.name,
+                                  b.name);
+        else snprintf(txt, sizeof txt, "%s settled again after their journey", s.name);
+        note(pf, b.colonists ? population::EV_FOUNDED : population::EV_SETTLED, now, s.id, 0, 0,
+             b.P, txt);
+    }
     logAt("founded settlement", idx, n, b.P, now);
 }
 
@@ -442,6 +495,11 @@ inline bool mergeBand(population::Field& pf, technology::WorldState& ws,
             for (int j : pf.neighbours[ti]) technology::redraw(pf, j, ws, tc, now);
             technology::scheduleInvention(pf, ws, tc, now);
         }
+    }
+    {
+        char txt[96];
+        snprintf(txt, sizeof txt, "%s gave up the road and joined %s", b.name, t.name);
+        note(pf, population::EV_MERGED, now, t.id, 0, b.id, b.P, txt);
     }
     logAt("merged into settlement", ti, n, b.P, now);
     return true;
@@ -503,6 +561,12 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
                 h.bows += b.bows;
                 h.herd += b.lootHerd;
                 h.S = std::min(h.S + b.S + b.loot, storageCapDays(h.P, h.granaries) * h.P);
+                {
+                    char txt[96];
+                    snprintf(txt, sizeof txt, "%s raiders came home with %d rations, %d livestock",
+                             b.name, (int)b.loot, (int)b.lootHerd);
+                    note(pf, population::EV_RAID_HOME, now, h.id, 0, 0, b.loot, txt);
+                }
                 logAt("raiders home to settlement", hi, pos, b.P, now);
                 pf.bands.erase(pf.bands.begin() + bi);
                 return false;
@@ -664,6 +728,12 @@ inline bool maybeRaid(population::Field& pf, technology::WorldState& ws, int si,
     s.S -= b.S;
     s.bows -= b.bows;
     pf.bands.push_back(b);
+    {
+        char txt[96];
+        snprintf(txt, sizeof txt, "%s sent %d warriors against %s", s.name, (int)b.P,
+                 pf.settlements[ti].name);
+        note(pf, EV_RAID_LAUNCH, now, s.id, pf.settlements[ti].id, b.id, b.P, txt);
+    }
     logAt("raiding party leaves settlement", si, home, b.P, now);
     return true;
 }
@@ -803,12 +873,22 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
         s.herd = 0;
         s.nextUpdate = 1e18;
         for (int t = 0; t < NTECH; t++) s.nextTech[t] = 1e18;
+        {
+            char txt[96];
+            snprintf(txt, sizeof txt, "%s abandoned their home and set out", s.name);
+            note(pf, EV_RELOCATE, now, s.id, 0, b.id, b.P, txt);
+        }
         logAt("settlement moves on", si, home, b.P, now);
     } else {
         s.pop.sub(b.pop);
         s.P = s.pop.total();
         s.S -= b.S;
         s.bows -= b.bows;
+        {
+            char txt[96];
+            snprintf(txt, sizeof txt, "%d colonists left %s", (int)b.P, s.name);
+            note(pf, EV_SPLIT, now, s.id, 0, b.id, b.P, txt);
+        }
         logAt("split from settlement", si, home, b.P, now);
     }
     pf.bands.push_back(b);
@@ -906,6 +986,12 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
             int wi = technology::pickInventor(pf, ws, ev.tech, t);
             if (wi >= 0) {
                 technology::startPractising(pf, wi, ws, ev.tech, t);
+                {
+                    char txt[96];
+                    snprintf(txt, sizeof txt, "%s invented %s!", pf.settlements[wi].name,
+                             technology::techName(ev.tech));
+                    note(pf, EV_INVENTED, t, pf.settlements[wi].id, 0, 0, (float)ev.tech, txt);
+                }
                 fprintf(stderr, "tech: %s invented at settlement %d, day %.0f\n",
                         technology::techName(ev.tech), wi, t);
                 changed = true;
@@ -916,6 +1002,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
             if (t != s.nextUpdate) continue;
             changed |= population::advance(s, technology::effectiveK(s, t),
                                            seasonCtx(s, hy, clim, t), t);
+            reportGranaries(pf, s, t);
             size_t bandsBefore = pf.bands.size();
             // Decide first: leaving or growing scarce can pull the next wake
             // earlier, and the queue entry must carry the final time.
@@ -936,6 +1023,12 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
                         technology::redraw(pf, j, ws, ev.tech, t);
             } else {
                 technology::startPractising(pf, ev.idx, ws, ev.tech, t);
+                {
+                    char txt[96];
+                    snprintf(txt, sizeof txt, "%s took up %s", s.name,
+                             technology::techName(ev.tech));
+                    note(pf, EV_ADOPTED, t, s.id, 0, 0, (float)ev.tech, txt);
+                }
                 fprintf(stderr, "tech: settlement %d starts %s, day %.0f\n", ev.idx,
                         technology::techName(ev.tech), t);
             }
@@ -967,6 +1060,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
         if (s.t < now - 1e-9) {
             changed |= population::advance(s, technology::effectiveK(s, now),
                                            seasonCtx(s, hy, clim, now), now);
+            reportGranaries(pf, s, now);
             maybeRelocateOrSplit(pf, ws, hy, clim, i, now);
         }
     }

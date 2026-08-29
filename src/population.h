@@ -248,6 +248,43 @@ constexpr float FIGHT_FORGET_YEARS = 200.0f; // peace makes people soft
 
 inline float affinityBonus(float a) { return 1.0f + AFFINITY_GAIN * std::clamp(a, 0.0f, 1.0f); }
 
+// What happened while time was running (Technical/Globe Viewer.md). The
+// simulation records notable moments as it goes; the news feed groups them
+// by kind, and every one of them can be traced back to whoever it happened
+// to. Cleared at the start of each time step, so the feed always answers
+// "what happened just now".
+enum : int {
+    EV_RELOCATE = 0, // a whole people picked up and left
+    EV_SPLIT,        // colonists set out
+    EV_SETTLED,      // movers made a home again
+    EV_FOUNDED,      // colonists founded somewhere new
+    EV_MERGED,       // a band gave up and joined someone
+    EV_PERISHED,     // a band died on the road
+    EV_RAID_LAUNCH,
+    EV_RAID_HIT,   // someone was robbed
+    EV_RAID_HELD,  // an attack was beaten off
+    EV_RAID_HOME,  // raiders came home
+    EV_INVENTED,   // a technology, first anywhere
+    EV_ADOPTED,    // a settlement took one up
+    EV_GRANARY,    // a granary finished
+    EV_GAME_GONE,  // a regional herd hunted to nothing
+    EV_KINDS
+};
+
+struct Event {
+    uint8_t kind = 0;
+    double t = 0;
+    uint32_t sid = 0;    // whoever it happened to
+    uint32_t sid2 = 0;   // the other party, if there was one
+    uint32_t bandId = 0; // the band involved, if any
+    float amount = 0;    // people, rations -- whatever the kind means
+    char text[96] = {};
+};
+
+// A step can cover a thousand years; keep the counts exact but stop
+// storing individual entries past this, so memory stays bounded.
+constexpr int EVENTS_KEPT_PER_KIND = 250;
+
 // The technology table (Design/Technology.md): per-settlement state for each
 // technology. Farming's original fields generalized when husbandry arrived.
 enum : int {
@@ -336,6 +373,7 @@ struct Settlement {
     uint16_t culture = 0;
     char name[16] = {};
     Affinity aff;
+    uint8_t builtGranaries = 0; // finished this step; the sim reports and clears
     // Technology state (see technology.h / Design/Technology.md):
     TechState tech[NTECH];
     double nextTech[NTECH] = {1e18, 1e18, 1e18, 1e18}; // next draw or resample moment
@@ -399,6 +437,8 @@ struct Field {
     std::vector<float> kFoodPMap, kWaterMap, sFarmMap, pastureMap, buildMatMap, kGameMap,
         kSmallMap;
     std::vector<Culture> cultures;
+    std::vector<Event> events;      // this step's news
+    int eventCount[EV_KINDS] = {};  // exact totals, even past what is kept
     // Regional wild game pools, on the climate grid (atmosphere::W x H):
     std::vector<float> gameG;    // health 0..1 per region
     std::vector<float> gameDmax; // sustainable draw per region, people
@@ -848,7 +888,11 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
         // work total itself never changes.
         if (buildWork > 0 && ctx.granExp > 0 && fill > HOARD_FILL) {
             buildWork -= P * GRANARY_LABOUR_SHARE * ctx.granExp * s.buildMat * hstep;
-            if (buildWork <= 0) { granaries += 1; buildWork = 0; }
+            if (buildWork <= 0) {
+                granaries += 1;
+                buildWork = 0;
+                if (s.builtGranaries < 250) s.builtGranaries++;
+            }
         }
         // Bows: one bowyer finishes one bow in BOW_WORK_DAYS however large
         // the settlement, so a crowd only carves more of them at once. They

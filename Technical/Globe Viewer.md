@@ -97,6 +97,14 @@ Design in [[Design/Population]]. `population::Field` carries per-cell `kGameMap`
 
 `src/daylight.h` (design in [[Design/Population]]): declination and subsolar direction (also used for the renderer's `uSun` — one definition, no drift), `hoursAbove` (sun above a given altitude: −0.83° = the work day, −6° = light to travel by), `workHours` (daylight up to the 17-h waking cap plus a need-bought ×0.35 firelight extension), and `activeDays` (activity inside a sub-day span for a window centered on local solar noon; spans ≥ 1 day pass through unchanged). Settlements scale their gather cap by work hours per substep; bands scale foraging and move only during travel hours. Hour-scale time steps show stores flat and bands stationary at night.
 
+## The news feed
+
+Down the right-hand side in game (`IBNews`, custom-painted like the selection panels). The simulation records notable moments as `population::Event` while it runs -- who it happened to, the other party, the band involved, an amount, and a rendered line of text -- and the feed shows what happened during the step just taken. Cleared at the start of every `advanceDays`, so it always answers "what happened just now" rather than accumulating.
+
+Three levels, each a click deep: **kinds** ("706 tribes abandoned their homes", "18 raids were launched", "1 settlement took up a technology"), **entries** of one kind ("Neichouia was founded by colonists from Heikfouia"), and one **entry in detail** -- year, who, the other party, how many people, whether the band is still out there, and a **Go to** which puts the camera on it. Go to follows the band if it is still travelling, and otherwise the settlement its people ended up in, so an event stays traceable after the fact. The title line doubles as the way back up.
+
+Counts are exact; stored entries stop at 250 per kind (`EVENTS_KEPT_PER_KIND`), because a thousand-year step can produce tens of thousands of them. Events are emitted from `sim::note` at the points that already logged to stderr, plus granaries (which `population::advance` flags on the settlement for the simulation to report, since it has no access to the field) and regional herd collapse.
+
 ## Tooltip
 
 In game, a label follows the cursor with what is under it: elevation, mean temperature, the terrain mixture ("forest 68%, grassland 22%, rock 10%"; "Sea, 354 m deep"; "Lake, 20 m deep"), and the cell's carrying capacity. It is computed on the CPU from the terrain mirror (`terrain.h`) at the current level of detail, using the same lake rule as the shader, so it doubles as a live check that the CPU and GPU terrain agree.

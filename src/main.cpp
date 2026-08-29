@@ -722,6 +722,11 @@ struct App {
     HBRUSH bgBrush = nullptr;
     HWND panelDrag = nullptr; // panel being dragged, with the grab offset
     POINT panelDragOff{};
+    HWND news = nullptr;   // the feed down the right-hand side
+    int newsLevel = 0;     // 0 kinds, 1 the entries of one kind, 2 one entry
+    int newsKind = 0;      // which kind is open
+    int newsPick = 0;      // which entry is open
+    int newsScroll = 0;
     std::vector<std::pair<int, HWND>> controls;
 };
 static App app;
@@ -1070,6 +1075,7 @@ static void setScreen(Screen s) {
     if (s == Screen::NewWorldMenu) fillNewWorldFields(app.world);
     if (s == Screen::PauseMenu) SetWindowTextA(control(ID_SAVE_NAME), app.world.name.c_str());
     layoutControls();
+    if (app.news) ShowWindow(app.news, s == Screen::InGame ? SW_SHOW : SW_HIDE);
     if (s == Screen::InGame) { updateDateLabel(); SetFocus(app.hwnd); }
     if (s == Screen::PauseMenu) {
         HWND edit = control(ID_SAVE_NAME);
@@ -1671,6 +1677,212 @@ static Panel* panelFor(HWND h) {
     return nullptr;
 }
 
+// ------------------------------------------------ the news feed
+// What happened while the clock was running, grouped by kind: click a
+// group to see its entries, an entry to see the detail, and "Go to" to
+// put the camera on whoever it happened to.
+
+constexpr int NEWS_W = 320, NEWS_LINE = 20, NEWS_TOP = 40;
+static const char* NEWS_LABEL[population::EV_KINDS][2] = {
+    {"tribe abandoned its home", "tribes abandoned their homes"},
+    {"band of colonists set out", "bands of colonists set out"},
+    {"tribe settled again", "tribes settled again"},
+    {"new settlement founded", "new settlements founded"},
+    {"band gave up and joined another", "bands gave up and joined others"},
+    {"band perished on the road", "bands perished on the road"},
+    {"raid was launched", "raids were launched"},
+    {"settlement was raided", "settlements were raided"},
+    {"raid was beaten off", "raids were beaten off"},
+    {"raiding party came home", "raiding parties came home"},
+    {"technology was invented!", "technologies were invented!"},
+    {"settlement took up a technology", "settlements took up technologies"},
+    {"granary was built", "granaries were built"},
+    {"regional herd was hunted out", "regional herds were hunted out"},
+};
+
+// The entries of one kind, in order.
+static std::vector<const population::Event*> newsEntries(int kind) {
+    std::vector<const population::Event*> v;
+    for (const population::Event& e : app.world.pop.events)
+        if (e.kind == kind) v.push_back(&e);
+    return v;
+}
+
+static void goToEvent(const population::Event& e) {
+    // Follow the band if it is still out there; otherwise the settlement
+    // it belongs to, which is where its people ended up.
+    terrain::V3 at{};
+    bool found = false;
+    if (e.bandId) {
+        for (const population::Band& b : app.world.pop.bands)
+            if (b.id == e.bandId) { at = {b.px, b.py, b.pz}; found = true; }
+    }
+    if (!found) {
+        int i = settlementIndexById(e.sid);
+        if (i < 0) i = settlementIndexById(e.sid2);
+        if (i >= 0) { at = sim::cellCentre(app.world.pop.settlements[i].cell); found = true; }
+    }
+    if (!found) return;
+    app.cam.lat = std::asin(std::clamp(at.z, -1.0f, 1.0f));
+    app.cam.lon = std::atan2(at.y, at.x);
+    if (app.cam.altitude > 900.0 / EARTH_RADIUS_KM) app.cam.altitude = 900.0 / EARTH_RADIUS_KM;
+    app.cam.clampAltitude();
+}
+
+static void paintNews(HWND h) {
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(h, &ps);
+    RECT rc;
+    GetClientRect(h, &rc);
+    FillRect(dc, &rc, app.bgBrush);
+    SetBkMode(dc, TRANSPARENT);
+    SelectObject(dc, app.panelBold);
+    SetTextColor(dc, RGB(235, 235, 240));
+    const char* title = app.newsLevel == 0 ? "What happened" : "< back";
+    TextOutA(dc, 12, 10, title, (int)strlen(title));
+    SelectObject(dc, app.panelFont);
+    int y = NEWS_TOP;
+    int maxLines = (rc.bottom - NEWS_TOP) / NEWS_LINE - 1;
+    if (app.newsLevel == 0) {
+        bool any = false;
+        for (int k = 0; k < population::EV_KINDS; k++) {
+            int n = app.world.pop.eventCount[k];
+            if (!n) continue;
+            any = true;
+            char line[128];
+            snprintf(line, sizeof line, "%d %s", n, NEWS_LABEL[k][n == 1 ? 0 : 1]);
+            SetTextColor(dc, RGB(255, 215, 130));
+            TextOutA(dc, 12, y, line, (int)strlen(line));
+            y += NEWS_LINE;
+        }
+        if (!any) {
+            SetTextColor(dc, RGB(140, 140, 155));
+            const char* q = "Nothing of note.";
+            TextOutA(dc, 12, y, q, (int)strlen(q));
+        }
+    } else if (app.newsLevel == 1) {
+        std::vector<const population::Event*> v = newsEntries(app.newsKind);
+        for (int i = app.newsScroll; i < (int)v.size() && y < rc.bottom - NEWS_LINE; i++) {
+            SetTextColor(dc, RGB(255, 215, 130));
+            TextOutA(dc, 12, y, v[i]->text, (int)strlen(v[i]->text));
+            y += NEWS_LINE;
+        }
+        int shown = (int)v.size() - app.newsScroll;
+        if (shown > maxLines || app.world.pop.eventCount[app.newsKind] > (int)v.size()) {
+            SetTextColor(dc, RGB(140, 140, 155));
+            char more[96];
+            snprintf(more, sizeof more, "(%d of %d; scroll with the wheel)",
+                     std::min(shown, maxLines), app.world.pop.eventCount[app.newsKind]);
+            TextOutA(dc, 12, rc.bottom - NEWS_LINE, more, (int)strlen(more));
+        }
+    } else {
+        std::vector<const population::Event*> v = newsEntries(app.newsKind);
+        if (app.newsPick < (int)v.size()) {
+            const population::Event& e = *v[app.newsPick];
+            char line[160];
+            int yr = (int)(e.t / 365.0) + 1;
+            snprintf(line, sizeof line, "Year %d", yr);
+            SetTextColor(dc, RGB(230, 230, 235));
+            TextOutA(dc, 12, y, line, (int)strlen(line));
+            y += NEWS_LINE;
+            // The text is already the human account; wrap it over two lines.
+            std::string t = e.text;
+            size_t cut = t.size() > 40 ? t.rfind(' ', 40) : std::string::npos;
+            if (cut == std::string::npos) cut = t.size();
+            std::string l1 = t.substr(0, cut), l2 = cut < t.size() ? t.substr(cut + 1) : "";
+            TextOutA(dc, 12, y, l1.c_str(), (int)l1.size());
+            y += NEWS_LINE;
+            if (l2.size()) { TextOutA(dc, 12, y, l2.c_str(), (int)l2.size()); y += NEWS_LINE; }
+            int si = settlementIndexById(e.sid), s2 = settlementIndexById(e.sid2);
+            if (si >= 0) {
+                snprintf(line, sizeof line, "Who: %s", app.world.pop.settlements[si].name);
+                TextOutA(dc, 12, y, line, (int)strlen(line));
+                y += NEWS_LINE;
+            }
+            if (s2 >= 0) {
+                snprintf(line, sizeof line, "Other party: %s", app.world.pop.settlements[s2].name);
+                TextOutA(dc, 12, y, line, (int)strlen(line));
+                y += NEWS_LINE;
+            }
+            if (e.amount > 0) {
+                snprintf(line, sizeof line, "How many: %d", (int)e.amount);
+                TextOutA(dc, 12, y, line, (int)strlen(line));
+                y += NEWS_LINE;
+            }
+            bool alive = false;
+            for (const population::Band& b : app.world.pop.bands)
+                if (b.id == e.bandId) alive = true;
+            snprintf(line, sizeof line, "%s", alive ? "The band is still out there."
+                                                    : "They are back among their people.");
+            SetTextColor(dc, RGB(140, 140, 155));
+            TextOutA(dc, 12, y, line, (int)strlen(line));
+            y += NEWS_LINE + 6;
+            SetTextColor(dc, RGB(255, 215, 130));
+            const char* go = "[ Go to ]";
+            TextOutA(dc, 12, y, go, (int)strlen(go));
+        }
+    }
+    EndPaint(h, &ps);
+}
+
+static LRESULT CALLBACK newsProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_PAINT:
+        paintNews(h);
+        return 0;
+    case WM_MOUSEWHEEL:
+        if (app.newsLevel == 1) {
+            app.newsScroll = std::max(0, app.newsScroll - GET_WHEEL_DELTA_WPARAM(wp) / 120);
+            InvalidateRect(h, nullptr, TRUE);
+        }
+        return 0;
+    case WM_LBUTTONDOWN: {
+        int my = GET_Y_LPARAM(lp);
+        if (my < NEWS_TOP) { // the title doubles as the way back
+            if (app.newsLevel > 0) app.newsLevel--;
+            app.newsScroll = 0;
+            InvalidateRect(h, nullptr, TRUE);
+            return 0;
+        }
+        int row = (my - NEWS_TOP) / NEWS_LINE;
+        if (app.newsLevel == 0) {
+            int seen = 0;
+            for (int k = 0; k < population::EV_KINDS; k++) {
+                if (!app.world.pop.eventCount[k]) continue;
+                if (seen == row) {
+                    app.newsKind = k;
+                    app.newsLevel = 1;
+                    app.newsScroll = 0;
+                    break;
+                }
+                seen++;
+            }
+        } else if (app.newsLevel == 1) {
+            std::vector<const population::Event*> v = newsEntries(app.newsKind);
+            int idx = app.newsScroll + row;
+            if (idx < (int)v.size()) {
+                app.newsPick = idx;
+                app.newsLevel = 2;
+            }
+        } else {
+            std::vector<const population::Event*> v = newsEntries(app.newsKind);
+            if (app.newsPick < (int)v.size()) goToEvent(*v[app.newsPick]);
+        }
+        InvalidateRect(h, nullptr, TRUE);
+        return 0;
+    }
+    }
+    return DefWindowProcA(h, msg, wp, lp);
+}
+
+static void refreshNews() {
+    if (!app.news) return;
+    app.newsLevel = 0;
+    app.newsScroll = 0;
+    ShowWindow(app.news, app.screen == Screen::InGame ? SW_SHOW : SW_HIDE);
+    InvalidateRect(app.news, nullptr, TRUE);
+}
+
 static void paintPanel(HWND h) {
     PAINTSTRUCT ps;
     HDC dc = BeginPaint(h, &ps);
@@ -1875,6 +2087,8 @@ static void updateDateLabel() {
 }
 
 static void advanceDays(double days) {
+    app.world.pop.events.clear();
+    for (int k = 0; k < population::EV_KINDS; k++) app.world.pop.eventCount[k] = 0;
     app.world.simTime += days;
     updateDateLabel();
     population::Field& pf = app.world.pop;
@@ -1882,6 +2096,7 @@ static void advanceDays(double days) {
     bool any = sim::simulate(pf, app.world.tech, app.world.hydro, app.world.clim, app.world.simTime);
     if (any && app.popTex) uploadPopulation();
     refreshPanels();
+    refreshNews();
 }
 
 static void applyDrag(int x, int y) {
@@ -1927,6 +2142,9 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         app.cam.clampAltitude();
         glViewport(0, 0, app.cam.width, app.cam.height);
         if (!app.controls.empty()) layoutControls();
+        if (app.news)
+            SetWindowPos(app.news, nullptr, app.cam.width - NEWS_W, 56, NEWS_W,
+                         app.cam.height - 76, SWP_NOZORDER);
         return 0;
     case WM_COMMAND:
         if (HIWORD(wp) == BN_CLICKED) onCommand(LOWORD(wp));
@@ -1999,6 +2217,14 @@ int main(int argc, char** argv) {
     wc.lpszClassName = "HumanHistory";
     RegisterClassA(&wc);
 
+    WNDCLASSA nc = {};
+    nc.lpfnWndProc = newsProc;
+    nc.hInstance = inst;
+    nc.hCursor = LoadCursorA(nullptr, IDC_ARROW);
+    nc.hbrBackground = CreateSolidBrush(RGB(8, 8, 16));
+    nc.lpszClassName = "IBNews";
+    RegisterClassA(&nc);
+
     WNDCLASSA pc = {};
     pc.lpfnWndProc = panelProc;
     pc.hInstance = inst;
@@ -2067,6 +2293,9 @@ int main(int argc, char** argv) {
     GLint uAwareCount = glGetUniformLocation(app.program, "uAwareCount");
 
     createControls();
+    app.news = CreateWindowA("IBNews", "", WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+                             app.cam.width - NEWS_W, 56, NEWS_W, app.cam.height - 76, app.hwnd,
+                             nullptr, inst, nullptr);
     app.cam.clampAltitude();
 
     // Testing shortcut:
