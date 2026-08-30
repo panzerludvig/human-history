@@ -1774,6 +1774,12 @@ static std::vector<const population::Event*> newsEntries(int kind) {
     return v;
 }
 
+static void openPanel(int kind, uint32_t sid, uint32_t bandId); // defined below
+
+// Take the camera to whoever an event happened to, and open their panel:
+// at any useful zoom several settlements sit within a few pixels of each
+// other, so moving the view alone leaves it to guesswork which one the
+// news was about.
 static void goToEvent(const population::Event& e) {
     // Follow the band if it is still out there; otherwise the settlement
     // it belongs to, which is where its people ended up.
@@ -1792,6 +1798,13 @@ static void goToEvent(const population::Event& e) {
         at = sim::cellCentre(e.cell);
         found = true;
     }
+    // Open the ones who are still there, so there is no doubt who is meant.
+    bool bandAlive = false;
+    for (const population::Band& b : app.world.pop.bands)
+        if (b.id == e.bandId) bandAlive = true;
+    if (bandAlive) openPanel(1, 0, e.bandId);
+    else if (settlementIndexById(e.sid) >= 0) openPanel(0, e.sid, 0);
+    else if (settlementIndexById(e.sid2) >= 0) openPanel(0, e.sid2, 0);
     if (!found) return;
     app.cam.lat = std::asin(std::clamp(at.z, -1.0f, 1.0f));
     app.cam.lon = std::atan2(at.y, at.x);
