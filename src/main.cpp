@@ -41,6 +41,7 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_TEXTURE2 0x84C2
 #define GL_TEXTURE3 0x84C3
 #define GL_TEXTURE4 0x84C4
+#define GL_TEXTURE5 0x84C5
 #define GL_RG32F 0x8230
 #define GL_RG 0x8227
 #define GL_CLAMP_TO_EDGE 0x812F
@@ -719,6 +720,8 @@ struct App {
     GLuint hydroTex = 0;
     GLuint plateTex = 0;
     GLuint popTex = 0;
+    GLuint bandTex = 0;
+    int bandRows = 0;
     GLuint climTex = 0;
     GLuint clim2Tex = 0;
     bool running = true;
@@ -767,9 +770,31 @@ static std::vector<float> popTexData() {
         d[s.cell * 4 + 1] = std::max(s.P, 1.0f);
         d[s.cell * 4 + 3] = s.granaries; // alpha: built granaries at the cell
     }
-    for (const population::Band& b : pf.bands) {
+    // A cell holds the index of a band standing on it, not its headcount:
+    // a walking band is at a point, not in a square, and the marker is drawn
+    // at that point. Where two bands share a cell the bigger one is shown.
+    for (size_t i = 0; i < pf.bands.size(); i++) {
+        const population::Band& b = pf.bands[i];
         int cell = sim::cellOf({b.px, b.py, b.pz});
-        d[cell * 4 + 2] += std::max(b.P, 1.0f);
+        int held = (int)(d[cell * 4 + 2] + 0.5f);
+        if (held && pf.bands[held - 1].P >= b.P) continue;
+        d[cell * 4 + 2] = (float)(i + 1);
+    }
+    return d;
+}
+
+// Where every band actually is, to the metre: xyz on the unit sphere plus
+// its headcount, one texel each, in rows of BAND_TEX_W.
+constexpr int BAND_TEX_W = 256;
+static std::vector<float> bandTexData(int& rows) {
+    const std::vector<population::Band>& bs = app.world.pop.bands;
+    rows = std::max(1, ((int)bs.size() + BAND_TEX_W - 1) / BAND_TEX_W);
+    std::vector<float> d((size_t)BAND_TEX_W * rows * 4, 0.0f);
+    for (size_t i = 0; i < bs.size(); i++) {
+        d[i * 4 + 0] = bs[i].px;
+        d[i * 4 + 1] = bs[i].py;
+        d[i * 4 + 2] = bs[i].pz;
+        d[i * 4 + 3] = std::max(bs[i].P, 1.0f);
     }
     return d;
 }
@@ -785,6 +810,17 @@ static void uploadPopulation() {
     glBindTexture(GL_TEXTURE_2D, app.popTex);
     std::vector<float> d = popTexData();
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, population::W, population::H, 0, GL_RGBA, GL_FLOAT, d.data());
+    glActiveTexture(GL_TEXTURE5);
+    if (!app.bandTex) {
+        glGenTextures(1, &app.bandTex);
+        glBindTexture(GL_TEXTURE_2D, app.bandTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+    glBindTexture(GL_TEXTURE_2D, app.bandTex);
+    std::vector<float> bd = bandTexData(app.bandRows);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, BAND_TEX_W, app.bandRows, 0, GL_RGBA, GL_FLOAT,
+                 bd.data());
     glActiveTexture(GL_TEXTURE0);
 }
 
@@ -2172,8 +2208,7 @@ static void pickAt(int x, int y) {
     uint32_t bestId = 0;
     bestD = bRadius;
     for (const population::Band& bd : pf.bands) {
-        // Measure to the cell centre: that is where the shader draws the dot.
-        float d = sim::distKm(n, sim::cellCentre(sim::cellOf({bd.px, bd.py, bd.pz})));
+        float d = sim::distKm(n, {bd.px, bd.py, bd.pz});
         if (d < bestD) { bestD = d; bestId = bd.id; }
     }
     if (bestId) openPanel(1, 0, bestId);
@@ -2400,6 +2435,7 @@ int main(int argc, char** argv) {
     glUniform1i(glGetUniformLocation(app.program, "uPop"), 2);
     glUniform1i(glGetUniformLocation(app.program, "uClim"), 3);
     glUniform1i(glGetUniformLocation(app.program, "uClim2"), 4);
+    glUniform1i(glGetUniformLocation(app.program, "uBands"), 5);
     GLint uDoy = glGetUniformLocation(app.program, "uDoy");
     GLint uClock = glGetUniformLocation(app.program, "uClock");
     GLint uAware = glGetUniformLocation(app.program, "uAware");

@@ -24,7 +24,8 @@ uniform float uSeaLevel; // field value at the coastline, chosen on the CPU
 uniform sampler2D uHydro; // per-cell lake level, drainage area, flow direction, height
 uniform int uHasHydro;
 uniform sampler2D uPlates; // uplift, crust, km to nearest plate boundary
-uniform sampler2D uPop;    // carrying capacity K, settlement population, band population
+uniform sampler2D uPop;    // carrying capacity K, settlement population, band index + 1
+uniform sampler2D uBands;  // one texel per band: position xyz on the unit sphere, headcount
 uniform vec3 uSun;         // world-space sun direction (day-night and seasons)
 uniform sampler2D uClim;   // climatology, 4 season bands: cloud, rain, wind u, wind v
 uniform sampler2D uClim2;  // climatology 2: mean T, snowfall, coarse elevation
@@ -288,18 +289,25 @@ float settlementNear(vec3 n) {
     return 0.0;
 }
 
-// Population of a migrating band whose marker covers n, else 0.
+// Population of a migrating band whose marker covers n, else 0. A cell
+// names the band standing on it; the band texture says where it actually
+// is, so the marker slides across the ground instead of hopping cell to
+// cell (a 20 km jump at the equator, plainly visible when following one).
 float bandNear(vec3 n) {
     ivec2 c0 = hydroCell(n);
     float radiusKm = clamp(uKmPerPixel * 4.0, 3.0, 14.0);
-    for (int dy = -1; dy <= 1; dy++)
-        for (int dx = -1; dx <= 1; dx++) {
+    // A band sits anywhere inside its cell, so a marker can reach further
+    // than the neighbouring cell; columns narrow towards the poles, so the
+    // sweep in longitude widens with latitude to keep the dot whole.
+    int rx = clamp(int(radiusKm / max(20.0 * cos(asin(n.z)), 1.0)) + 2, 2, 8);
+    for (int dy = -2; dy <= 2; dy++)
+        for (int dx = -rx; dx <= rx; dx++) {
             ivec2 c = c0 + ivec2(dx, dy);
             ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
-            float p = texelFetch(uPop, cw, 0).b;
-            if (p <= 0.0) continue;
-            float dist = length(n - cellCentre(cw)) * 6371.0;
-            if (dist < radiusKm) return p;
+            int idx = int(texelFetch(uPop, cw, 0).b + 0.5) - 1;
+            if (idx < 0) continue;
+            vec4 bandTexel = texelFetch(uBands, ivec2(idx % 256, idx / 256), 0);
+            if (length(n - bandTexel.xyz) * 6371.0 < radiusKm) return bandTexel.w;
         }
     return 0.0;
 }
