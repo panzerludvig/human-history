@@ -412,7 +412,7 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     // moved are still themselves, while colonists who split away name the
     // place they have made their own.
     if (b.colonists && b.culture < pf.cultures.size())
-        technology::makeName(pf.cultures[b.culture], ws.rng, s.name);
+        technology::uniqueName(pf, pf.cultures[b.culture], ws.rng, s.name);
     else
         for (int i = 0; i < 16; i++) s.name[i] = b.name[i];
     s.founded = now;

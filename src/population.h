@@ -10,6 +10,7 @@
 #include <vector>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace population {
 
@@ -464,6 +465,11 @@ struct Field {
     std::vector<float> gameDmax; // sustainable draw per region, people
     double gameT = 0;            // sim day the pools are valid
     size_t peakBands = 0;        // most bands ever in flight at once (diagnostic)
+    // Every name this world has ever used. Two settlements sharing a name is
+    // realistic and unusable: the news says "Saeti invented farming" and the
+    // player opens the wrong Saeti. Names are never released, so a name in
+    // the record still means one place a century later.
+    std::unordered_set<std::string> takenNames;
 };
 
 // The land condition a cell offers now: pristine unless someone has lived

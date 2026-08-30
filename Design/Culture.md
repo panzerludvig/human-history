@@ -22,7 +22,9 @@ A name therefore tracks a community through space, and ruins keep theirs: the to
 
 ## How they sound
 
-A culture owns a small sound inventory drawn at world start — five onsets, four vowels, three codas and two endings, from shared pools. Every name in that culture is one or two syllables from its own sounds plus one of its endings, so relatives sound related without anything coordinating them. From a real run: *Skaskaror of the Draor*, *Kiana of the Kiadrelni*, *Thiaos of the Thoulen*, *Ditiia of the Veitiaia*. Overlap between distant cultures is expected and harmless at this scale.
+A culture owns a small sound inventory drawn at world start — five onsets, four vowels, three codas and two endings, from shared pools. Every name in that culture is one or two syllables from its own sounds plus one of its endings, so relatives sound related without anything coordinating them. From a real run: *Skaskaror of the Draor*, *Kiana of the Kiadrelni*, *Thiaos of the Thoulen*, *Ditiia of the Veitiaia*. **Every name in a world is unique** (fixed 2026-08-30). Two settlements sharing one is realistic and unusable: the news said *"the Saeti invented farming"*, the player opened a Saeti, and it had merely heard of farming from a neighbour -- a different Saeti a thousand kilometres away was the one ploughing. A name is drawn until no settlement, culture or band in this world has ever carried it; names are never released, so a name in the historical record still means one place a century later.
+
+A culture's short forms are few, so a culture founding hundreds of settlements exhausts them. When it does, its names grow a syllable -- which keeps the sound of the language and multiplies the room by eighty. Escalation starts after eight failed draws and stops at four syllables, giving roughly 80 million names per culture. Measured over 500 years and 4051 settlements: 4051 distinct names, no collisions; before the fix, 621 settlements (15%) shared a name with at least one other, and 33 of those name-groups disagreed on whether they farmed.
 
 ## Affinities: what you do is what you become
 

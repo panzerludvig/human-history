@@ -621,6 +621,12 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         population::computeNeighbours(w.pop);
     }
     if (!savedCultures.empty()) w.pop.cultures = savedCultures;
+    // The roll of names is not saved; it is exactly what is standing and
+    // walking, so rebuild it rather than store it.
+    w.pop.takenNames.clear();
+    for (const population::Culture& cu : w.pop.cultures) w.pop.takenNames.insert(cu.name);
+    for (const population::Settlement& st : w.pop.settlements) w.pop.takenNames.insert(st.name);
+    for (const population::Band& bd : w.pop.bands) w.pop.takenNames.insert(bd.name);
     for (auto& sc : savedScars)
         if (sc[0] >= 0 && sc[0] < population::W * population::H)
             w.pop.scars[(int)sc[0]] = {(float)sc[1], sc[2]};

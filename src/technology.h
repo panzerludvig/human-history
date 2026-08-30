@@ -78,11 +78,12 @@ inline population::Culture makeCulture(uint64_t& rng) {
 
 // A name drawn from a culture's sounds: two or three syllables and one of
 // its endings, so everything it names sounds related.
-inline void makeName(const population::Culture& c, uint64_t& rng, char out[16]) {
+inline void makeName(const population::Culture& c, uint64_t& rng, char out[16],
+                     int minSyllables = 1) {
     using namespace population;
     char buf[32] = {};
     int n = 0;
-    int syllables = urand(rng) < 0.55 ? 2 : 1; // plus the ending
+    int syllables = std::max(urand(rng) < 0.55 ? 2 : 1, minSyllables); // plus the ending
     for (int s = 0; s < syllables; s++) {
         const char* on = NAME_ONSET[c.onset[(int)(urand(rng) * 5)] % N_ONSET];
         const char* nu = NAME_NUCLEUS[c.nucleus[(int)(urand(rng) * 4)] % N_NUCLEUS];
@@ -96,6 +97,19 @@ inline void makeName(const population::Culture& c, uint64_t& rng, char out[16]) 
     buf[0] = (char)std::toupper((unsigned char)buf[0]);
     buf[n] = 0;
     for (int i = 0; i < 16; i++) out[i] = i <= n ? buf[i] : 0;
+}
+
+// A name no one in this world has carried. A culture's short forms are few
+// -- five onsets, four nuclei, three codas -- so a culture that founds
+// hundreds of settlements will exhaust them; when it does, its names simply
+// grow a syllable, which keeps the sound of the language and multiplies the
+// room by eighty.
+inline void uniqueName(population::Field& pf, const population::Culture& c, uint64_t& rng,
+                       char out[16]) {
+    for (int attempt = 0;; attempt++) {
+        makeName(c, rng, out, 1 + std::min(attempt / 8, 3));
+        if (pf.takenNames.insert(std::string(out)).second) return;
+    }
 }
 
 inline float expertise(const population::TechState& ts, double now) {
@@ -278,10 +292,10 @@ inline void init(population::Field& pf, WorldState& ws, uint32_t seed, double no
     if (pf.cultures.empty()) {
         for (size_t i = 0; i < pf.settlements.size(); i++) {
             population::Culture c = makeCulture(ws.rng);
-            makeName(c, ws.rng, c.name);
+            uniqueName(pf, c, ws.rng, c.name);
             pf.cultures.push_back(c);
             pf.settlements[i].culture = (uint16_t)i;
-            makeName(c, ws.rng, pf.settlements[i].name);
+            uniqueName(pf, c, ws.rng, pf.settlements[i].name);
         }
     }
     // Archery is not invented here: the bow is far older than anything else
