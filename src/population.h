@@ -168,6 +168,21 @@ inline float bandAwareKm(double restDays, float promM) {
 // farming village with full granaries splits instead of abandoning them.
 constexpr float RELOC_ANCHOR_GRANARY = 0.25f; // per built granary
 constexpr float RELOC_ANCHOR_FARM = 0.5f;     // per unit farming expertise
+// A band that sets out has somewhere in mind. Ground it passes is judged
+// against that goal, not against nothing: at first it must be clearly
+// better to be worth abandoning the plan for, and as the journey drags the
+// bar sinks -- through parity, and then below it, until they settle for
+// distinctly less than they hoped for rather than walk forever.
+constexpr float HOPE_MARGIN = 0.25f;       // must beat the goal by this at first
+constexpr float HOPE_FLOOR = 0.5f;         // what they will eventually accept
+constexpr double HOPE_TAU_DAYS = 730.0;    // how fast hope fades
+
+// How much better than the goal a passing site must be, after `days` on the
+// road. Starts above one, crosses it within the year, and keeps falling.
+inline float hopeRatio(double days) {
+    return HOPE_FLOOR + (1.0f + HOPE_MARGIN - HOPE_FLOOR) *
+                            (float)std::exp(-std::max(days, 0.0) / HOPE_TAU_DAYS);
+}
 // Ruins: only places that were invested in leave a trace, and it weathers
 // away. A camp of thirty that stood a decade leaves nothing to find.
 constexpr double RUIN_MIN_AGE_DAYS = 60.0 * 365.0;
@@ -410,8 +425,9 @@ struct Band {
     // picked up and went (0 for a splinter band, which has left nothing).
     // New ground has to beat it: a place they judged unable to keep them
     // cannot be the place they settle again. Journey state, not saved.
-    float leftCap = 0;
-    float bows = 0; // carried: the first possession that travels
+    double setOut = 0; // when this journey began, for fading hope
+    int fromCell = -1; // where they started, so arrivals can say how far
+    float bows = 0;    // carried: the first possession that travels
     uint16_t culture = 0;
     char name[16] = {};  // the community's name; the suffix comes from purpose
     bool colonists = false; // a splinter, who will name their own new home
@@ -432,7 +448,7 @@ struct Field {
     // recovers on the usual timescale, so an exhausted valley is a bad place
     // to move to for a generation. Sparse and lazily evaluated -- only sites
     // that have been lived on appear here.
-    struct LandScar { float R; double t; };
+    struct LandScar { float R; double t; uint32_t by; };
     std::unordered_map<int, LandScar> scars;
     // What is left standing where an invested settlement walked away.
     struct Ruin { int cell; double abandoned; char name[16]; };
@@ -461,8 +477,8 @@ inline float cellCondition(const Field& f, int cell, double now) {
     return std::clamp(rec, 0.0f, 1.0f);
 }
 
-inline void markScar(Field& f, int cell, float R, double now) {
-    f.scars[cell] = {R, now};
+inline void markScar(Field& f, int cell, float R, double now, uint32_t by = 0) {
+    f.scars[cell] = {R, now, by};
 }
 
 // Settlements are erased when they move, so anything that outlives one

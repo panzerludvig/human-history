@@ -457,9 +457,14 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     }
     {
         char txt[96];
-        if (b.colonists) snprintf(txt, sizeof txt, "%s was founded by colonists from %s", s.name,
-                                  b.name);
-        else snprintf(txt, sizeof txt, "%s settled again after their journey", s.name);
+        int km = b.fromCell >= 0
+                     ? (int)distKm(cellCentre(b.fromCell), cellCentre(cell))
+                     : 0;
+        if (b.colonists)
+            snprintf(txt, sizeof txt, "%s was founded by colonists from %s, %d km away", s.name,
+                     b.name, km);
+        else
+            snprintf(txt, sizeof txt, "%s settled again %d km from their old home", s.name, km);
         note(pf, b.colonists ? population::EV_FOUNDED : population::EV_SETTLED, now, s.id, 0, 0,
              b.P, txt);
     }
@@ -628,10 +633,7 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
     // judged against its population, settling against a fixed threshold.
     float fExp = technology::expertise(b.tech[TECH_FARMING], now);
     float hExp = technology::expertise(b.tech[TECH_HUSBANDRY], now);
-    auto canHold = [&](int c) {
-        float cap = moverCap(pf, c, fExp, hExp, now);
-        return cap >= b.P && cap > b.leftCap;
-    };
+    auto canHold = [&](int c) { return moverCap(pf, c, fExp, hExp, now) >= b.P; };
     if (distKm(pos, tgt) < 20.0f) {
         // Arrived: the rumour meets reality.
         if (pf.settlementAt[cell] < 0 && moverCap(pf, cell, fExp, hExp, now) >= MIN_SETTLEMENT_K &&
@@ -651,9 +653,11 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
     } else if (!b.resting && pf.settlementAt[cell] < 0 &&
                moverCap(pf, cell, fExp, hExp, now) >= MIN_SETTLEMENT_K && canHold(cell) &&
                moverCap(pf, cell, fExp, hExp, now) >=
-                   0.9f * moverCap(pf, b.targetCell, fExp, hExp, now) &&
+                   hopeRatio(now - b.setOut) * moverCap(pf, b.targetCell, fExp, hExp, now) &&
                spacingOK(pf, pos)) {
-        // Good enough ground under their feet beats a distant rumour.
+        // Ground under their feet, judged against where they were going:
+        // early on it has to be clearly better to be worth giving up the
+        // plan, and as the months pass they grow readier to take less.
         foundSettlement(pf, ws, hy, clim, b, cell, now);
         done = true;
     }
@@ -859,23 +863,28 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     b.S = std::min((wholeGroup ? s.S : s.S * SPLIT_SHARE), CAP_DAYS_BAND * b.P);
     b.bows = wholeGroup ? s.bows : s.bows * SPLIT_SHARE; // people take their bows
     b.targetCell = tgt;
+    b.setOut = now;
+    b.fromCell = s.cell;
     b.t = now;
     b.nextUpdate = now + BAND_STEP_DAYS;
     for (int t = 0; t < NTECH; t++) b.tech[t] = s.tech[t];
     if (wholeGroup) {
         b.sid = s.id; // they are still themselves, wherever they end up
-        // What this place could still feed, in the same measure a candidate
-        // site is judged by -- the bar the new ground has to clear.
-        b.leftCap = moverCap(pf, s.cell, fExp, hExp, now) * s.R;
         // The land remembers what it was left in; only a place that was
         // invested in leaves anything to find.
-        markScar(pf, s.cell, s.R, now);
+        markScar(pf, s.cell, s.R, now, s.id);
         if (s.granaries >= 1.0f || now - s.founded > RUIN_MIN_AGE_DAYS) {
             Field::Ruin r{s.cell, now, {}};
             for (int i = 0; i < 16; i++) r.name[i] = s.name[i];
             pf.ruins.push_back(r);
         }
         s.leaving = true; // swept once the step's events are done
+        // Free the ground now rather than at the sweep: otherwise how long a
+        // vacated site stays blocked depends on how big a time step the
+        // player happens to take, which is exactly what this simulation is
+        // not allowed to do (a 500-year step held every site for 500 years;
+        // ten-year steps freed them within one).
+        if (pf.settlementAt[s.cell] == si) pf.settlementAt[s.cell] = -1;
         s.P = 0;
         s.S = 0;
         s.herd = 0;
