@@ -885,6 +885,12 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
         // not allowed to do (a 500-year step held every site for 500 years;
         // ten-year steps freed them within one).
         if (pf.settlementAt[s.cell] == si) pf.settlementAt[s.cell] = -1;
+        // Every last person is in the band now. Clearing the headcount is
+        // not enough: advance() recomputes P from the cohorts, so a record
+        // that keeps its cohorts is a settlement that comes back to life on
+        // the next wake -- with its knowledge, its hunger and its vote in
+        // the world's inventions.
+        s.pop = Cohorts{};
         s.P = 0;
         s.S = 0;
         s.herd = 0;
@@ -1074,7 +1080,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
     // aggregate through the event loop above first (Design/Event-Driven).
     for (int i = 0; i < (int)pf.settlements.size(); i++) {
         Settlement& s = pf.settlements[i];
-        if (s.t < now - 1e-9) {
+        if (!s.leaving && s.t < now - 1e-9) {
             changed |= population::advance(s, technology::effectiveK(s, now),
                                            seasonCtx(s, hy, clim, now), now);
             reportGranaries(pf, s, now);

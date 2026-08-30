@@ -1910,14 +1910,17 @@ static void paintNews(HWND h) {
                 TextOutA(dc, 12, y, line, (int)strlen(line));
                 y += NEWS_LINE;
             }
-            bool alive = false;
-            for (const population::Band& b : app.world.pop.bands)
-                if (b.id == e.bandId) alive = true;
-            snprintf(line, sizeof line, "%s", alive ? "The band is still out there."
-                                                    : "They are back among their people.");
-            SetTextColor(dc, RGB(140, 140, 155));
-            TextOutA(dc, 12, y, line, (int)strlen(line));
-            y += NEWS_LINE + 6;
+            if (e.bandId) { // only events where somebody set out have a band
+                bool alive = false;
+                for (const population::Band& b : app.world.pop.bands)
+                    if (b.id == e.bandId) alive = true;
+                snprintf(line, sizeof line, "%s", alive ? "The band is still out there."
+                                                        : "They are back among their people.");
+                SetTextColor(dc, RGB(140, 140, 155));
+                TextOutA(dc, 12, y, line, (int)strlen(line));
+                y += NEWS_LINE;
+            }
+            y += 6;
             SetTextColor(dc, RGB(255, 215, 130));
             const char* go = "[ Go to ]";
             TextOutA(dc, 12, y, go, (int)strlen(go));

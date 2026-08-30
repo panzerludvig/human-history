@@ -157,7 +157,7 @@ inline bool needDriven(int tech) {
 // (hungrySince, independent of split resets); granaries' is the storage
 // fill signal holding in consecutive years (granNeedYrs).
 inline float needWeight(const population::Settlement& s, int tech, double now) {
-    if (s.tech[tech].aware || s.P <= 1) return 0.0f;
+    if (s.leaving || s.tech[tech].aware || s.P <= 1) return 0.0f;
     float years = tech == population::TECH_FARMING
                       ? (s.hungrySince >= 0 ? (float)((now - s.hungrySince) / YEAR) : 0.0f)
                       : s.granNeedYrs;
@@ -183,7 +183,7 @@ inline void redraw(population::Field& pf, int i, WorldState& ws, int tech, doubl
     using namespace population;
     Settlement& s = pf.settlements[i];
     TechState& ts = s.tech[tech];
-    if (ts.practising) { s.nextTech[tech] = INF_T; return; }
+    if (s.leaving || ts.practising) { s.nextTech[tech] = INF_T; return; }
     if (!ts.aware) {
         int knowing = 0;
         for (int j : pf.neighbours[i]) knowing += pf.settlements[j].tech[tech].aware ? 1 : 0;
@@ -217,6 +217,7 @@ inline void scheduleInvention(population::Field& pf, WorldState& ws, int tech, d
         double wsum = 0;
         bool anyUnaware = false;
         for (const population::Settlement& s : pf.settlements) {
+            if (s.leaving) continue;
             if (!s.tech[tech].aware) anyUnaware = true;
             wsum += needWeight(s, tech, now);
         }
@@ -230,6 +231,7 @@ inline void scheduleInvention(population::Field& pf, WorldState& ws, int tech, d
     }
     double unaware = 0, total = 0;
     for (const population::Settlement& s : pf.settlements) {
+        if (s.leaving) continue;
         total += s.P;
         if (!s.tech[tech].aware) unaware += s.P;
     }
@@ -263,6 +265,7 @@ inline int pickInventor(population::Field& pf, WorldState& ws, int tech, double 
     double wsum = 0;
     for (size_t i = 0; i < pf.settlements.size(); i++) {
         const population::Settlement& s = pf.settlements[i];
+        if (s.leaving) continue; // these people are on the road, not at home
         if (needDriven(tech)) {
             wts[i] = needWeight(s, tech, now);
             wsum += wts[i];
