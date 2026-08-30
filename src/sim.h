@@ -294,6 +294,33 @@ inline terrain::V3 granaryPos(int cell, int k) {
     return norm3(c + (east * std::cos(a) + north * std::sin(a)) * r);
 }
 
+// Fields around a settlement. Stone tools did not stop the first farmers
+// clearing woodland -- the axe girdles, the fire does the work, and the ash
+// manures the first crop -- so the mark a farming village leaves is a
+// clearing, not a patch of open ground it happened to find. Area: roughly
+// 0.4 ha under crop feeds a person at Neolithic yields, and with a long
+// fallow (a rotation of some twenty years) the land inside the rotation is
+// about eight hectares a head. That whole mosaic -- crop, stubble, scrub
+// regrowth, the trees not yet taken -- is what farming looks like from
+// above, so it is the footprint drawn.
+constexpr float FARM_HA_PER_FARMER = 8.0f;
+constexpr float VILLAGE_KM = 0.8f; // the houses; fields ring them, not cover them
+
+// How far the fields reach: the outer edge of an annulus around the village
+// holding the area this settlement's farmers work. Zero for anyone who does
+// not farm, so it is also the test for whether to draw fields at all.
+inline float farmRadiusKm(const population::Settlement& s, double now) {
+    float fExp = technology::expertise(s.tech[population::TECH_FARMING], now);
+    if (fExp <= 0 || s.sFarm <= 0 || s.P <= 0) return 0.0f;
+    float k = technology::effectiveK(s, now);
+    if (k <= 0) return 0.0f;
+    // The share of the settlement's food the fields provide, applied to its
+    // people: the number of mouths the fields actually feed.
+    float farmers = s.P * std::min(s.kFoodP * technology::FARM_YIELD_GAIN * s.sFarm * fExp / k, 1.0f);
+    float areaKm2 = farmers * FARM_HA_PER_FARMER * 0.01f; // 100 ha to the km^2
+    return std::sqrt(VILLAGE_KM * VILLAGE_KM + areaKm2 / 3.14159265f);
+}
+
 // A band forages the cell it stands on: same famine rule as a settlement, but
 // a moving band gathers on a third of the day and carries only a small store.
 // No growth on the march; a migration is months, not generations.

@@ -42,6 +42,7 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_TEXTURE3 0x84C3
 #define GL_TEXTURE4 0x84C4
 #define GL_TEXTURE5 0x84C5
+#define GL_TEXTURE6 0x84C6
 #define GL_RG32F 0x8230
 #define GL_RG 0x8227
 #define GL_CLAMP_TO_EDGE 0x812F
@@ -722,6 +723,8 @@ struct App {
     GLuint popTex = 0;
     GLuint bandTex = 0;
     int bandRows = 0;
+    GLuint siteTex = 0;
+    int siteRows = 0;
     GLuint climTex = 0;
     GLuint clim2Tex = 0;
     bool running = true;
@@ -766,10 +769,13 @@ static std::vector<float> popTexData() {
     const population::Field& pf = app.world.pop;
     for (int i = 0; i < population::W * population::H; i++) d[i * 4] = pf.K[i];
     for (const population::Field::Ruin& r : pf.ruins) d[r.cell * 4 + 1] = -1.0f; // abandoned
-    for (const population::Settlement& s : pf.settlements) {
-        d[s.cell * 4 + 1] = std::max(s.P, 1.0f);
-        d[s.cell * 4 + 3] = s.granaries; // alpha: built granaries at the cell
-    }
+    // Green names the settlement standing on the cell (index + 1, or -1 for
+    // a ruin); everything else about it -- its people, its granaries, how far
+    // its fields reach -- lives in the site texture, one texel each, so
+    // adding another thing to draw costs a channel there and not a texture
+    // the size of the world.
+    for (size_t i = 0; i < pf.settlements.size(); i++)
+        d[pf.settlements[i].cell * 4 + 1] = (float)(i + 1);
     // A cell holds the index of a band standing on it, not its headcount:
     // a walking band is at a point, not in a square, and the marker is drawn
     // at that point. Where two bands share a cell the bigger one is shown.
@@ -779,6 +785,21 @@ static std::vector<float> popTexData() {
         int held = (int)(d[cell * 4 + 2] + 0.5f);
         if (held && pf.bands[held - 1].P >= b.P) continue;
         d[cell * 4 + 2] = (float)(i + 1);
+    }
+    return d;
+}
+
+// One texel per settlement: its people, its granaries, and how far its
+// fields reach in km (zero for anyone who does not farm).
+constexpr int SITE_TEX_W = 256;
+static std::vector<float> siteTexData(int& rows) {
+    const std::vector<population::Settlement>& ss = app.world.pop.settlements;
+    rows = std::max(1, ((int)ss.size() + SITE_TEX_W - 1) / SITE_TEX_W);
+    std::vector<float> d((size_t)SITE_TEX_W * rows * 4, 0.0f);
+    for (size_t i = 0; i < ss.size(); i++) {
+        d[i * 4 + 0] = std::max(ss[i].P, 1.0f);
+        d[i * 4 + 1] = ss[i].granaries;
+        d[i * 4 + 2] = sim::farmRadiusKm(ss[i], app.world.simTime);
     }
     return d;
 }
@@ -821,6 +842,17 @@ static void uploadPopulation() {
     std::vector<float> bd = bandTexData(app.bandRows);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, BAND_TEX_W, app.bandRows, 0, GL_RGBA, GL_FLOAT,
                  bd.data());
+    glActiveTexture(GL_TEXTURE6);
+    if (!app.siteTex) {
+        glGenTextures(1, &app.siteTex);
+        glBindTexture(GL_TEXTURE_2D, app.siteTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+    glBindTexture(GL_TEXTURE_2D, app.siteTex);
+    std::vector<float> sd = siteTexData(app.siteRows);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, SITE_TEX_W, app.siteRows, 0, GL_RGBA, GL_FLOAT,
+                 sd.data());
     glActiveTexture(GL_TEXTURE0);
 }
 
@@ -1356,6 +1388,25 @@ static std::string describePoint(Vec3 n) {
                         building = "Granary  |  ";
                         break;
                     }
+            }
+    }
+    if (building.empty() && !wd.pop.settlementAt.empty() && app.cam.kmPerPixel() < 4.0) {
+        // Fields: the same annulus the shader draws, so what the cursor
+        // names and what the eye sees are one definition.
+        for (int dy = -1; dy <= 1 && building.empty(); dy++)
+            for (int dx = -1; dx <= 1 && building.empty(); dx++) {
+                int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
+                int cell = yy * hydrology::W + hydrology::wrapX(cx + dx);
+                int si = wd.pop.settlementAt[cell];
+                if (si < 0) continue;
+                const population::Settlement& st = wd.pop.settlements[si];
+                float fr = sim::farmRadiusKm(st, wd.simTime);
+                float d = sim::distKm(nf, sim::cellCentre(st.cell));
+                if (fr > sim::VILLAGE_KM && d < fr && d > sim::VILLAGE_KM) {
+                    char fb[64];
+                    snprintf(fb, sizeof fb, "Fields of %s  |  ", st.name);
+                    building = fb;
+                }
             }
     }
     bool nearRiver = false;
@@ -2196,7 +2247,7 @@ static void pickAt(int x, int y) {
     const population::Field& pf = app.world.pop;
     // Pick radius = draw radius plus ~3 px of slop: clicks are aim-limited.
     float slop = (float)(app.cam.kmPerPixel() * 3.0);
-    float sRadius = (float)std::clamp(app.cam.kmPerPixel() * 5.0, 4.0, 18.0) + slop;
+    float sRadius = (float)std::clamp(app.cam.kmPerPixel() * 5.0, 1.2, 18.0) + slop;
     int best = -1;
     float bestD = sRadius;
     for (int i = 0; i < (int)pf.settlements.size(); i++) {
@@ -2436,6 +2487,7 @@ int main(int argc, char** argv) {
     glUniform1i(glGetUniformLocation(app.program, "uClim"), 3);
     glUniform1i(glGetUniformLocation(app.program, "uClim2"), 4);
     glUniform1i(glGetUniformLocation(app.program, "uBands"), 5);
+    glUniform1i(glGetUniformLocation(app.program, "uSites"), 6);
     GLint uDoy = glGetUniformLocation(app.program, "uDoy");
     GLint uClock = glGetUniformLocation(app.program, "uClock");
     GLint uAware = glGetUniformLocation(app.program, "uAware");

@@ -24,8 +24,9 @@ uniform float uSeaLevel; // field value at the coastline, chosen on the CPU
 uniform sampler2D uHydro; // per-cell lake level, drainage area, flow direction, height
 uniform int uHasHydro;
 uniform sampler2D uPlates; // uplift, crust, km to nearest plate boundary
-uniform sampler2D uPop;    // carrying capacity K, settlement population, band index + 1
+uniform sampler2D uPop;    // carrying capacity K, settlement index + 1, band index + 1
 uniform sampler2D uBands;  // one texel per band: position xyz on the unit sphere, headcount
+uniform sampler2D uSites;  // one texel per settlement: people, granaries, field radius km
 uniform vec3 uSun;         // world-space sun direction (day-night and seasons)
 uniform sampler2D uClim;   // climatology, 4 season bands: cloud, rain, wind u, wind v
 uniform sampler2D uClim2;  // climatology 2: mean T, snowfall, coarse elevation
@@ -273,18 +274,28 @@ vec3 cellCentre(ivec2 c) {
 const ivec2 DIRS[8] = ivec2[8](ivec2(1, 0), ivec2(1, 1), ivec2(0, 1), ivec2(-1, 1),
                                ivec2(-1, 0), ivec2(-1, -1), ivec2(0, -1), ivec2(1, -1));
 
-// Population of a settlement whose marker covers n, else 0.
+// What a cell's green channel names: the settlement standing there, or -1
+// for its texel when nobody does.
+vec4 siteAt(ivec2 cw) {
+    int idx = int(texelFetch(uPop, cw, 0).g + 0.5) - 1;
+    if (idx < 0) return vec4(-1.0);
+    return texelFetch(uSites, ivec2(idx % 256, idx / 256), 0);
+}
+
+// Population of a settlement whose marker covers n, else 0. The marker
+// shrinks to a village-sized 1.2 km when zoomed right in: at that range it
+// stops being a pin on a map and would otherwise cover the fields.
 float settlementNear(vec3 n) {
     ivec2 c0 = hydroCell(n);
-    float radiusKm = clamp(uKmPerPixel * 5.0, 4.0, 18.0);
+    float radiusKm = clamp(uKmPerPixel * 5.0, 1.2, 18.0);
     for (int dy = -1; dy <= 1; dy++)
         for (int dx = -1; dx <= 1; dx++) {
             ivec2 c = c0 + ivec2(dx, dy);
             ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
-            float p = texelFetch(uPop, cw, 0).g;
-            if (p <= 0.0) continue;
+            vec4 site = siteAt(cw);
+            if (site.r <= 0.0) continue;
             float dist = length(n - cellCentre(cw)) * 6371.0;
-            if (dist < radiusKm) return p;
+            if (dist < radiusKm) return site.r;
         }
     return 0.0;
 }
@@ -341,7 +352,8 @@ float granaryNear(vec3 n) {
         for (int dx = -1; dx <= 1; dx++) {
             ivec2 c = c0 + ivec2(dx, dy);
             ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
-            int g = int(texelFetch(uPop, cw, 0).a + 0.5);
+            vec4 site = siteAt(cw);
+            int g = int(max(site.g, 0.0) + 0.5);
             if (g <= 0) continue;
             vec3 cc = cellCentre(cw);
             vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
@@ -354,6 +366,70 @@ float granaryNear(vec3 n) {
             }
         }
     return 0.0;
+}
+
+// Fields: a mosaic of small plots ringing the village, out to the radius
+// sim::farmRadiusKm sets from the number of mouths the fields feed. Stone
+// tools cleared woodland readily enough (the axe girdles, the fire does the
+// work), so this is drawn as a clearing whatever grew here -- crop, stubble
+// and scrub regrowth in a long fallow, which is what shifting cultivation
+// looks like from above. Returns rgb = the ground's colour here and w = how
+// strongly it replaces what grew before: 1 inside a worked plot, less on the
+// cleared ground between plots, 0 outside the clearing altogether.
+vec4 fieldsNear(vec3 n) {
+    if (uKmPerPixel > 4.0) return vec4(0.0);
+    ivec2 c0 = hydroCell(n);
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 c = c0 + ivec2(dx, dy);
+            ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
+            vec4 site = siteAt(cw);
+            float rKm = site.b;
+            if (rKm <= 0.0) continue;
+            vec3 cc = cellCentre(cw);
+            float distKm = length(n - cc) * 6371.0;
+            if (distKm >= rKm || distKm < 0.7) continue;
+            // Nothing about a clearing is circular: the outline wanders with
+            // the ground, the wood and where the last stumps were left.
+            // Local ground frame, in km, turned by a per-cell angle so
+            // neighbouring villages do not plough in step.
+            vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
+            vec3 north = cross(cc, east);
+            int cell = cw.y * HW + cw.x;
+            float turn = float(cell % 628) * 0.01;
+            vec2 e = vec2(dot(n - cc, east), dot(n - cc, north)) * 6371.0;
+            vec2 f = vec2(e.x * cos(turn) + e.y * sin(turn), -e.x * sin(turn) + e.y * cos(turn));
+            // Cleared ground: brush cut and burnt, grazed and walked over.
+            // It is the canvas the plots sit on, and it is what makes a farm
+            // read as one place rather than a scatter of stripes.
+            vec3 cleared = vec3(0.46, 0.44, 0.28);
+            // Plots: long and narrow, the shape ard ploughing and hand sowing
+            // give -- about 350 m by 800 m.
+            vec2 plot = vec2(floor(f.x / 0.35), floor(f.y / 0.80));
+            float hsh = fract(sin(dot(plot, vec2(12.9898, 78.233)) + float(cell)) * 43758.5453);
+            // The mosaic thins towards its edge instead of ending at a line:
+            // the outermost ground is the newest taken and the longest left
+            // to rest, so the clearing frays into the country around it.
+            float bearing = atan(f.y, f.x);
+            float ph = float(cell % 628) * 0.01;
+            float wobble = 0.94 + 0.11 * sin(bearing * 3.0 + ph) +
+                           0.07 * sin(bearing * 7.0 - ph * 2.0);
+            float edge = distKm / (rKm * wobble);
+            if (edge >= 1.0) continue;
+            float fade = 1.0 - smoothstep(0.82, 1.0, edge); // the wood takes it back
+            if (hsh < edge * edge * 0.85) return vec4(cleared, 0.65 * fade);
+            float shade = fract(hsh * 7.0);
+            vec3 tilled = vec3(0.31, 0.21, 0.12);   // turned earth, ash still in it
+            vec3 standing = vec3(0.78, 0.66, 0.22); // barley coming on
+            vec3 stubble = vec3(0.60, 0.55, 0.34);  // cut, or resting the year
+            vec3 col = shade < 0.34 ? tilled : (shade < 0.70 ? standing : stubble);
+            // A darker line where one plot meets the next: the baulks.
+            vec2 inPlot = fract(vec2(f.x / 0.35, f.y / 0.80));
+            float baulk = min(min(inPlot.x, 1.0 - inPlot.x) / 0.10,
+                              min(inPlot.y, 1.0 - inPlot.y) / 0.05);
+            return vec4(col * (0.75 + 0.25 * clamp(baulk, 0.0, 1.0)), fade);
+        }
+    return vec4(0.0);
 }
 
 // Climate lookups are warped by a small noise (~60 km) so the coarse grid's
@@ -760,6 +836,9 @@ void main() {
     }
     float sp = uHasHydro == 1 ? settlementNear(n) : 0.0;
     float bp = uHasHydro == 1 ? bandNear(n) : 0.0;
+    vec4 fields = (uHasHydro == 1 && !isWater && !isRiver && !isPond && sp <= 0.0 && bp <= 0.0)
+                      ? fieldsNear(n)
+                      : vec4(0.0);
     if (sp > 0.0 && !isWater) albedo = vec3(0.55, 0.08, 0.05) * (0.75 + 0.25 * clamp(log(sp) / 11.0, 0.0, 1.0));
     else if (bp > 0.0) albedo = vec3(0.85, 0.55, 0.10); // bands: amber, even mid-crossing
     else if (uHasHydro == 1 && !isWater && granaryNear(n) > 0.0)
@@ -778,6 +857,13 @@ void main() {
         albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere, swampV,
                               derivedTempC(n, h), derivedMoist(n, w, h), derivedTCold(n, h));
         albedo = mix(albedo, vec3(0.91, 0.93, 0.96), snowCoverAt(n, h)); // winter snow
+        // Fields work on the ground itself, so they come after it is
+        // coloured and before the snow that lies over everything -- not in
+        // the marker chain above, where there is no ground colour yet.
+        if (fields.w > 0.0) {
+            albedo = mix(albedo, fields.rgb, fields.w);
+            albedo = mix(albedo, vec3(0.91, 0.93, 0.96), snowCoverAt(n, h));
+        }
     }
 
     // The sun lives in world space: it circles the globe once per sim day
