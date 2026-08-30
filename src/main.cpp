@@ -1385,11 +1385,17 @@ static void updateTooltip(int x, int y) {
 // hit-testing; tab hit slots are fixed x-ranges so no text measuring is
 // needed to route a click.
 
-constexpr int PANEL_W = 380, PANEL_H = 312, PANEL_BAND_H = 260;
+constexpr int PANEL_W = 470, PANEL_H = 330, PANEL_BAND_H = 260;
 constexpr int PANEL_PAD = 12, PANEL_TAB_Y = 36, PANEL_TAB_H = 24, PANEL_CONTENT_Y = 70,
               PANEL_LINE_H = 21;
-static const int PANEL_TAB_X[4] = {12, 126, 236, 340}; // slot edges for 3 tabs
-static const char* PANEL_TABS[3] = {"Environment", "Technology", "Buildings"};
+// Slot starts, plus the right edge as a final entry: painting draws each
+// label at its slot and hit-testing takes the span up to the next, so the
+// two cannot disagree.
+static const int PANEL_TAB_X[6] = {12, 74, 176, 270, 356, 420};
+static const char* PANEL_TABS[5] = {"People", "Environment", "Technology", "Buildings",
+                                    "History"};
+constexpr int PANEL_NTABS = 5;
+enum : int { TAB_PEOPLE = 0, TAB_ENV, TAB_TECH, TAB_BUILT, TAB_HISTORY };
 static const char* TECH_NAMES[population::NTECH] = {"Farming", "Husbandry",
                                                    "Granary building", "Archery"};
 
@@ -1419,6 +1425,55 @@ static std::string techStateLine(const population::TechState& ts, int techId, do
     return b;
 }
 
+// Who these people are, what they believe themselves good at, and what
+// they have to hand. The land they live on is the next tab along.
+static std::string peopleText(const population::Settlement& st) {
+    const World& wd = app.world;
+    double now = wd.simTime;
+    char b[128];
+    std::string out;
+    snprintf(b, sizeof b, "People: %d (capacity %d)\n", (int)st.P,
+             (int)(technology::effectiveK(st, now) * population::SUSTAIN_R));
+    out += b;
+    snprintf(b, sizeof b, "  %d men, %d women, %d children, %d elderly\n", (int)st.pop.M,
+             (int)st.pop.W, (int)st.pop.C, (int)st.pop.E);
+    out += b;
+    if (st.culture < wd.pop.cultures.size()) {
+        snprintf(b, sizeof b, "A people of the %s\n", wd.pop.cultures[st.culture].name);
+        out += b;
+    }
+    {
+        struct { const char* n; float v; } af[5] = {
+            {"hunting", st.aff.hunt},   {"gathering", st.aff.gather}, {"farming", st.aff.farm},
+            {"herding", st.aff.herd},   {"fighting", st.aff.fight}};
+        int bi = 0;
+        for (int i = 1; i < 5; i++)
+            if (af[i].v > af[bi].v) bi = i;
+        if (af[bi].v > 0.05f) {
+            snprintf(b, sizeof b, "Known for: %s (%d%%)\n", af[bi].n,
+                     (int)std::lround(af[bi].v * 100));
+            out += b;
+        }
+    }
+    if (st.starvedYr >= 0.5f) {
+        snprintf(b, sizeof b, "Hunger: %d lost this year\n", (int)std::lround(st.starvedYr));
+        out += b;
+    }
+    out += "\n";
+    out += "What they carry:\n";
+    snprintf(b, sizeof b, "  Food: %d days (of %d)\n", (int)(st.S / std::max(st.P, 1.0f)),
+             (int)population::storageCapDays(st.P, st.granaries));
+    out += b;
+    snprintf(b, sizeof b, "  Bows: %d (%d%% of hunters)\n", (int)st.bows,
+             (int)std::lround(population::bowCoverage(st.bows, st.P) * 100));
+    out += b;
+    if (st.herd > 0.5f) {
+        snprintf(b, sizeof b, "  Livestock: feeds %d\n", (int)st.herd);
+        out += b;
+    }
+    return out;
+}
+
 static std::string envText(const population::Settlement& st) {
     const World& wd = app.world;
     double now = wd.simTime;
@@ -1432,14 +1487,7 @@ static std::string envText(const population::Settlement& st) {
     snprintf(b, sizeof b, "%.1f%c  %.1f%c\n", std::fabs(lat), lat >= 0 ? 'N' : 'S',
              std::fabs(lon), lon >= 0 ? 'E' : 'W');
     out += b;
-    snprintf(b, sizeof b, "People: %d (capacity %d)\n", (int)st.P,
-             (int)(technology::effectiveK(st, now) * population::SUSTAIN_R));
-    out += b;
-    snprintf(b, sizeof b, "  %d men, %d women, %d children, %d elderly\n",
-             (int)st.pop.M, (int)st.pop.W, (int)st.pop.C, (int)st.pop.E);
-    out += b;
-    snprintf(b, sizeof b, "Stores: %d of %d days\n", (int)(st.S / std::max(st.P, 1.0f)),
-             (int)population::storageCapDays(st.P, st.granaries));
+    snprintf(b, sizeof b, "Settled year %d\n", (int)(st.founded / 365.0) + 1);
     out += b;
     snprintf(b, sizeof b, "Land condition: %d%%\n", (int)std::lround(st.R * 100));
     out += b;
@@ -1459,41 +1507,30 @@ static std::string envText(const population::Settlement& st) {
     out += b;
     snprintf(b, sizeof b, "Awareness: %d km\n", (int)awareKm);
     out += b;
-    if (st.herd > 0.5f) {
-        snprintf(b, sizeof b, "Livestock: feeds %d\n", (int)st.herd);
-        out += b;
-    }
-    if (st.culture < wd.pop.cultures.size()) {
-        snprintf(b, sizeof b, "%s culture\n", wd.pop.cultures[st.culture].name);
-        out += b;
-    }
-    {
-        struct { const char* n; float v; } af[5] = {
-            {"hunting", st.aff.hunt},   {"gathering", st.aff.gather}, {"farming", st.aff.farm},
-            {"herding", st.aff.herd},   {"fighting", st.aff.fight}};
-        int bi = 0;
-        for (int i = 1; i < 5; i++)
-            if (af[i].v > af[bi].v) bi = i;
-        if (af[bi].v > 0.05f) {
-            snprintf(b, sizeof b, "Known for: %s (%d%%)\n", af[bi].n,
-                     (int)std::lround(af[bi].v * 100));
-            out += b;
-        }
-    }
-    if (st.kSmall > 0.02f * st.kFoodP) {
-        snprintf(b, sizeof b, "Bows: %d (%d%% of hunters)\n", (int)st.bows,
-                 (int)std::lround(population::bowCoverage(st.bows, st.P) * 100));
-        out += b;
-    }
-    if (st.starvedYr >= 0.5f) {
-        snprintf(b, sizeof b, "Hunger: %d lost this year\n", (int)std::lround(st.starvedYr));
-        out += b;
-    }
     if (st.scarceSince >= 0) {
         snprintf(b, sizeof b, "Scarce since year %d%s\n", (int)(st.scarceSince / 365.0) + 1,
                  st.noProspect ? " -- nowhere to go" : "");
         out += b;
     }
+    return out;
+}
+
+// Everything that happened to these people during the step just taken --
+// the same events the news feed groups, filtered to this settlement.
+static std::string historyText(const population::Settlement& st) {
+    std::string out;
+    char b[160];
+    int shown = 0;
+    for (const population::Event& e : app.world.pop.events) {
+        if (e.sid != st.id && e.sid2 != st.id) continue;
+        if (++shown > 11) {
+            out += "  ...\n";
+            break;
+        }
+        snprintf(b, sizeof b, "%d: %s\n", (int)(e.t / 365.0) + 1, e.text);
+        out += b;
+    }
+    if (!shown) out += "Nothing happened to them this step.\n";
     return out;
 }
 
@@ -1670,8 +1707,10 @@ static std::string panelContent(const Panel& pn) {
     int idx = settlementIndexById(pn.sid);
     if (idx < 0) return "This settlement is gone:\nthey picked up and moved on.";
     const population::Settlement& st = app.world.pop.settlements[idx];
-    if (pn.tab == 0) return envText(st);
-    if (pn.tab == 2) return buildingsText(st, app.world.simTime);
+    if (pn.tab == TAB_PEOPLE) return peopleText(st);
+    if (pn.tab == TAB_ENV) return envText(st);
+    if (pn.tab == TAB_BUILT) return buildingsText(st, app.world.simTime);
+    if (pn.tab == TAB_HISTORY) return historyText(st);
     if (pn.techSel >= 0) return techDetailText(st, idx, pn.techSel);
     std::string out;
     for (int t = 0; t < population::NTECH; t++)
@@ -1968,7 +2007,7 @@ static void paintPanel(HWND h) {
         TextOutA(dc, PANEL_PAD, 8, title, (int)strlen(title));
         SelectObject(dc, app.panelFont);
         if (pn->kind == 0)
-            for (int t = 0; t < 3; t++) {
+            for (int t = 0; t < PANEL_NTABS; t++) {
                 SetTextColor(dc, pn->tab == t ? RGB(255, 225, 150) : RGB(140, 140, 155));
                 TextOutA(dc, PANEL_TAB_X[t], PANEL_TAB_Y, PANEL_TABS[t],
                          (int)strlen(PANEL_TABS[t]));
@@ -1981,7 +2020,7 @@ static void paintPanel(HWND h) {
             size_t e = txt.find('\n', pos);
             std::string line =
                 txt.substr(pos, e == std::string::npos ? std::string::npos : e - pos);
-            bool clickable = pn->kind == 0 && pn->tab == 1 &&
+            bool clickable = pn->kind == 0 && pn->tab == TAB_TECH &&
                              ((pn->techSel < 0 && row < population::NTECH) ||
                               (pn->techSel >= 0 && row == 0));
             SetTextColor(dc, clickable ? RGB(255, 215, 130) : RGB(230, 230, 235));
@@ -2025,7 +2064,7 @@ static LRESULT CALLBACK panelProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
         SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE); // raise on grab
         if (pn && pn->kind == 0 && my >= PANEL_TAB_Y && my < PANEL_TAB_Y + PANEL_TAB_H) {
-            for (int t = 0; t < 3; t++)
+            for (int t = 0; t < PANEL_NTABS; t++)
                 if (mx >= PANEL_TAB_X[t] && mx < PANEL_TAB_X[t + 1] - 6) {
                     pn->tab = t;
                     pn->techSel = -1;
@@ -2033,7 +2072,7 @@ static LRESULT CALLBACK panelProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
         }
-        if (pn && pn->kind == 0 && pn->tab == 1 && my >= PANEL_CONTENT_Y) {
+        if (pn && pn->kind == 0 && pn->tab == TAB_TECH && my >= PANEL_CONTENT_Y) {
             int row = (my - PANEL_CONTENT_Y) / PANEL_LINE_H;
             if (pn->techSel < 0 && row >= 0 && row < population::NTECH) {
                 pn->techSel = row;
