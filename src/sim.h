@@ -208,6 +208,7 @@ inline void applyClaim(population::Field& pf, population::Settlement& s) {
     s.kFoodP = pf.kFoodPMap[s.cell] * f;
     s.kGame = pf.kGameMap[s.cell] * f;
     s.kSmall = pf.kSmallMap[s.cell] * f;
+    s.kFish = pf.kFishMap[s.cell] * f;
     s.kWater = pf.kWaterMap[s.cell] * f;
 }
 
@@ -280,7 +281,7 @@ inline bool growClaim(population::Field& pf, int si, double now) {
 // how a herding band values the steppe a forager walks past -- and it must
 // gate founding too, or a band would choose a target it then refuses.
 inline float moverCap(const population::Field& pf, int cell, float farmExp, float husbExp,
-                      double now) {
+                      double now, float fishExp = 0) {
     using namespace population;
     float food = pf.kFoodPMap[cell];
     if (food <= 0) return 0;
@@ -288,6 +289,9 @@ inline float moverCap(const population::Field& pf, int cell, float farmExp, floa
     if (husbExp > 0)
         food += pf.pastureMap[cell] * FORAGE_KM2 * HERD_PASTURE_K / SUSTAIN_R *
                 (0.3f + 0.7f * husbExp) * 0.85f;
+    // The water counts even to people with no gear -- anyone can take fish
+    // from a bank -- and counts for much more to people who can weir it.
+    food += pf.kFishMap[cell] * fishEff(fishExp);
     return std::min(food, pf.kWaterMap[cell]);
 }
 
@@ -295,8 +299,9 @@ inline float moverCap(const population::Field& pf, int cell, float farmExp, floa
 // valley is a bad place to move to for a generation. Only applied to the
 // finalists of a search -- scars are sparse, and the lookup is not free.
 inline float moverCapScarred(const population::Field& pf, int cell, float farmExp, float husbExp,
-                             double now) {
-    return moverCap(pf, cell, farmExp, husbExp, now) * population::cellCondition(pf, cell, now);
+                             double now, float fishExp = 0) {
+    return moverCap(pf, cell, farmExp, husbExp, now, fishExp) *
+           population::cellCondition(pf, cell, now);
 }
 
 // The same, priced for the room there is to claim: hemmed-in ground is worth
@@ -306,12 +311,12 @@ inline float moverCapScarred(const population::Field& pf, int cell, float farmEx
 inline float wantedReachKm(const population::Field& pf, int cell, float P, float R);
 
 inline float moverCapRoom(const population::Field& pf, int cell, float farmExp, float husbExp,
-                          double now, float movers) {
+                          double now, float movers, float fishExp = 0) {
     float room = std::min(roomKm(pf, cellCentre(cell)), population::CLAIM_CAP_KM);
     if (room < population::CLAIM_FLOOR_KM) return 0.0f;
     // What they would hold on arrival: what they need, or what fits.
     float take = std::min(wantedReachKm(pf, cell, movers, population::SUSTAIN_R), room);
-    return moverCapScarred(pf, cell, farmExp, husbExp, now) * claimFactor(take);
+    return moverCapScarred(pf, cell, farmExp, husbExp, now, fishExp) * claimFactor(take);
 }
 
 // The best-looking unclaimed prospect within the knowledge range, judged with
@@ -320,9 +325,9 @@ inline float moverCapRoom(const population::Field& pf, int cell, float farmExp, 
 // Returns a cell index, or -1 if nothing known is worth going to.
 inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t& rng,
                         float radiusKm, double now, float farmExp = 0, float husbExp = 0,
-                        float* estOut = nullptr, float movers = 0) {
+                        float* estOut = nullptr, float movers = 0, float fishExp = 0) {
     using namespace population;
-    bool skilled = farmExp > 0 || husbExp > 0;
+    bool skilled = farmExp > 0 || husbExp > 0 || fishExp > 0;
     float lat0 = std::asin(std::clamp(from.z, -1.0f, 1.0f));
     float dLat = radiusKm / 6371.0f;
     int y0 = std::max((int)(((lat0 - dLat) + 3.14159265f / 2) / 3.14159265f * H), 1);
@@ -341,7 +346,7 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
             // no skills is worth exactly K.
             if (pf.kWaterMap[cell] < MIN_SETTLEMENT_K) continue;
             if (!skilled && pf.K[cell] < MIN_SETTLEMENT_K) continue;
-            float cap = skilled ? moverCap(pf, cell, farmExp, husbExp, now) : pf.K[cell];
+            float cap = skilled ? moverCap(pf, cell, farmExp, husbExp, now, fishExp) : pf.K[cell];
             if (cap < MIN_SETTLEMENT_K) continue;
             terrain::V3 n = cellCentre(cell);
             float dot = terrain::dot(from, n);
@@ -457,6 +462,7 @@ inline population::SeasonCtx seasonCtx(const population::Settlement& s,
     ctx.granExp = technology::expertise(s.tech[population::TECH_GRANARY], now);
     ctx.gameG = s.gameNow;
     ctx.archExp = technology::expertise(s.tech[population::TECH_ARCHERY], now);
+    ctx.fishExp = technology::expertise(s.tech[population::TECH_FISHING], now);
     ctx.bowCover = population::bowCoverage(s.bows, s.P);
     ctx.aff = s.aff;
     return ctx;
@@ -662,6 +668,7 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     s.gRegion = population::gameRegion(cell);
     s.gameNow = pf.gameG.empty() ? 1.0f : pf.gameG[s.gRegion];
     s.sFarm = pf.sFarmMap[cell];
+    s.sFish = pf.sFishMap[cell];
     s.pasture = pf.pastureMap[cell];
     s.buildMat = pf.buildMatMap[cell];
     s.cycleT = now;  // the fill cycle starts with the settlement
@@ -877,10 +884,11 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
     // judged against its population, settling against a fixed threshold.
     float fExp = technology::expertise(b.tech[TECH_FARMING], now);
     float hExp = technology::expertise(b.tech[TECH_HUSBANDRY], now);
-    auto canHold = [&](int c) { return moverCapRoom(pf, c, fExp, hExp, now, b.P) >= b.P; };
+    float qExp = technology::expertise(b.tech[TECH_FISHING], now);
+    auto canHold = [&](int c) { return moverCapRoom(pf, c, fExp, hExp, now, b.P, qExp) >= b.P; };
     if (distKm(pos, tgt) < 20.0f) {
         // Arrived: the rumour meets reality.
-        if (pf.settlementAt[cell] < 0 && moverCap(pf, cell, fExp, hExp, now) >= MIN_SETTLEMENT_K &&
+        if (pf.settlementAt[cell] < 0 && moverCap(pf, cell, fExp, hExp, now, qExp) >= MIN_SETTLEMENT_K &&
             canHold(cell) && claimFits(pf, pos)) {
             foundSettlement(pf, ws, hy, clim, b, cell, now);
             done = true;
@@ -888,7 +896,7 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
             double rest = b.resting ? now - b.restStart : 0.0;
             int nt = bestProspect(pf, pos, ws.rng,
                                   bandAwareKm(rest, prominenceM(hy, clim, cell)), now, fExp, hExp,
-                                  nullptr, b.P);
+                                  nullptr, b.P, qExp);
             if (nt >= 0) b.targetCell = nt;
             else {
                 if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
@@ -896,11 +904,11 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
             }
         }
     } else if (!b.resting && pf.settlementAt[cell] < 0 &&
-               moverCap(pf, cell, fExp, hExp, now) >= MIN_SETTLEMENT_K && claimFits(pf, pos) &&
+               moverCap(pf, cell, fExp, hExp, now, qExp) >= MIN_SETTLEMENT_K && claimFits(pf, pos) &&
                canHold(cell) &&
-               moverCapRoom(pf, cell, fExp, hExp, now, b.P) >=
+               moverCapRoom(pf, cell, fExp, hExp, now, b.P, qExp) >=
                    hopeRatio(now - b.setOut) *
-                       moverCapRoom(pf, b.targetCell, fExp, hExp, now, b.P)) {
+                       moverCapRoom(pf, b.targetCell, fExp, hExp, now, b.P, qExp)) {
         // Ground under their feet, judged against where they were going:
         // early on it has to be clearly better to be worth giving up the
         // plan, and as the months pass they grow readier to take less.
@@ -1069,11 +1077,12 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     if (s.P < BAND_MIN_P) return; // too few to survive any journey
     float fExp = technology::expertise(s.tech[TECH_FARMING], now);
     float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
+    float qExp = technology::expertise(s.tech[TECH_FISHING], now);
     terrain::V3 home = cellCentre(s.cell);
     float est = 0;
     int tgt = bestProspect(pf, home, ws.rng,
                            settlementAwareKm(now - s.founded, prominenceM(hy, clim, s.cell)), now,
-                           fExp, hExp, &est, s.P);
+                           fExp, hExp, &est, s.P, qExp);
     bool wasStuck = s.noProspect; // the last survey came up empty too
     s.noProspect = tgt < 0;
     if (tgt < 0) {

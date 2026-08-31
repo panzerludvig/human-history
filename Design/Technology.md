@@ -78,7 +78,7 @@ cold survival.
 |---|---|---|---|
 | Farming | undiscovered | suitable land (sFarm) | food multiplier, harvest season |
 | Animal husbandry | undiscovered | herd (living stock) | pasture-scaled flow, winter-proof |
-| Fishing | known, expertise local | water access | food from water (planned) |
+| Fishing | known; practised where there is water | shoreline (sFish) | food from water, unworn by use |
 | Boats | known, expertise local | built boats | water movement, offshore fishing (planned) |
 | Archery | known at start | made bows | small game, some big game |
 | Pottery | undiscovered | made pots | portable storage (planned) |
@@ -144,6 +144,48 @@ Storage capacity replaced the old farming-expertise stand-in (cap was 90–180
 days via the farm multiplier; it is now 90 days + built granaries).
 Deferred to a follow-up: maintenance and decay (abandoned granaries should
 crumble back to ruin).
+
+## Fishing (the fifth technology; the first food that is not of the land)
+
+Built 2026-08-31. The point of fishing is not the extra calories: it is that
+it offers **a second road to dense, settled life that does not go through
+farming**. Lepenski Vir, the Jomon, the Northwest Coast were all sedentary,
+storing and populous without agriculture, and a world model that cannot
+produce that is missing a real branch of the human past.
+
+Two properties make water different from land, and both are the point:
+
+- **It is not worn out by use.** The fish term carries no `R` factor, so a
+  fishing settlement never degrades its way into having to move. Land does.
+- **It arrives in a season.** `foodFlow` gives fish a run: 35% off-season
+  rising to full with the growing season. A glut you must keep or waste is
+  exactly the argument for a granary, so fishing should push storage.
+
+**What counts as water.** Only the sea within about a day's walk, a real
+lake, or a major river: `FISH_SEA_KM2` 0.50, `FISH_LAKE_KM2` 0.30,
+`FISH_RIVER_KM2` 0.30 scaled by drainage area against a 20,000 km2 full
+river, each times a cold-water factor (herring, cod and salmon have no
+tropical equal). The first pass had a creek worth as much as a coast: 5,710
+of 6,211 settlements lived "on water" and fish came to a third of the
+world's food. A creek is not a fishery.
+
+**Who fishes.** Nobody invents this: weirs and nets are tens of thousands of
+years older than any crop, so like archery it is known from the start.
+Settlements on real water are seeded practising it; everyone else has heard
+of it and can take it up by contact, gated on the shoreline being real
+(`sFish >= 0.15`, or the answer is no rather than "slowly"). Gear is the
+scarce part: bare hands and a spear take 30% of what weirs and nets take
+(`FISH_BASE`), which is the knowledge x means pattern again.
+
+Measured over 500 years, against the same run without fishing: 6,471
+settlements against 6,463 -- the map is unchanged -- but 1.46M people
+against 1.12M, with water at 10% of world capacity. 2,388 settlements sit on
+real water and average 256 people against 208 inland. Coasts are denser,
+which is the whole claim.
+
+Practice spreads with the people who carry it, so a colony founded inland by
+coastal parents still knows how to fish and gets nothing for it. That is
+correct and harmless: the yield is what matters, not the knowledge.
 
 ## Archery and bows (the fourth technology; the first carried possession)
 

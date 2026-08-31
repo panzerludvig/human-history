@@ -37,7 +37,7 @@ constexpr float NEED_YEARS_SAT = 4.0f;       // full desperation
 
 inline const char* techName(int t) {
     static const char* names[population::NTECH] = {"farming", "husbandry", "granaries",
-                                                   "archery"};
+                                                   "archery", "fishing"};
     return names[t];
 }
 
@@ -125,6 +125,12 @@ inline float suitability(const population::Settlement& s, int tech) {
     if (tech == population::TECH_FARMING) return s.sFarm;
     if (tech == population::TECH_HUSBANDRY) return s.pasture;
     if (tech == population::TECH_ARCHERY) return 1.0f; // everyone can draw a bow
+    // Nobody builds a weir where there is nothing to weir. Living by water
+    // is the whole of it: you invent the gear by watching fish you cannot
+    // quite catch.
+    // Below a real shoreline the answer is no, not "slowly": otherwise a
+    // village on a creek eventually takes up weirs it has no use for.
+    if (tech == population::TECH_FISHING) return s.sFish >= 0.15f ? s.sFish : 0.0f;
     return s.tech[population::TECH_FARMING].practising ? 1.0f : 0.15f;
 }
 
@@ -137,12 +143,16 @@ inline float effectiveK(const population::Settlement& s, double now) {
     float hExp = expertise(s.tech[population::TECH_HUSBANDRY], now);
     float husb = s.herd * 0.85f + population::FARMYARD_SHARE_POP * s.kFoodP * hExp;
     float archExp = expertise(s.tech[population::TECH_ARCHERY], now);
+    float fishExp = expertise(s.tech[population::TECH_FISHING], now);
     float cover = population::bowCoverage(s.bows, s.P);
     float bigEff = population::huntEff(s.gameNow) *
                    (1.0f + population::BOW_BIG_GAIN * cover * archExp);
     float forage = s.kFoodP - s.kGame - s.kSmall + s.kGame * bigEff +
                    s.kSmall * population::smallGameEff(cover, archExp);
-    return std::min(forage * s.meanF + s.kFoodP * (farmMult - 1.0f) + husb, s.kWater);
+    // Fish carry no land-condition term: the water is not worn out.
+    return std::min(forage * s.meanF + s.kFoodP * (farmMult - 1.0f) + husb +
+                        s.kFish * population::fishEff(fishExp),
+                    s.kWater);
 }
 
 // Which technologies are invented from need rather than serendipity: nobody
@@ -307,6 +317,15 @@ inline void init(population::Field& pf, WorldState& ws, uint32_t seed, double no
     for (population::Settlement& s : pf.settlements) {
         s.tech[population::TECH_ARCHERY] = {true, true, now};
         s.nextTech[population::TECH_ARCHERY] = INF_T;
+        // Fishing is old too -- weirs and nets are tens of thousands of years
+        // older than any crop -- so it is not invented here either. Anyone
+        // living by water already does it; everyone else has heard of it and
+        // takes it up if they ever have reason and a neighbour to learn from.
+        s.tech[population::TECH_FISHING].aware = true;
+        if (s.sFish >= 0.25f) {
+            s.tech[population::TECH_FISHING].practising = true;
+            s.tech[population::TECH_FISHING].practiceT = now;
+        }
     }
     for (int t = 0; t < population::NTECH; t++) {
         for (int i = 0; i < (int)pf.settlements.size(); i++) redraw(pf, i, ws, t, now);

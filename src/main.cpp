@@ -359,7 +359,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 18\n";
+    f << "version 19\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -460,7 +460,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             SavedSettlement sv{};
             f >> sv.cell >> sv.P >> sv.R;
             if (version >= 15) f >> sv.children >> sv.men >> sv.women >> sv.elderly;
-            int nt = version >= 13 ? 4 : version >= 8 ? 3 : version >= 3 ? 1 : 0;
+            int nt = version >= 19 ? 5 : version >= 13 ? 4 : version >= 8 ? 3 : version >= 3 ? 1 : 0;
             for (int t = 0; t < nt; t++)
                 f >> sv.tech[t][0] >> sv.tech[t][1] >> sv.tech[t][2];
             if (version >= 7) {
@@ -491,7 +491,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             if (version >= 15) f >> bv.children >> bv.men >> bv.women >> bv.elderly;
             f >> bv.px >> bv.py >> bv.pz >> bv.P >> bv.S >> bv.target >> bv.resting >>
                 bv.restStart;
-            int nt = version >= 13 ? 4 : version >= 8 ? 3 : version >= 7 ? 2 : 0;
+            int nt = version >= 19 ? 5 : version >= 13 ? 4 : version >= 8 ? 3 : version >= 7 ? 2 : 0;
             for (int t = 0; t < nt; t++)
                 f >> bv.tech[t][0] >> bv.tech[t][1] >> bv.tech[t][2];
             if (version >= 13) f >> bv.bows;
@@ -565,6 +565,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.buildMat = w.pop.buildMatMap[cell];
             st.kGame = w.pop.kGameMap[cell];
             st.kSmall = w.pop.kSmallMap[cell];
+            st.kFish = w.pop.kFishMap[cell];
+            st.sFish = w.pop.sFishMap[cell];
             st.gRegion = population::gameRegion(cell);
             for (int t = 0; t < population::NTECH; t++) {
                 st.tech[t].aware = sv.tech[t][0] > 0.5;
@@ -2072,7 +2074,7 @@ static const char* PANEL_TABS[5] = {"People", "Environment", "Technology", "Buil
 constexpr int PANEL_NTABS = 5;
 enum : int { TAB_PEOPLE = 0, TAB_ENV, TAB_TECH, TAB_BUILT, TAB_HISTORY };
 static const char* TECH_NAMES[population::NTECH] = {"Farming", "Husbandry",
-                                                   "Granary building", "Archery"};
+                                                   "Granary building", "Archery", "Fishing"};
 
 // Settlements are erased when they pick up and leave, so panels hold an id
 // and resolve the index whenever they draw.
@@ -2178,6 +2180,15 @@ static std::string envText(const population::Settlement& st) {
                                                                   : "as much as they need";
         snprintf(b, sizeof b, "Territory: %d-%d km, %d km2 worked -- %s\n",
                  (int)std::lround(lo), (int)std::lround(hi), (int)std::lround(st.claimKm2), state);
+        out += b;
+    }
+    if (st.kFish > 0) {
+        float ex = technology::expertise(st.tech[population::TECH_FISHING], now);
+        float fish = st.kFish * population::fishEff(ex);
+        float k = technology::effectiveK(st, now);
+        snprintf(b, sizeof b, "Water: feeds %d%s (%d%% of the food)\n", (int)std::lround(fish),
+                 st.tech[population::TECH_FISHING].practising ? ", weirs and nets" : ", by hand",
+                 (int)std::lround(fish / std::max(k, 1.0f) * 100));
         out += b;
     }
     if (st.kGame > 0) {

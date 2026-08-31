@@ -362,7 +362,8 @@ enum : int {
     TECH_HUSBANDRY = 1,
     TECH_GRANARY = 2,
     TECH_ARCHERY = 3, // known everywhere from the start; the bows are the scarce part
-    NTECH = 4
+    TECH_FISHING = 4, // weirs, traps and nets: the bank is free, the gear is not
+    NTECH = 5
 };
 struct TechState {
     bool aware = false;
@@ -450,6 +451,8 @@ struct Settlement {
     bool techFires[NTECH] = {false, false, false, false};
     // How far the claim reaches in each of CLAIM_SECTORS directions, sector 0
     // due east and turning north. Set to the floor when the place is founded.
+    float kFish = 0;  // people the water in reach could feed, at full gear
+    float sFish = 0;  // how good this shoreline is, 0..1, for taking up the trade
     float claim[CLAIM_SECTORS] = {};
     float claimKm2 = FORAGE_KM2; // worked value of the whole claim, cached (set on founding)
     double claimT = 0;           // when the frontier was last worked outward
@@ -514,7 +517,7 @@ struct Field {
     std::vector<Ruin> ruins;
     // Per-cell local properties, kept for founding settlements at runtime:
     std::vector<float> kFoodPMap, kWaterMap, sFarmMap, pastureMap, buildMatMap, kGameMap,
-        kSmallMap;
+        kSmallMap, kFishMap, sFishMap;
     std::vector<Culture> cultures;
     std::vector<Event> events;      // this step's news
     int eventCount[EV_KINDS] = {};  // exact totals, even past what is kept
@@ -581,6 +584,43 @@ inline void computeNeighbours(Field& f) {
         }
 }
 
+// ------------------------------------------------------------- fishing
+//
+// Water feeds people, and it feeds them differently from land: a coast is
+// not worn out by being fished, and it does not deliver evenly through the
+// year. Both of those matter. The first means a fishing settlement never
+// degrades its way into moving; the second is why fishing and storage
+// belong together -- a run is a glut you must keep or waste.
+//
+// Yields are people per km^2 of claim at the same scale as the land's, so a
+// rich cold coast is worth about as much as forest and a warm one rather
+// less. Cold water carries more life than warm: herring, cod and salmon
+// have no tropical equal.
+// Calibrated down from a first pass that made fishing universal: with a
+// small stream worth as much as a coast, 5,710 of 6,211 settlements lived
+// "on water" and fish came to a third of the world's food. A creek is not a
+// fishery. Only the sea, a real lake and a major river are.
+constexpr float FISH_SEA_KM2 = 0.50f;   // a coast worth living on
+constexpr float FISH_LAKE_KM2 = 0.30f;  // a lake shore
+constexpr float FISH_RIVER_KM2 = 0.30f; // a river worth a weir, at full size
+constexpr float FISH_RIVER_FULL = 20000.0f; // km2 of drainage that counts as full
+constexpr float FISH_BASE = 0.30f; // what a bank and a spear take without gear
+constexpr float FISH_WINTER = 0.35f; // the share of a run that is there off-season
+// Above this a shoreline is as good as it needs to be for anyone to bother
+// learning the trade; below it, proportionally less.
+constexpr float FISH_SUIT_FULL = 0.45f;
+
+// Cold water carries more than warm, and ice-locked water carries nothing
+// anyone can reach for months.
+inline float fishWaterFactor(float tempC) {
+    if (tempC < -2.0f) return 0.35f;
+    return std::clamp(1.25f - tempC / 26.0f, 0.35f, 1.25f);
+}
+
+// What the gear is worth: a bank and a spear take a third of what weirs,
+// traps and nets take.
+inline float fishEff(float expertise) { return FISH_BASE + (1.0f - FISH_BASE) * expertise; }
+
 // Natural food yield, people per km^2 at land condition R = 1, by cover class:
 // bare, tundra, taiga, forest, rainforest, grass, steppe, savanna, shrub, marsh, desert.
 constexpr float COVER_YIELD[terrain::NCOV] = {0.0f, 0.08f, 0.4f,  1.2f, 1.0f, 0.8f,
@@ -644,7 +684,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
 
     // Everything the population model needs to know about one cell.
     auto evalCell = [&](int x, int y, float& kFoodP, float& kWater, float& sFarm, float& pasture,
-                        float& buildMat, float& kGame, float& kSmall) {
+                        float& buildMat, float& kGame, float& kSmall, float& kFish, float& sFish) {
         int i = y * W + x;
         kFoodP = kWater = sFarm = pasture = buildMat = kGame = kSmall = 0;
         float h = hm[i];
@@ -691,6 +731,25 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         buildMat = std::clamp(m.cov[2] + m.cov[3] + m.cov[4] + 0.3f * m.cov[8] +
                                   0.6f * m.cov[0],
                               0.15f, 1.0f);
+
+        // What the water in reach is worth. A shoreline is what makes it:
+        // the sea at the door, a lake, or a river big enough to weir. Only
+        // the best of the three counts -- a coast and a river mouth is a
+        // better place to live, not two places.
+        float shore = 0;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) {
+                int yy = std::clamp(y + dy, 0, H - 1);
+                int j = yy * W + hydrology::wrapX(x + dx);
+                if (hm[j] <= 0) shore = std::max(shore, FISH_SEA_KM2);
+                if (hy.cells[j].lakeLevel > hydrology::NO_LAKE + 1.0f)
+                    shore = std::max(shore, FISH_LAKE_KM2);
+            }
+        float river = std::min(hy.accKm2[i] / FISH_RIVER_FULL, 1.0f);
+        shore = std::max(shore, FISH_RIVER_KM2 * river);
+        float perKm2 = shore * fishWaterFactor(temp);
+        kFish = perKm2 * FORAGE_KM2 / SUSTAIN_R;
+        sFish = std::clamp(perKm2 / FISH_SUIT_FULL, 0.0f, 1.0f);
     };
 
     f.kFoodPMap.assign(W * H, 0.0f);
@@ -700,13 +759,18 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
     f.buildMatMap.assign(W * H, 0.0f);
     f.kGameMap.assign(W * H, 0.0f);
     f.kSmallMap.assign(W * H, 0.0f);
+    f.kFishMap.assign(W * H, 0.0f);
+    f.sFishMap.assign(W * H, 0.0f);
 #pragma omp parallel for
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
             int i = y * W + x;
             evalCell(x, y, f.kFoodPMap[i], f.kWaterMap[i], f.sFarmMap[i], f.pastureMap[i],
-                     f.buildMatMap[i], f.kGameMap[i], f.kSmallMap[i]);
-            f.K[i] = std::min(f.kFoodPMap[i], f.kWaterMap[i]);
+                     f.buildMatMap[i], f.kGameMap[i], f.kSmallMap[i], f.kFishMap[i],
+                     f.sFishMap[i]);
+            // What an unskilled newcomer would find here: the land, plus the
+            // fish anyone can take from a bank without gear.
+            f.K[i] = std::min(f.kFoodPMap[i] + f.kFishMap[i] * FISH_BASE, f.kWaterMap[i]);
         }
 
     // Regional game pools: each region's sustainable draw is its game yield
@@ -760,6 +824,8 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         s.kFoodP = f.kFoodPMap[c.cell];
         s.kGame = f.kGameMap[c.cell];
         s.kSmall = f.kSmallMap[c.cell];
+        s.kFish = f.kFishMap[c.cell];
+        s.sFish = f.sFishMap[c.cell];
         s.gRegion = gameRegion(c.cell);
         s.kWater = f.kWaterMap[c.cell];
         s.sFarm = f.sFarmMap[c.cell];
@@ -780,6 +846,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
             s.kFoodP *= sc;
             s.kGame *= sc;
             s.kSmall *= sc;
+            s.kFish *= sc;
             s.kWater *= sc;
         }
         if (clim) atmosphere::seasonProfile(*clim, cellN(c.cell),
@@ -834,6 +901,7 @@ struct SeasonCtx {
     float gameG = 1;    // regional game pool health (Settlement::gameNow)
     float bowCover = 0;  // share of hunters carrying a bow
     float archExp = 0;   // archery expertise
+    float fishExp = 0;   // fishing expertise
 };
 
 // Hunting efficiency against a depleted pool: scarcer game is hunted
@@ -906,12 +974,15 @@ inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double
                    affinityBonus(ctx.aff.hunt);
     float forage = (s.kFoodP - s.kGame - s.kSmall) * affinityBonus(ctx.aff.gather) + hunted;
     float farm = s.kFoodP * (ctx.farmMult - 1.0f);
-    float fF = s.meanF, fG2 = 1.0f;
+    float fF = s.meanF, fG2 = 1.0f, fFish = 1.0f;
     if (ctx.clim) {
         float tC = cachedSeasonT(s, t);
         fF = atmosphere::forageFactor(tC);
         float g = atmosphere::growthActivity(tC);
         fG2 = g * g / std::max(s.meanG2, 0.05f);
+        // The run: fish come in a season and are thin outside it. Not as
+        // sharp as a harvest, sharp enough to be worth drying.
+        fFish = FISH_WINTER + (1.0f - FISH_WINTER) * g;
     }
     // Husbandry: the herd is a walking store -- its flow barely dips in
     // winter (fodder and slaughter). Plus the pasture-free farmyard animals.
@@ -919,7 +990,10 @@ inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double
     float husb = (s.herd * (0.7f + 0.3f * gNow) +
                   FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp) *
                  R * affinityBonus(ctx.aff.herd);
-    return std::min((forage * fF + farm * fG2 * affinityBonus(ctx.aff.farm)) * R + husb,
+    // Fish are not scaled by R: a coast is not worn out by being fished,
+    // which is the whole reason a fishing people can stay put.
+    float fish = s.kFish * fishEff(ctx.fishExp) * fFish * affinityBonus(ctx.aff.hunt);
+    return std::min((forage * fF + farm * fG2 * affinityBonus(ctx.aff.farm)) * R + husb + fish,
                     s.kWater);
 }
 
