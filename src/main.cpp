@@ -209,6 +209,13 @@ struct Camera {
     double kmPerPixel() const { return 2.0 * altitude * EARTH_RADIUS_KM * tanHalfV() / height; }
 };
 
+// Zoom towards whatever the cursor is over: the ground under it stays under
+// it, so closing in on a place is aiming rather than aiming and then
+// correcting. Wheeling out runs the same rule backwards, which slides that
+// ground away from the cursor as the view widens. A cursor off the globe or
+// outside the window leaves the centre where it is.
+static void zoomAt(double factor, int px, int py);
+
 // ---------------------------------------------------------------- shaders
 
 static std::string exeDir() {
@@ -937,6 +944,33 @@ static void drawLabel(HDC dc, int x, int y, const char* txt) {
     TextOutA(dc, x + 1, y + 1, txt, n);
     SetTextColor(dc, RGB(250, 246, 234));
     TextOutA(dc, x, y, txt, n);
+}
+
+static void zoomAt(double factor, int px, int py) {
+    Vec3 anchor{};
+    bool haveAnchor = px >= 0 && py >= 0 && px < app.cam.width && py < app.cam.height &&
+                      app.cam.hitSphere(px, py, anchor);
+    app.cam.altitude *= factor;
+    app.cam.clampAltitude();
+    if (!haveAnchor) return;
+    // Turn the globe so the anchor comes back under the cursor. The camera
+    // has no roll -- its up is always north -- so one turn leaves a little
+    // tangential drift; three settle it.
+    for (int i = 0; i < 3; i++) {
+        Vec3 at;
+        if (!app.cam.hitSphere(px, py, at)) break;
+        Vec3 axis = cross(at, anchor);
+        double sn = std::sqrt(dot(axis, axis));
+        if (sn < 1e-12) break;
+        axis = axis * (1.0 / sn);
+        double ang = std::atan2(sn, dot(at, anchor));
+        Vec3 c = sphereDir(app.cam.lat, app.cam.lon);
+        // Rodrigues: turn the centre through the same rotation.
+        Vec3 turned = c * std::cos(ang) + cross(axis, c) * std::sin(ang) +
+                      axis * (dot(axis, c) * (1.0 - std::cos(ang)));
+        app.cam.lat = std::asin(std::clamp(turned.z, -1.0, 1.0));
+        app.cam.lon = std::atan2(turned.y, turned.x);
+    }
 }
 
 static void paintOverlay() {
@@ -2693,8 +2727,9 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (app.screen != Screen::InGame) return 0;
         int delta = GET_WHEEL_DELTA_WPARAM(wp);
         double factor = std::pow(0.8, delta / (double)WHEEL_DELTA);
-        app.cam.altitude *= factor;
-        app.cam.clampAltitude();
+        POINT cur{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}; // screen coordinates
+        ScreenToClient(hwnd, &cur);
+        zoomAt(factor, (int)cur.x, (int)cur.y);
         return 0;
     }
     case WM_KEYDOWN:

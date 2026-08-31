@@ -2,7 +2,7 @@
 
 **Status:** Implemented — see [[Meta/Status Vocabulary]]
 
-Version 1 of the game: a window showing a spherical, Earth-like globe that can be zoomed with the mouse wheel and panned with left-click drag. Code in `src/main.cpp`, `shaders/globe.vert`, `shaders/globe.frag`.
+Version 1 of the game: a window showing a spherical, Earth-like globe that can be zoomed with the mouse wheel and panned with left-click drag. The wheel zooms **towards the cursor** (`zoomAt`): the ground under it stays under it, so closing in on a place is aiming rather than aiming and then correcting, and wheeling back out runs the same rule in reverse, sliding that ground away as the view widens. It works by turning the globe so the anchor point returns to the same pixel -- the camera has no roll, its up is always north, so one turn leaves a little tangential drift and three settle it to under a hundredth of a pixel. A cursor off the globe or outside the window zooms to the centre as before. Code in `src/main.cpp`, `shaders/globe.vert`, `shaders/globe.frag`.
 
 ---
 
