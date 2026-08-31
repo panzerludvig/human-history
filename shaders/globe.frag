@@ -300,12 +300,14 @@ float villageRadiusKm(float P) { // mirrors sim::villageRadiusKm
     return 0.02 + 0.011 * sqrt(float(n));
 }
 
-// Returns 1 for a hut, 2 for a granary, 3 for the trodden ground they
-// stand on, 0 for country that is none of those.
+// Returns 1 and 4 for the two pitches of a roof, 2 for a granary, 3 for the
+// trodden ground they stand on, 0 for country that is none of those. A hut
+// is a rectangle 9 m by 6 m with a ridge down its length -- from above that
+// is all a house is, and it reads as one where a disc does not.
 int hutsNear(vec3 n) {
     if (uKmPerPixel > HUT_KMPP) return 0;
-    float hutKm = 0.004;  // a house, 8 m across
-    float granKm = 0.003; // a raised store, smaller than the house
+    float hutKm = 0.006;  // a house: 9 m by 6 m, so 6 m from the middle at most
+    float granKm = 0.002; // a raised store, smaller than the house
     ivec2 c0 = hydroCell(n);
     for (int dy = -1; dy <= 1; dy++)
         for (int dx = -1; dx <= 1; dx++) {
@@ -328,7 +330,15 @@ int hutsNear(vec3 n) {
                 float rr = rKm * (0.18 + 0.82 * sqrt(float(k) / float(huts))) *
                            (0.82 + 0.36 * fract(sin(float(k) * 12.9898 + ph) * 43758.5453));
                 vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
-                if (length(n - p) * 6371.0 < hutKm) return 1;
+                vec3 dv = n - p;
+                if (dot(dv, dv) * 40602000.0 > hutKm * hutKm) continue; // 6371^2
+                vec2 lp = vec2(dot(dv, east), dot(dv, north)) * 6371.0;
+                // Houses face whichever way they were built; the settlement
+                // has no plan, only a scatter.
+                float ang = a * 1.7 + fract(sin(float(k) * 45.164 + ph) * 21943.7) * 3.14159;
+                vec2 r2 = vec2(lp.x * cos(ang) + lp.y * sin(ang),
+                               -lp.x * sin(ang) + lp.y * cos(ang));
+                if (abs(r2.x) < 0.0045 && abs(r2.y) < 0.003) return r2.y < 0.0 ? 1 : 4;
             }
             // Granaries: sim::granaryPos, mirrored exactly -- same angle, and
             // each one a little further out than the last.
@@ -429,10 +439,20 @@ vec4 fieldsNear(vec3 n) {
             // It is the canvas the plots sit on, and it is what makes a farm
             // read as one place rather than a scatter of stripes.
             vec3 cleared = vec3(0.46, 0.44, 0.28);
+            // Furlongs: the strips run one way for a block and another way in
+            // the next, following the lie of the ground rather than any plan.
+            // A whole clearing ploughed one way reads as a barcode, and open
+            // field country never looked like that.
+            vec2 blk = floor(f / 1.2);
+            float bh = fract(sin(dot(blk, vec2(37.7, 11.3)) + turn) * 9137.77);
+            float ba = (bh - 0.5) * 1.3;
+            vec2 fl = f - (blk + 0.5) * 1.2;
+            vec2 g = vec2(fl.x * cos(ba) + fl.y * sin(ba), -fl.x * sin(ba) + fl.y * cos(ba));
             // Plots: long and narrow, the shape ard ploughing and hand sowing
-            // give -- about 350 m by 800 m.
-            vec2 plot = vec2(floor(f.x / 0.35), floor(f.y / 0.80));
-            float hsh = fract(sin(dot(plot, vec2(12.9898, 78.233)) + float(cell)) * 43758.5453);
+            // give -- about 350 m by 800 m, a little wider in some furlongs.
+            float pw = 0.30 + 0.12 * bh;
+            vec2 plot = vec2(floor(g.x / pw), floor(g.y / 0.80));
+            float hsh = fract(sin(dot(plot, vec2(12.9898, 78.233)) + bh + float(cell)) * 43758.5453);
             // The mosaic thins towards its edge instead of ending at a line:
             // the outermost ground is the newest taken and the longest left
             // to rest, so the clearing frays into the country around it.
@@ -450,7 +470,7 @@ vec4 fieldsNear(vec3 n) {
             vec3 stubble = vec3(0.60, 0.55, 0.34);  // cut, or resting the year
             vec3 col = shade < 0.34 ? tilled : (shade < 0.70 ? standing : stubble);
             // A darker line where one plot meets the next: the baulks.
-            vec2 inPlot = fract(vec2(f.x / 0.35, f.y / 0.80));
+            vec2 inPlot = fract(vec2(g.x / pw, g.y / 0.80));
             float baulk = min(min(inPlot.x, 1.0 - inPlot.x) / 0.10,
                               min(inPlot.y, 1.0 - inPlot.y) / 0.05);
             return vec4(col * (0.75 + 0.25 * clamp(baulk, 0.0, 1.0)), fade);
@@ -705,6 +725,16 @@ void coverMix(float h, float slope, float temp, float moist, float uplift, float
 
 float patchNoise(vec3 w) { return fbm(w * 90.0 + 7.0, 3, 0.5) * 0.5 + 0.5; }
 
+// Ground grain: broad mottling in what grows, on the scale of a stand of
+// trees or a patch of thin soil (50-200 m). It is invisible from any height
+// worth calling a map, and it is what stops close country reading as a flat
+// wash of one colour. Deliberately no finer than that: the surface point is
+// only good to about 40 cm (see the gradient note in main), and detail below
+// a few metres would be noise, not ground.
+float groundGrain(vec3 w) {
+    return fbm(w * 32000.0 + 13.0, 3, 0.55);
+}
+
 // Rendered colour: substrate mixture underneath, cover mixture on top.
 vec3 terrainColor(vec3 w, float h, float slope, float lat, float uplift, bool nearRiver, float swamp,
                   float temp, float moist, float tCold) {
@@ -717,6 +747,9 @@ vec3 terrainColor(vec3 w, float h, float slope, float lat, float uplift, bool ne
     for (int i = 0; i < NSUB; i++) base += substrateColor(i) * s[i];
     vec3 c = base * v[0];
     for (int i = 1; i < NCOV; i++) c += coverColor(i) * v[i];
+    // Fades in as the view closes on the ground; nothing at map range.
+    float near = 1.0 - smoothstep(0.02, 0.25, uKmPerPixel);
+    if (near > 0.0) c *= 1.0 + 0.20 * near * (groundGrain(w) - 0.05);
     return c;
 }
 
@@ -781,7 +814,36 @@ void main() {
     // Terrain is sampled in a per-world noise space.
     vec3 w = uWorldRot * n + uWorldOff;
     float h = terrainHeight(w, n, uOctaves);
-    float slopePhys = length(vec2(dFdx(h), dFdy(h))) / max(uKmPerPixel * 1000.0, 1.0);
+
+    // The slope of the ground, and the gradient the relief shading uses.
+    //
+    // Both used to come from screen derivatives, which stop meaning anything
+    // once a pixel is smaller than the grid the surface point itself lands
+    // on. The hit point is computed as camera + ray, and the camera sits at
+    // magnitude ~1 on the unit sphere: a float there resolves about 6e-8,
+    // which is 40 cm of ground. Below that, neighbouring pixels get the SAME
+    // point or one 40 cm away at random, so dFdx(h) is a coin toss -- and
+    // since the slope decides rock against grass, the whole landscape came
+    // out as per-pixel salt and pepper. Below the safe pixel size the
+    // gradient is measured over a fixed baseline instead, wide enough that
+    // the two samples are genuinely different places.
+    const float GRAD_BASE_M = 40.0;
+    float runM = uKmPerPixel * 1000.0;
+    vec3 east = normalize(cross(vec3(0.0, 0.0, 1.0), n));
+    vec3 north = cross(n, east);
+    float slopePhys;
+    vec2 grad; // metres of rise per metre east and north
+    if (runM >= GRAD_BASE_M) {
+        slopePhys = length(vec2(dFdx(h), dFdy(h))) / runM;
+        grad = vec2(0.0); // the screen-space normal below is good enough here
+    } else {
+        float d = GRAD_BASE_M / 6371000.0;
+        vec3 ne = normalize(n + east * d), nn = normalize(n + north * d);
+        float he = terrainHeight(uWorldRot * ne + uWorldOff, ne, uOctaves);
+        float hn = terrainHeight(uWorldRot * nn + uWorldOff, nn, uOctaves);
+        grad = vec2(he - h, hn - h) / GRAD_BASE_M;
+        slopePhys = length(grad);
+    }
 
     // Water: the sea, a lake surface from the hydrology grid, or a river.
     float waterLevel = 0.0;
@@ -811,9 +873,15 @@ void main() {
     // the tangent plane, and their cross product is the normal. Height is
     // exaggerated 3x so relief stays visible from orbit.
     const float R = 6371000.0;
-    vec3 dPdx = dFdx(n) * R + n * dFdx(h) * 3.2;
-    vec3 dPdy = dFdy(n) * R + n * dFdy(h) * 3.2;
-    vec3 shadeN = normalize(cross(dPdx, dPdy));
+    vec3 shadeN;
+    if (runM >= GRAD_BASE_M) {
+        vec3 dPdx = dFdx(n) * R + n * dFdx(h) * 3.2;
+        vec3 dPdy = dFdy(n) * R + n * dFdy(h) * 3.2;
+        shadeN = normalize(cross(dPdx, dPdy));
+    } else {
+        // Same fixed baseline: tilt the surface normal by the measured slope.
+        shadeN = normalize(n - (east * grad.x + north * grad.y) * 3.2);
+    }
     if (dot(shadeN, n) < 0.0) shadeN = -shadeN;
     // Physical slope (rise over run) decides rock; the exaggerated normal only shades.
     float slope = clamp(slopePhys * 2.0, 0.0, 1.0);
@@ -867,7 +935,8 @@ void main() {
                       : vec4(0.0);
     if (walkers) albedo = vec3(0.85, 0.55, 0.10);         // people on the move
     else if (built == 3) albedo = vec3(0.34, 0.28, 0.21); // the ground between houses
-    else if (built == 1) albedo = vec3(0.64, 0.55, 0.34); // thatch, pale from above
+    else if (built == 1) albedo = vec3(0.66, 0.57, 0.35); // thatch, one pitch
+    else if (built == 4) albedo = vec3(0.55, 0.46, 0.28); // and the other, in its own light
     else if (built == 2) albedo = vec3(0.80, 0.64, 0.26); // granaries: straw-coloured stores
     else if (uHasHydro == 1 && !isWater && ruinNear(n) > 0.0)
         albedo = vec3(0.42, 0.40, 0.38); // ruins: weathered stone and ash
