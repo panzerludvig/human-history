@@ -155,6 +155,22 @@ inline float effectiveK(const population::Settlement& s, double now) {
                     s.kWater);
 }
 
+// Is there anything here to practise on? Not "how much is it worth" but
+// "does the means exist at all" -- a herd of one is a herd, a granary going
+// up is practice, and a novice farmer on farmable ground is a farmer. Judged
+// on share of the food instead, a people would lose husbandry the day they
+// took it up, when the seed herd feeds one person out of three hundred.
+inline bool meansPresent(const population::Settlement& s, int tech) {
+    using namespace population;
+    switch (tech) {
+    case TECH_FARMING: return s.sFarm >= 0.05f;
+    case TECH_HUSBANDRY: return s.herd > 0.0f;
+    case TECH_GRANARY: return s.granaries > 0.0f || s.buildWork > 0.0f;
+    case TECH_FISHING: return s.sFish >= 0.15f;
+    default: return true; // archery: the compression we already made
+    }
+}
+
 // Which technologies are invented from need rather than serendipity: nobody
 // farms or builds granaries unless they have to. Husbandry (taming what is
 // already around you) stays on the serendipity clock.
@@ -168,12 +184,18 @@ inline bool needDriven(int tech) {
 // fill signal holding in consecutive years (granNeedYrs).
 inline float needWeight(const population::Settlement& s, int tech, double now) {
     if (s.leaving || s.tech[tech].aware || s.P <= 1) return 0.0f;
+    // A people who lost this recently are readier to find it again.
+    float again = 1.0f;
+    if (s.tech[tech].lostT >= 0)
+        again += population::REDISCOVER_GAIN *
+                 (float)std::exp(-(now - s.tech[tech].lostT) /
+                                 (population::REDISCOVER_TAU_YEARS * YEAR));
     float years = tech == population::TECH_FARMING
                       ? (s.hungrySince >= 0 ? (float)((now - s.hungrySince) / YEAR) : 0.0f)
                       : s.granNeedYrs;
     float acute =
         std::clamp((years - NEED_YEARS_ON) / (NEED_YEARS_SAT - NEED_YEARS_ON), 0.0f, 1.0f);
-    return acute * suitability(s, tech) * std::min(s.P / 300.0f, 3.0f);
+    return acute * again * suitability(s, tech) * std::min(s.P / 300.0f, 3.0f);
 }
 
 // Adoption need: nobody changes a working lifestyle. A settlement expanding

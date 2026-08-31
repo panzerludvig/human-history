@@ -333,6 +333,7 @@ enum : int {
     EV_ADOPTED,    // a settlement took one up
     EV_GRANARY,    // a granary finished
     EV_GAME_GONE,  // a regional herd hunted to nothing
+    EV_TECH_LOST,  // nobody here can do it any more
     EV_KINDS
 };
 
@@ -355,6 +356,39 @@ struct Event {
 // storing individual entries past this, so memory stays bounded.
 constexpr int EVENTS_KEPT_PER_KIND = 250;
 
+// ---------------------------------------------------- losing a technology
+//
+// Skill is not a stock that keeps. It lives in the people doing the thing,
+// and it goes two ways: nobody does it any more, or there are too few doing
+// it to teach it faithfully. Expertise is a function of how long ago
+// practice began, so both are expressed by pushing that day forward -- at
+// one day per day the skill stands still, faster than that it slides back.
+//
+// Disuse runs at the rate it was learned: you lose it as fast as you got
+// it. Isolation runs far faster, because that is the catastrophic case --
+// the Polar Inuit had lost the kayak, the leister and the bow within a
+// generation of the epidemic that took their elders.
+// Expertise is a function of how long ago practice began, so a day of it is
+// lost by pushing that day forward. At k = 2 the skill stands still; above
+// that it slides back, at (k - 2) days of skill per day.
+constexpr double SKILL_DISUSE_K = 3.0;   // idle: lost as fast as it was learned
+constexpr double SKILL_ISOLATED_K = 9.0; // nobody left to teach: seven times faster
+constexpr float SKILL_USE_SLOWS = 0.25f; // using it daily blunts even that
+// A skill cannot fall below a beginner's hands, and a beginner is still a
+// practitioner. Practice lapses only after a people have been down there for
+// this long -- which is also what lets a new one survive its first day, when
+// it has no skill to lose and the means may not exist yet: a village that has
+// just taken up granaries has a generation to lay the first stone.
+constexpr double SKILL_GRACE_YEARS = 40.0;
+// Once practice has lapsed, knowledge follows it: three generations after
+// the last person anywhere in reach did the thing, a people no longer knows
+// it can be done. A story about ancestors growing grain does not grow grain.
+constexpr double AWARE_FORGET_YEARS = 75.0;
+// Reinventing what your grandmother did is not the problem your grandmother
+// had: the terraces are still there, and someone watched.
+constexpr float REDISCOVER_GAIN = 2.0f;
+constexpr double REDISCOVER_TAU_YEARS = 300.0;
+
 // The technology table (Design/Technology.md): per-settlement state for each
 // technology. Farming's original fields generalized when husbandry arrived.
 enum : int {
@@ -365,10 +399,26 @@ enum : int {
     TECH_FISHING = 4, // weirs, traps and nets: the bank is free, the gear is not
     NTECH = 5
 };
+// The practitioners who can reach each other, below which a complex skill
+// stops being copied faithfully -- the settlement's own people plus those
+// of every neighbour who also practises it. The unit is the connected group,
+// not the village: Tasmania was an island of thousands, and the Polar Inuit
+// who lost the kayak were about two hundred.
+inline float criticalPractitioners(int tech) {
+    switch (tech) {
+    case TECH_FARMING:
+    case TECH_HUSBANDRY: return 200.0f; // a whole way of living
+    case TECH_GRANARY:
+    case TECH_FISHING: return 140.0f;   // a craft
+    default: return 0.0f;               // archery is never lost
+    }
+}
 struct TechState {
     bool aware = false;
     bool practising = false; // implies aware
     double practiceT = 0;    // sim day practice began (expertise grows from here)
+    double lostT = -1;       // sim day practice lapsed, or the last day anyone near did it
+    double strainT = -1;     // sim day this skill fell to a beginner's and stayed there
 };
 
 // Who a group is made of. P is the sum, kept in step so everything that

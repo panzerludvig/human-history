@@ -235,6 +235,85 @@ inline float wantedReachKm(const population::Field& pf, int cell, float P, float
     return std::clamp(want, CLAIM_FLOOR_KM, CLAIM_CAP_KM);
 }
 
+// What a people can still do, and what they have let go.
+//
+// Practice slides back when the means is gone -- no herd, no water, no
+// ground -- and when there are too few practitioners in reach to teach it
+// faithfully. Expertise is a function of the day practice began, so both
+// are one arithmetic: push that day forward. When it catches up with today
+// the skill has fallen to a beginner's and practice lapses; the people stay
+// aware of it, and three generations after the last person in reach did the
+// thing, they stop knowing it can be done at all.
+//
+// A settlement that is practising never loses awareness of what it is
+// doing. That is what lets one settlement invent something and hold it
+// alone until its neighbours learn it.
+inline void decaySkills(population::Field& pf, technology::WorldState& ws, int si, double now) {
+    using namespace population;
+    Settlement& s = pf.settlements[si];
+    if (s.leaving || s.P <= 0) return;
+    double span = now - s.t; // the settlement's own last-integrated day
+    if (span <= 0) return;
+    for (int tech = 0; tech < NTECH; tech++) {
+        TechState& ts = s.tech[tech];
+        if (!ts.aware) continue;
+        // Who else within reach still does this, and how many of them.
+        float others = 0;
+        bool teacher = false;
+        for (int j : pf.neighbours[si]) {
+            const Settlement& o = pf.settlements[j];
+            if (o.leaving || !o.tech[tech].practising) continue;
+            teacher = true;
+            others += o.P;
+        }
+        if (ts.practising || teacher) ts.lostT = now; // somebody in reach still knows
+        if (!ts.practising) {
+            // Knowledge outlives practice, but not by much.
+            if (ts.lostT >= 0 && now - ts.lostT > AWARE_FORGET_YEARS * 365.0) {
+                ts.aware = false;
+                technology::redraw(pf, si, ws, tech, now);
+                technology::scheduleInvention(pf, ws, tech, now); // they are in the pool again
+            }
+            continue;
+        }
+        bool means = technology::meansPresent(s, tech);
+        float critical = criticalPractitioners(tech);
+        float carriers = s.P + others;
+        float shortfall = critical > 0 ? std::clamp(1.0f - carriers / critical, 0.0f, 1.0f) : 0.0f;
+        // Doing the thing every day blunts even the transmission problem.
+        double k = 1.0;
+        if (!means) k = std::max(k, SKILL_DISUSE_K);
+        if (shortfall > 0)
+            k = std::max(k, 1.0 + (SKILL_ISOLATED_K - 1.0) * shortfall *
+                                      (means ? SKILL_USE_SLOWS : 1.0f));
+        // Skill slides back, but never past a beginner's hands.
+        if (k > 1.0) ts.practiceT = std::min(now, ts.practiceT + (k - 1.0) * span);
+        if (now - ts.practiceT > 1.0) { // still has something in hand
+            ts.strainT = -1;
+            continue;
+        }
+        // At the floor. A new practice starts here too, which is why the
+        // lapse waits: a people who have just taken something up have no
+        // skill to lose yet, and their means may not exist until they build
+        // it. Only staying at the floor for a generation and a half ends it.
+        if (ts.strainT < 0) ts.strainT = now;
+        if (now - ts.strainT < SKILL_GRACE_YEARS * 365.0) continue;
+        ts.practising = false;
+        ts.strainT = -1;
+        ts.lostT = now;
+        if (tech == TECH_HUSBANDRY) s.herd = 0;
+        {
+            char txt[96];
+            snprintf(txt, sizeof txt, "%s no longer practises %s", s.name,
+                     technology::techName(tech));
+            note(pf, EV_TECH_LOST, now, s.id, 0, 0, (float)tech, txt);
+        }
+        technology::redraw(pf, si, ws, tech, now);
+        for (int j : pf.neighbours[si]) technology::redraw(pf, j, ws, tech, now);
+        technology::scheduleInvention(pf, ws, tech, now);
+    }
+}
+
 // A frontier creeps outward: people work further out each year than they
 // did, faster when they are hungry, and stop where somebody else was first.
 // Borders do not move once they meet. Returns true if anything is still
@@ -1286,6 +1365,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
         } else if (ev.kind == 1) {
             Settlement& s = pf.settlements[ev.idx];
             if (t != s.nextUpdate) continue;
+            decaySkills(pf, ws, ev.idx, t);
             growClaim(pf, ev.idx, t);
             changed |= population::advance(s, technology::effectiveK(s, t),
                                            seasonCtx(s, hy, clim, t), t);
@@ -1345,6 +1425,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
     for (int i = 0; i < (int)pf.settlements.size(); i++) {
         Settlement& s = pf.settlements[i];
         if (!s.leaving && s.t < now - 1e-9) {
+            decaySkills(pf, ws, i, now);
             growClaim(pf, i, now);
             changed |= population::advance(s, technology::effectiveK(s, now),
                                            seasonCtx(s, hy, clim, now), now);

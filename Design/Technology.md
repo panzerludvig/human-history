@@ -225,6 +225,49 @@ when they split or move: the first possession in the game that travels.
 
 ---
 
+## Losing a technology
+
+Built 2026-08-31. Skill is not a stock that keeps. It lives in the people
+doing the thing, and it goes two ways: nobody does it any more, or there are
+too few doing it to teach it faithfully. Expertise is a function of the day
+practice began, so both are one arithmetic -- push that day forward. At
+`k = 2` the skill stands still, above that it slides back.
+
+**The means, not the share.** The test is whether the means exists at all --
+a herd of one is a herd, a granary going up is practice, a novice on
+farmable ground is a farmer. Judged on share of the food instead, a people
+would lose husbandry the day they took it up, when the seed herd feeds one
+person in three hundred.
+
+**The carriers, not the village.** The transmission test counts the
+practitioners who can reach each other: the settlement's own people plus
+those of every neighbour who also practises it. Below `criticalPractitioners`
+-- 200 for a whole way of living, 140 for a craft -- the copy gets worse than
+the original. That is Henrich's Tasmanian argument, and the unit has to be
+the connected group: Tasmania was an island of thousands, and the Polar Inuit
+who lost the kayak, the leister and the bow were about two hundred. Using the
+skill daily blunts the loss to a quarter.
+
+**Three states, in order.** A skill slides to a beginner's hands but no
+further; after `SKILL_GRACE_YEARS` (40) at the floor, practice **lapses** --
+the people stay aware. Three generations after the last person in reach did
+the thing, awareness goes too, and they are back in the invention pool with
+a rediscovery bonus that decays over three centuries: reinventing what your
+grandmother did is not the problem your grandmother had.
+
+The grace period is what makes a new practice survivable. A settlement that
+has just taken something up has no skill to lose and may not have built the
+means yet -- a village that adopted granaries has a generation to lay the
+first stone. Without it, farming fell from 335 practising settlements to 16
+and granaries to zero, because every new adopter lapsed the day it started.
+
+Measured over 500 years, against the same run without decay: farming 319
+settlements practising (was 335) with 522 having lapsed somewhere along the
+way; granaries 88; fishing 4,208 practising with 2,370 lapsed -- inland
+colonies of coastal parents letting their weirs go, which is the case that
+prompted all this. Archery is exempt and is never lost. 1,900 lapses over
+five centuries across six and a half thousand settlements.
+
 ## Future additions (deferred from Delegate, not discarded)
 
 These were part of Delegate's Tech Tree design. Each is deferred because its prerequisite doesn't exist yet, not because it was rejected:

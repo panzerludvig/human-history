@@ -359,7 +359,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 19\n";
+    f << "version 20\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -372,7 +372,7 @@ static bool saveWorld(const World& w, const Camera& c) {
           << s.pop.M << " " << s.pop.W << " " << s.pop.E << " ";
         for (int t = 0; t < population::NTECH; t++)
             f << (int)s.tech[t].aware << " " << (int)s.tech[t].practising << " "
-              << s.tech[t].practiceT << " ";
+              << s.tech[t].practiceT << " " << s.tech[t].lostT << " ";
         f << s.S << " " << s.scarceSince << " " << s.founded << " " << s.herd << " "
           << s.granaries << " " << s.buildWork << " " << s.fillLo << " " << s.fillHi << " "
           << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << " " << s.id << " "
@@ -388,7 +388,7 @@ static bool saveWorld(const World& w, const Camera& c) {
           << b.targetCell << " " << (int)b.resting << " " << b.restStart;
         for (int t = 0; t < population::NTECH; t++)
             f << " " << (int)b.tech[t].aware << " " << (int)b.tech[t].practising << " "
-              << b.tech[t].practiceT;
+              << b.tech[t].practiceT << " " << b.tech[t].lostT;
         f << " " << b.bows << " " << b.purpose << " " << b.homeId << " " << b.targetId << " "
           << (int)b.returning << " " << b.loot << " " << b.lootHerd << " " << b.sid << "\n";
     }
@@ -429,7 +429,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         double culture = 0, affHunt = 0, affGather = 0, affFarm = 0, affHerd = 0, affFight = 0;
         double claimT = 0;
         double claim[population::CLAIM_SECTORS] = {};
-        double tech[population::NTECH][3] = {};
+        double tech[population::NTECH][4] = {};
     };
     struct SavedBand {
         double id = 0, px = 0, py = 0, pz = 0, P = 0, S = 0;
@@ -437,7 +437,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         double purpose = 0, homeId = 0, targetId = 0, returning = 0, loot = 0, lootHerd = 0,
                sid = 0;
         double children = 0, men = 0, women = 0, elderly = 0;
-        double tech[population::NTECH][3] = {};
+        double tech[population::NTECH][4] = {};
     };
     std::vector<SavedSettlement> savedSettlements;
     std::vector<SavedBand> savedBands;
@@ -461,8 +461,11 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             f >> sv.cell >> sv.P >> sv.R;
             if (version >= 15) f >> sv.children >> sv.men >> sv.women >> sv.elderly;
             int nt = version >= 19 ? 5 : version >= 13 ? 4 : version >= 8 ? 3 : version >= 3 ? 1 : 0;
-            for (int t = 0; t < nt; t++)
+            for (int t = 0; t < nt; t++) {
                 f >> sv.tech[t][0] >> sv.tech[t][1] >> sv.tech[t][2];
+                sv.tech[t][3] = -1;
+                if (version >= 20) f >> sv.tech[t][3];
+            }
             if (version >= 7) {
                 f >> sv.S >> sv.scarce >> sv.founded >> sv.herd;
                 if (version >= 8)
@@ -492,8 +495,11 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             f >> bv.px >> bv.py >> bv.pz >> bv.P >> bv.S >> bv.target >> bv.resting >>
                 bv.restStart;
             int nt = version >= 19 ? 5 : version >= 13 ? 4 : version >= 8 ? 3 : version >= 7 ? 2 : 0;
-            for (int t = 0; t < nt; t++)
+            for (int t = 0; t < nt; t++) {
                 f >> bv.tech[t][0] >> bv.tech[t][1] >> bv.tech[t][2];
+                bv.tech[t][3] = -1;
+                if (version >= 20) f >> bv.tech[t][3];
+            }
             if (version >= 13) f >> bv.bows;
             if (version >= 14)
                 f >> bv.purpose >> bv.homeId >> bv.targetId >> bv.returning >> bv.loot >>
@@ -572,6 +578,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
                 st.tech[t].aware = sv.tech[t][0] > 0.5;
                 st.tech[t].practising = sv.tech[t][1] > 0.5;
                 st.tech[t].practiceT = sv.tech[t][2];
+                st.tech[t].lostT = sv.tech[t][3];
             }
             // Older saves predate archery as a technology: everyone knows it.
             if (!st.tech[population::TECH_ARCHERY].practising)
@@ -636,6 +643,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
                 b.tech[t].aware = bv.tech[t][0] > 0.5;
                 b.tech[t].practising = bv.tech[t][1] > 0.5;
                 b.tech[t].practiceT = bv.tech[t][2];
+                b.tech[t].lostT = bv.tech[t][3];
             }
             if (!b.tech[population::TECH_ARCHERY].practising)
                 b.tech[population::TECH_ARCHERY] = {true, true, savedTime};
@@ -953,6 +961,7 @@ static const float MP_KNOB_C[]   = {0.0f,6.3f, 1.4f,7.0f, 2.0f,5.7f, 0.6f,5.0f};
 static const float MP_KNOB_D[]   = {9.0f,10.6f, 10.4f,11.3f, 11.0f,10.0f, 9.6f,9.3f};
 static const float MP_SKULL[]    = {2.6f,1.2f, 3.6f,0.2f, 7.4f,0.2f, 8.4f,1.2f, 8.4f,5.4f, 2.6f,5.4f};
 static const float MP_JAW[]      = {3.7f,5.4f, 7.3f,5.4f, 7.3f,7.4f, 3.7f,7.4f};
+static const float MP_SLASH[]    = {0.6f,9.4f, 2.0f,10.8f, 10.4f,2.4f, 9.0f,1.0f};
 static const float MP_EYE_L[]    = {3.5f,2.0f, 5.0f,2.0f, 5.0f,4.0f, 3.5f,4.0f};
 static const float MP_EYE_R[]    = {6.0f,2.0f, 7.5f,2.0f, 7.5f,4.0f, 6.0f,4.0f};
 static const float MP_NOSE[]     = {5.0f,4.4f, 6.0f,4.4f, 6.0f,5.4f, 5.0f,5.4f};
@@ -982,6 +991,8 @@ static const MarkPoly MG_GAME[]     = {MPOLY(MP_BONE_A), MPOLY(MP_BONE_B), MPOLY
                                        MPOLY(MP_SKULL), MPOLY(MP_JAW)};
 static const MarkPoly MG_GAME_CUT[] = {MPOLY(MP_EYE_L), MPOLY(MP_EYE_R), MPOLY(MP_NOSE),
                                        MPOLY(MP_TOOTH_L), MPOLY(MP_TOOTH_R)};
+static const MarkPoly MG_LOST[]     = {MPOLY(MP_STAR)};
+static const MarkPoly MG_LOST_CUT[] = {MPOLY(MP_SLASH)};
 #undef MPOLY
 
 #define MGLYPH(a) {a, (int)(sizeof(a) / sizeof(MarkPoly)), nullptr, 0}
@@ -993,6 +1004,9 @@ static const MarkGlyph MARK_GLYPH[population::EV_KINDS] = {
     MGLYPH(MG_GRANARY),
     {MG_GAME, (int)(sizeof(MG_GAME) / sizeof(MarkPoly)), MG_GAME_CUT,
      (int)(sizeof(MG_GAME_CUT) / sizeof(MarkPoly))},
+    // A technology lost: the star of its invention, struck through.
+    {MG_LOST, (int)(sizeof(MG_LOST) / sizeof(MarkPoly)), MG_LOST_CUT,
+     (int)(sizeof(MG_LOST_CUT) / sizeof(MarkPoly))},
 };
 #undef MGLYPH
 // clang-format on
@@ -1008,7 +1022,8 @@ static int markFamily(int kind) {
     case population::EV_RAID_HOME: return 0; // violence
     case population::EV_GAME_GONE: return 1; // the land
     case population::EV_INVENTED:
-    case population::EV_ADOPTED: return 3;   // knowledge
+    case population::EV_ADOPTED:
+    case population::EV_TECH_LOST: return 3; // knowledge
     case population::EV_GRANARY: return 4;   // building
     default: return 2;                       // movement
     }
@@ -2472,6 +2487,7 @@ static const char* NEWS_LABEL[population::EV_KINDS][2] = {
     {"settlement took up a technology", "settlements took up technologies"},
     {"granary was built", "granaries were built"},
     {"regional herd was hunted out", "regional herds were hunted out"},
+    {"people lost a technology", "peoples lost technologies"},
 };
 
 // The entries of one kind, in order.
