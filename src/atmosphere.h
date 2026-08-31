@@ -43,26 +43,26 @@ constexpr double SOLAR = 1361.0;
 // 5 W/m2/K of radiation plus 15 of convection, twenty times the old figure,
 // and it stiffens as things warm, which is what stops a runaway.
 constexpr double SIGMA = 5.670374e-8;
-constexpr double EMISS = 0.975;        // how much of the surface's longwave the air holds
+inline double EMISS = 0.978;        // how much of the surface's longwave the air holds
 // The whole column. A thinner, more responsive layer (3e6, the lowest
 // kilometre or two) gives a far better seasonal swing and much better
 // mid-latitudes -- and hands the poles back to the latent pump, +22 degC in
 // summer. That trade is the open question on this branch.
-constexpr double C_AIR = 1.0e7;        // J/m2/K: cp * p / g
-constexpr double K_SURF_AIR = 15.0;    // W/m2/K, convection into the air above
+inline double C_AIR = 1.0e7;        // J/m2/K: cp * p / g
+inline double K_SURF_AIR = 5.0;    // W/m2/K, convection into the air above
 // A one-layer atmosphere radiates from its middle, so Ta is a mid-troposphere
 // temperature -- around -30 degC on a planet whose ground is at +15. The
 // surface is warmer than that by the lapse rate through the depth between
 // them, and convection only carries what is ABOVE that difference. Coupling
 // the two without it drains some 600 W/m2 out of the ground: measured, and
 // it put 60N summer at -8 degC.
-constexpr double LAPSE_OFFSET = 27.0;  // K, surface warmer than the emitting level
+inline double LAPSE_OFFSET = 27.0;  // K, surface warmer than the emitting level
 // Convection is a one-way street. Ground warmer than the air above it boils
 // heat upward; ground colder than the air sits under an inversion and barely
 // exchanges at all -- which is exactly what a polar winter night is, and why
 // it gets so cold. Treating both directions alike held polar winters at
 // -7 degC by pouring heat back down out of the air.
-constexpr double K_STABLE = 1.5;       // W/m2/K under an inversion
+inline double K_STABLE = 1.5;       // W/m2/K under an inversion
 // Evaporation carries heat as well as water: it leaves the surface with the
 // vapour and the air gets it back where that vapour condenses. This is the
 // second-largest heat transport on the planet, and the reason a wet surface
@@ -94,7 +94,7 @@ constexpr double SNOW_FULL_C = -8.0, SNOW_NONE_C = 2.0;
 // Clouds reflect about a fifth of the sunlight. With only ground albedo the
 // model absorbs some 300 W/m2 against Earth's 240, and no greenhouse setting
 // can balance that.
-constexpr double CLOUD_ALBEDO = 0.22;
+inline double CLOUD_ALBEDO = 0.22;
 constexpr double C_WATER = 1.0e8;               // ~25 m slab ocean
 constexpr double C_LAND = 3.0e6;                // thin soil; scaled by inertia
 // Winds: diagnostic Ekman-style balance r*u - f x u = -grad(P)/rho, solved
@@ -112,7 +112,7 @@ constexpr double CAP0 = 15.0, CAP_T0 = 15.0, CAP_SCALE = 14.4; // doubles per 10
 // oceans. At 0.20 this model asked for 7 once the heat was allowed to follow
 // the water, and the heat released where that rain fell cooked the poles to
 // +50 degC.
-constexpr double EVAP_WATER = 0.09, EVAP_LAND = 0.025;         // kg/m^2 per h at full deficit
+inline double EVAP_WATER = 0.09, EVAP_LAND = 0.025;         // kg/m^2 per h at full deficit
 constexpr double H_FLOW = 1500.0;               // m, depth of the inflow layer
 // Rain falls when moisture exceeds a fraction of the effective capacity.
 // Vertical motion modulates that capacity: uplift (convergence, windward
@@ -125,23 +125,23 @@ constexpr double H_FLOW = 1500.0;               // m, depth of the inflow layer
 // shortcuts, and they behaved like shortcuts: each switched itself off in the
 // regime where it was needed, because each was keyed to the temperature it
 // was supposed to be controlling.
-constexpr double H_MOIST = 2500.0;    // m, depth the vapour is carried through
+inline double H_MOIST = 2500.0;    // m, depth the vapour is carried through
 // Large-scale ascent is centimetres a second, not metres: a whole grid cell
 // does not rise like a thunderhead. First pass had fronts lifting at 22 cm/s
 // and the world raining 18 mm a day.
-constexpr double W_OROG = 0.35;       // only the windward slope of a cell rises
-constexpr double W_CONV = 0.0012;     // m/s per K of surface-air instability
-constexpr double W_DIVERGE = 600.0;   // m/s per (1/s) of low-level convergence
-constexpr double W_FRONT = 1200.0;    // m/s per (K/m) of temperature gradient
-constexpr double RAIN_FRAC = 0.80;    // sub-grid: part of a cell saturates first
-constexpr double RAIN_RATE = 0.15;    // fraction of that excess per hour
+inline double W_OROG = 0.35;       // only the windward slope of a cell rises
+inline double W_CONV = 0.0012;     // m/s per K of surface-air instability
+inline double W_DIVERGE = 600.0;   // m/s per (1/s) of low-level convergence
+inline double W_FRONT = 200.0;    // m/s per (K/m) of temperature gradient
+inline double RAIN_FRAC = 0.80;    // sub-grid: part of a cell saturates first
+inline double RAIN_RATE = 0.15;    // fraction of that excess per hour
 constexpr double DIV_CAP_SCALE = 0.05;          // m/s of uplift for a ~46% capacity swing
 // Over land, moisture rains out progressively along its path (precipitation
 // is not withheld until a convergence line): an e-folding of ~3 days, i.e.
 // ~1300 km at typical winds. This is what makes coasts wetter than deep
 // continental interiors.
 constexpr double LAND_RAINOUT_TAU = 3.0 * 86400.0; // s
-constexpr double K_DIFF = 2.0e5;                // m^2/s eddy diffusion of moisture
+inline double K_DIFF = 2.0e5;                // m^2/s eddy diffusion of moisture
 // Frontal-storm rain: mid-latitude rain on Earth is mostly baroclinic storms
 // riding the temperature gradient, which steady diagnostic winds cannot
 // produce. Parameterized as rain ~ |grad T| * moisture: strong on the winter
@@ -153,7 +153,7 @@ constexpr double SNOW_T = 0.5;                  // degC: colder precipitation is
 // lows (the upper return flow that closes the loop is not modelled). A large
 // eddy diffusivity stands in for the whole poleward heat transport, as in
 // Budyko-style energy-balance models.
-constexpr double KT_DIFF = 2.2e6;               // m^2/s eddy diffusion of heat
+inline double KT_DIFF = 2.2e6;               // m^2/s eddy diffusion of heat
 
 struct Climatology {
     double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
@@ -199,6 +199,7 @@ struct Model {
     std::vector<double> Ta, nTa, Tasl; // the air: its own heat, and reduced to sea level
     std::vector<double> soil;          // land water store, mm: what there is to evaporate
     std::vector<double> evapAcc, rainAcc, madeAcc; // PROBE, one cell per thread: no atomics
+    std::vector<double> capArr;                    // how much each cell's air can hold
     double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
     // probe diagnostics (an equatorial cell): daily sums of the T budget terms
     int probe = 4 * W + W / 2; // south-polar cell for the current investigation
@@ -266,6 +267,7 @@ struct Model {
         evapAcc.assign(W * H, 0.0);
         rainAcc.assign(W * H, 0.0);
         madeAcc.assign(W * H, 0.0);
+        capArr.assign(W * H, 0.0);
     }
 
     // One hour. doy in [0,365), hourOfDay in [0,24).
@@ -283,6 +285,7 @@ struct Model {
         for (int i = 0; i < W * H; i++) {
             Tsl[i] = T[i] + 6.5 * elev[i] / 1000.0;
             Tasl[i] = Ta[i] + 6.5 * elev[i] / 1000.0;
+            capArr[i] = std::max(capOf(T[i]), 0.05);
         }
 
         // Pressure field from twice-smoothed T, then the balanced wind:
@@ -463,8 +466,20 @@ struct Model {
                 // 20 mm a day of phantom water against 2.8 of evaporation. The
                 // shortfall is taken out of the rain below instead, which
                 // conserves.)
-                double difW = kx * (Wv[xe] + Wv[xw] - 2 * Wv[i]) +
-                              ky * (fN * (Wv[yn] - Wv[i]) + fS * (Wv[ys] - Wv[i]));
+                // Eddies exchange air, and air carries its HUMIDITY, not an
+                // absolute load: a parcel moving to a colder place arrives at
+                // saturation and drops the rest on the way. Diffusing the
+                // absolute column instead delivered the tropics' whole load to
+                // the pole, and one constant then had to choose between
+                // feeding the mid-latitudes and flooding the ice -- 10.9 mm a
+                // day of polar rain at the setting where everything else was
+                // right. What the colder side cannot hold never arrives.
+                auto qFlux = [&](int j, double k) {
+                    double capF = std::min(capArr[i], capArr[j]);
+                    return k * (Wv[j] / capArr[j] - Wv[i] / capArr[i]) * capF;
+                };
+                double difW = qFlux(xe, kx) + qFlux(xw, kx) + fN * qFlux(yn, ky) +
+                              fS * qFlux(ys, ky);
                 rain = std::min(rain, Wv[i]);
                 // Rain cannot exceed the water that is actually here. Advection
                 // and diffusion between them can ask for more than the cell
