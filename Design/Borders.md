@@ -10,16 +10,19 @@ Two limits bracket it. The **floor**, 20 km, is what any community holds however
 
 ## Land is worth less the further out it lies
 
-A day spent walking is a day not spent gathering, so value per km² falls as `1/(1+(d/20 km)²)`. Over a disc that integrates to `πT²·ln(1+r²/T²)`, normalised so a **floor claim is worth exactly the 314 km² catchment every settlement used to be handed outright**. That normalisation is what keeps the old calibration meaningful: a settlement at the floor is the settlement we had before.
+A day spent walking is a day not spent gathering, so value per km² falls as `1/(1+(d/20 km)²)`. Over a disc that integrates to `πT²·ln(1+r²/T²)`, normalised so **a claim at the cap is worth exactly the 314 km² catchment every settlement used to be handed outright**.
 
-| Reach | Worked value | Against the floor |
+The cap is the right end to anchor, and anchoring at the floor instead was a mistake worth recording: it made every claim beyond the floor *add* food to the world, and a forager settlement on good ground reached a capacity of 870 where the old model gave 260. Claims do not create food. They decide who gets it, and the most one place can ever work is what one place used to be given.
+
+| Reach | Worked value | Against the old fixed catchment |
 |---|---|---|
-| 20 km (floor) | 314 km² | 1.00 |
-| 30 km | 534 km² | 1.70 |
-| 40 km | 729 km² | 2.32 |
-| 60 km (cap) | 1043 km² | 3.32 |
+| 20 km (floor) | 95 km² | 0.30 |
+| 30 km | 161 km² | 0.51 |
+| 40 km | 219 km² | 0.70 |
+| 50 km | 270 km² | 0.86 |
+| 60 km (cap) | 314 km² | 1.00 |
 
-A settlement's food capacity is its cell's yield scaled by this, so claims are not decoration: they are the settlement's means.
+A settlement's food capacity is its cell's yield scaled by this, so claims are not decoration: they are the settlement's means. A small holding is genuinely poor.
 
 ## What makes a claim grow
 
@@ -48,12 +51,13 @@ Measured over 500 years, seed 7, against the same run before borders existed:
 
 | | before | with borders |
 |---|---|---|
-| settlements | 4,004 | 5,437 |
-| people | 1.08M | 3.00M |
-| claims grown past the floor | — | 3,895 of 5,437 |
-| claims at the cap | — | 2,097 |
+| settlements | 4,004 | 6,463 |
+| people | 1.08M | 1.12M |
+| bands in flight | 101 | 141 |
 
-The population is 2.8× what it was, and that is the honest consequence of the old rule: a settlement used to work 314 km² while excluding everyone else from 5,000, so 95% of the land fed nobody. It now averages 37.8 km of reach. **Everything calibrated against world population — invention rates above all — is now measured against a different world**, and wants re-checking.
+**The world feeds about the same number of people; it just divides them differently.** Sixty per cent more settlements, each holding less on average than the old fixed catchment, with the rich ones — those that got their claim out to the cap — matching what every settlement used to get for nothing. That is the intended shape: the same land, distributed by who could take it.
+
+Anchoring at the floor instead gave 5,437 settlements and 3.0M people, nearly triple, which would have quietly re-based every figure calibrated against world population.
 
 ## Deferred
 

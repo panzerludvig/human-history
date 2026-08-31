@@ -32,8 +32,11 @@ constexpr float FORAGE_KM2 = 314.0f;          // 10 km radius disc
 // Land far out is worth less than land underfoot: it is a walk each way,
 // and a day spent walking is a day not spent gathering. Value per km2 falls
 // as 1/(1+(d/CLAIM_TAPER)^2), which integrates over a disc to
-// pi*T^2*ln(1+r^2/T^2) -- normalised below so the floor claim is worth
-// exactly the 314 km2 a settlement used to be given outright.
+// pi*T^2*ln(1+r^2/T^2) -- normalised below so a claim at the CAP is worth
+// exactly the 314 km2 a settlement used to be given outright. The cap is
+// as much ground as one place could ever work, so it is the right end to
+// anchor: claims do not add food to the world, they decide who gets it.
+// A floor claim is worth about a third of that.
 constexpr int CLAIM_SECTORS = 16;
 // The floor is what a community holds however small it is, and it sets how
 // close two of them can ever stand: at 20 km they are 40 km apart, half the
@@ -53,13 +56,13 @@ inline float claimValueKm2(float r) {
 }
 // The same, scaled so a floor-sized claim is worth today's fixed catchment.
 inline float claimYieldKm2(float r) {
-    static const float unit = FORAGE_KM2 / claimValueKm2(CLAIM_FLOOR_KM);
+    static const float unit = FORAGE_KM2 / claimValueKm2(CLAIM_CAP_KM);
     return claimValueKm2(r) * unit;
 }
 // The radius whose worked value is `km2` -- the inverse, for asking how far
 // a settlement needs to reach to feed the people it has.
 inline float claimRadiusFor(float km2) {
-    static const float unit = FORAGE_KM2 / claimValueKm2(CLAIM_FLOOR_KM);
+    static const float unit = FORAGE_KM2 / claimValueKm2(CLAIM_CAP_KM);
     float t2 = CLAIM_TAPER_KM * CLAIM_TAPER_KM;
     float e = std::exp(std::max(km2, 0.0f) / unit / (3.14159265f * t2)) - 1.0f;
     return std::sqrt(std::max(e, 0.0f) * t2);
@@ -444,7 +447,7 @@ struct Settlement {
     // How far the claim reaches in each of CLAIM_SECTORS directions, sector 0
     // due east and turning north. Set to the floor when the place is founded.
     float claim[CLAIM_SECTORS] = {};
-    float claimKm2 = FORAGE_KM2; // worked value of the whole claim, cached
+    float claimKm2 = FORAGE_KM2; // worked value of the whole claim, cached (set on founding)
     double claimT = 0;           // when the frontier was last worked outward
 };
 
@@ -759,9 +762,22 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         s.pasture = f.pastureMap[c.cell];
         s.buildMat = f.buildMatMap[c.cell];
         s.S = storageCapDays(s.P, s.granaries) * s.P; // the world opens on full stores
-        // The floor claim is worth exactly the catchment settlements used to
-        // be handed outright, so the yields above are already right for it.
-        for (int k = 0; k < CLAIM_SECTORS; k++) s.claim[k] = CLAIM_FLOOR_KM;
+        // The world opens with each settlement holding what it needs, capped
+        // at half the seeding distance so no two claims start overlapping.
+        // The yields above are for the old fixed catchment, so they are
+        // rescaled to the claim actually held.
+        {
+            float perKm2 = f.kFoodPMap[c.cell] / FORAGE_KM2 * SUSTAIN_R;
+            float want = perKm2 > 0 ? claimRadiusFor(s.P / perKm2 * CLAIM_MARGIN) : CLAIM_FLOOR_KM;
+            float take = std::clamp(want, CLAIM_FLOOR_KM, 40.0f);
+            for (int k = 0; k < CLAIM_SECTORS; k++) s.claim[k] = take;
+            s.claimKm2 = claimYieldKm2(take);
+            float sc = s.claimKm2 / FORAGE_KM2;
+            s.kFoodP *= sc;
+            s.kGame *= sc;
+            s.kSmall *= sc;
+            s.kWater *= sc;
+        }
         if (clim) atmosphere::seasonProfile(*clim, cellN(c.cell),
                                             std::max(hy.heightM[c.cell], 0.0f), s.tSeason,
                                             s.meanF, s.meanG2);
