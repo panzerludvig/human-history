@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <unordered_map>
 #include <string>
 #include <vector>
 #include <fstream>
@@ -146,7 +147,7 @@ static Vec3 normalize(Vec3 a) { double l = std::sqrt(dot(a, a)); return a * (1.0
 static const double PI = 3.14159265358979323846;
 static const double EARTH_RADIUS_KM = 6371.0;
 static const double FOV_V = 45.0 * PI / 180.0; // vertical field of view
-static const double MIN_SCREEN_WIDTH_KM = 10.0; // max zoom in: this many km across the screen
+static const double MIN_SCREEN_WIDTH_KM = 0.1; // max zoom in: this many km across the screen
 
 // Unit vector on the sphere for a latitude/longitude (radians). +Z is the north pole.
 static Vec3 sphereDir(double lat, double lon) {
@@ -839,10 +840,17 @@ static std::vector<float> bandTexData(int& rows) {
 // here with GDI into a screen-sized image and laid over the globe by the
 // shader -- pixel work belongs in pixels, and it puts the same font on the
 // map as on the panels.
-constexpr int MARKER_R = 9;         // the settlement circle's radius
-constexpr double NAME_KMPP = 1.5;   // wider views than this drop the names
-constexpr int THIN_PX = 22;         // at most one marker to a square this size
-constexpr double HUT_KMPP = 0.05;   // closer than this the shader draws houses
+constexpr double NAME_KMPP = 1.5;    // wider views than this drop the names
+constexpr int THIN_PX = 22;          // markers stand at least this far apart
+constexpr double HUT_KMPP = 0.004;   // closer than this the shader draws houses
+constexpr double WALK_KMPP = 0.0006; // and closer than this, the people in a band
+
+// The marker shrinks as the view widens: it is a pin at local range and a
+// dot at continental range, where what matters is where people are thick on
+// the ground rather than which place is which.
+static int markerRadius(double kmpp) {
+    return std::clamp((int)std::lround(8.0 - std::log10(kmpp / HUT_KMPP)), 3, 8);
+}
 
 // Where a point on the unit sphere lands on the screen; false when it is
 // behind the camera or hidden by the curve of the world.
@@ -912,40 +920,51 @@ static void paintOverlay() {
     double kmpp = app.cam.kmPerPixel();
     // Close up the shader draws the houses and the walking people
     // themselves, so the overlay adds only the names.
-    bool ground = kmpp < HUT_KMPP;
+    bool ground = kmpp < HUT_KMPP;      // houses are being drawn on the ground
+    bool walking = kmpp < WALK_KMPP;    // and the people of a band, one by one
     bool names = kmpp < NAME_KMPP;
-    // The marker shrinks as the view widens. At continental range a field of
-    // identical badges hides the thing worth seeing -- where people are thick
-    // on the ground and where they are not -- so the hut inside it goes when
-    // it stops being legible, and the marker ends as a dot.
-    int mr = names ? MARKER_R : (kmpp < 8.0 ? 5 : 3);
-    int thin = std::max(2 * mr + 4, names ? THIN_PX : 0);
+    int mr = markerRadius(kmpp);
+    double spacingKm = std::max(2 * mr + 6, THIN_PX) * kmpp;
 
-    // One marker to a square: a thousand settlements in view is a legible map
-    // only if the small ones give way to the large. Two passes, no sorting.
-    int gw = app.ovW / thin + 1, gh = app.ovH / thin + 1;
+    // Thinning: a thousand settlements in view is a legible map only if the
+    // small ones give way to the large. The squares are on the GROUND, not on
+    // the screen -- a screen grid moves with the camera, so panning kept
+    // changing which settlement won its square and markers blinked in and out
+    // as you dragged. Ground squares are the same wherever you are looking,
+    // and their size steps in powers of two so a slow zoom does not churn
+    // them either.
+    double stepDeg = std::pow(2.0, std::round(std::log2(spacingKm / 111.32)));
     struct Cand { float x, y, w; int idx; bool band; };
     std::vector<Cand> cands;
-    std::vector<int> best((size_t)gw * gh, -1);
-    auto offer = [&](float x, float y, float w, int idx, bool band) {
+    std::unordered_map<long long, int> best;
+    auto offer = [&](float x, float y, float w, int idx, bool band, const terrain::V3& at) {
         if (x < -60 || y < -30 || x > app.ovW + 60 || y > app.ovH + 30) return;
+        double latDeg = std::asin(std::clamp(at.z, -1.0f, 1.0f)) * 180 / PI;
+        double lonDeg = std::atan2(at.y, at.x) * 180 / PI;
+        long long li = (long long)std::floor(latDeg / stepDeg);
+        // Columns narrow towards the poles, so the longitude step widens with
+        // the band's own latitude -- the band's, not the marker's, or two
+        // neighbours would land in overlapping grids.
+        double bandLat = (li + 0.5) * stepDeg * PI / 180;
+        double lonStep = stepDeg / std::max(std::cos(bandLat), 0.02);
+        long long ci = (long long)std::floor(lonDeg / lonStep);
         cands.push_back({x, y, w, idx, band});
-        int gx = std::clamp((int)(x / thin), 0, gw - 1);
-        int gy = std::clamp((int)(y / thin), 0, gh - 1);
-        int& b = best[(size_t)gy * gw + gx];
-        if (b < 0 || cands[b].w < w) b = (int)cands.size() - 1;
+        int& b = best[li * 1000003LL + ci];
+        if (!b || cands[b - 1].w < w) b = (int)cands.size();
     };
     const population::Field& pf = app.world.pop;
     float sx, sy;
-    for (size_t i = 0; i < pf.settlements.size(); i++)
-        if (projectToScreen(sim::cellCentre(pf.settlements[i].cell), sx, sy))
-            offer(sx, sy, pf.settlements[i].P, (int)i, false);
+    for (size_t i = 0; i < pf.settlements.size(); i++) {
+        terrain::V3 at = sim::cellCentre(pf.settlements[i].cell);
+        if (projectToScreen(at, sx, sy)) offer(sx, sy, pf.settlements[i].P, (int)i, false, at);
+    }
     // Bands outrank settlements for the square they stand on: they are the
     // thing that moves, and losing one to a village it is passing is worse
     // than losing the village.
     for (size_t i = 0; i < pf.bands.size(); i++) {
         const population::Band& b = pf.bands[i];
-        if (projectToScreen({b.px, b.py, b.pz}, sx, sy)) offer(sx, sy, b.P + 1e6f, (int)i, true);
+        terrain::V3 at{b.px, b.py, b.pz};
+        if (projectToScreen(at, sx, sy)) offer(sx, sy, b.P + 1e6f, (int)i, true, at);
     }
 
     HBRUSH cream = CreateSolidBrush(RGB(238, 230, 208));
@@ -954,19 +973,18 @@ static void paintOverlay() {
     HPEN edge = CreatePen(PS_SOLID, 1, RGB(40, 28, 18));
     HGDIOBJ oldPen = SelectObject(dc, edge);
     SetTextAlign(dc, TA_CENTER | TA_TOP);
-    for (int gi : best) {
-        if (gi < 0) continue;
-        const Cand& c = cands[gi];
+    for (const auto& kv : best) {
+        const Cand& c = cands[kv.second - 1];
         int cx = (int)std::lround(c.x), cy = (int)std::lround(c.y);
         if (!c.band) {
             const population::Settlement& st = pf.settlements[c.idx];
             int below = mr + 2;
             if (ground) {
-                below = (int)(sim::fieldInnerKm(st.P) / kmpp) + 3;
+                below = std::min((int)(sim::fieldInnerKm(st.P) / kmpp), 60) + 3;
             } else {
-                SelectObject(dc, mr >= 7 ? cream : ink);
+                SelectObject(dc, mr >= 6 ? cream : ink);
                 Ellipse(dc, cx - mr, cy - mr, cx + mr + 1, cy + mr + 1);
-                if (mr >= 7) {
+                if (mr >= 6) {
                     SelectObject(dc, ink);
                     drawHutGlyph(dc, cx, cy, mr);
                 }
@@ -986,8 +1004,8 @@ static void paintOverlay() {
             int hw = (int)ts.cx / 2 + 5, hh = 9;
             if (!names) { hw = mr + 1; hh = mr - 1; } // no room for the word
             int below = hh + 2;
-            if (ground) {
-                below = (int)(sim::bandSpreadKm(b.P) / kmpp) + 3;
+            if (walking) {
+                below = std::min((int)(sim::bandSpreadKm(b.P) / kmpp), 60) + 3;
             } else {
                 SelectObject(dc, amber);
                 Rectangle(dc, cx - hw, cy - hh, cx + hw, cy + hh);
@@ -2485,7 +2503,7 @@ static void pickAt(int x, int y) {
     // Close up that is the village itself; further out it is the marker, so
     // it stays the same size on screen however far the view is zoomed.
     double kmpp = app.cam.kmPerPixel();
-    float sRadius = kmpp < HUT_KMPP ? 0.9f : (float)(kmpp * (MARKER_R + 3));
+    float sRadius = kmpp < HUT_KMPP ? 0.15f : (float)(kmpp * (markerRadius(kmpp) + 3));
     int best = -1;
     float bestD = sRadius;
     for (int i = 0; i < (int)pf.settlements.size(); i++) {
@@ -2493,7 +2511,7 @@ static void pickAt(int x, int y) {
         if (d < bestD) { bestD = d; best = i; }
     }
     if (best >= 0) { openPanel(0, pf.settlements[best].id, 0); return; }
-    float bRadius = kmpp < HUT_KMPP ? 0.55f : (float)(kmpp * (MARKER_R + 3));
+    float bRadius = kmpp < WALK_KMPP ? 0.08f : (float)(kmpp * (markerRadius(kmpp) + 3));
     uint32_t bestId = 0;
     bestD = bRadius;
     for (const population::Band& bd : pf.bands) {

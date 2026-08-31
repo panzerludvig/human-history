@@ -289,22 +289,23 @@ vec4 siteAt(ivec2 cw) {
 // there is no dot here at all -- the marker and the name are drawn over the
 // globe instead (paintOverlay), the way a map names a place.
 //
-// Huts are drawn at ~60 m across where a real one is 8 m: at this planet's
-// maximum zoom a pixel is still 8 m, so a truthful hut would never be
-// visible. The scatter is the truth; the size is a symbol.
-const float HUT_KMPP = 0.05; // closer than this and the houses come out
+// Everything here is drawn at its real size, so each thing appears only
+// once the view could actually resolve it: a hut is 8 m across and shows
+// under 4 m to the pixel, a person is under a metre and shows under 60 cm.
+const float HUT_KMPP = 0.004;  // houses: 8 m across, two pixels of them
+const float WALK_KMPP = 0.0006; // people: only where a person is a pixel
 
 float villageRadiusKm(float P) { // mirrors sim::villageRadiusKm
-    int n = clamp(int(P / 12.0 + 0.5), 3, 28);
-    return 0.25 + 0.11 * sqrt(float(n));
+    int n = clamp(int(P / 12.0 + 0.5), 3, 60);
+    return 0.02 + 0.011 * sqrt(float(n));
 }
 
 // Returns 1 for a hut, 2 for a granary, 3 for the trodden ground they
 // stand on, 0 for country that is none of those.
 int hutsNear(vec3 n) {
     if (uKmPerPixel > HUT_KMPP) return 0;
-    float hutKm = max(0.09, uKmPerPixel * 2.2);
-    float granKm = max(0.11, uKmPerPixel * 2.6);
+    float hutKm = 0.004;  // a house, 8 m across
+    float granKm = 0.003; // a raised store, smaller than the house
     ivec2 c0 = hydroCell(n);
     for (int dy = -1; dy <= 1; dy++)
         for (int dx = -1; dx <= 1; dx++) {
@@ -314,12 +315,12 @@ int hutsNear(vec3 n) {
             if (site.r <= 0.0) continue;
             vec3 cc = cellCentre(cw);
             float rKm = villageRadiusKm(site.r);
-            if (length(n - cc) * 6371.0 > rKm + granKm + 0.4) continue;
+            if (length(n - cc) * 6371.0 > rKm * 1.2 + granKm) continue;
             vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
             vec3 north = cross(cc, east);
             int cell = cw.y * HW + cw.x;
             float ph = float(cell % 628) * 0.01;
-            int huts = clamp(int(site.r / 12.0 + 0.5), 3, 28);
+            int huts = clamp(int(site.r / 12.0 + 0.5), 3, 60);
             for (int k = 0; k < huts; k++) {
                 float a = 2.39996 * float(k) + ph;
                 // Spiral out from the middle, jittered so the rows of a
@@ -334,7 +335,7 @@ int hutsNear(vec3 n) {
             int g = int(max(site.g, 0.0) + 0.5);
             for (int k = 0; k < g && k < 8; k++) {
                 float a = 2.39996 * float(k) + ph;
-                float rr = 0.20 + 0.055 * float(k);
+                float rr = 0.03 + 0.008 * float(k);
                 vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
                 if (length(n - p) * 6371.0 < granKm) return 2;
             }
@@ -349,8 +350,8 @@ int hutsNear(vec3 n) {
 // the point the simulation walks, as many as the band has households.
 // Further out it gets a marker and a name in the overlay, like a settlement.
 bool bandDotsNear(vec3 n) {
-    if (uKmPerPixel > HUT_KMPP) return false;
-    float dotKm = max(0.05, uKmPerPixel * 1.8);
+    if (uKmPerPixel > WALK_KMPP) return false;
+    float dotKm = 0.0004; // one person, 80 cm across
     ivec2 c0 = hydroCell(n);
     int rx = clamp(int(1.0 / max(20.0 * cos(asin(n.z)), 1.0)) + 2, 2, 8);
     for (int dy = -1; dy <= 1; dy++)
@@ -360,9 +361,9 @@ bool bandDotsNear(vec3 n) {
             int idx = int(texelFetch(uPop, cw, 0).b + 0.5) - 1;
             if (idx < 0) continue;
             vec4 b = texelFetch(uBands, ivec2(idx % 256, idx / 256), 0);
-            int dots = clamp(int(b.w / 6.0 + 0.5), 3, 30); // sim::bandDots
-            float spread = 0.14 + 0.06 * sqrt(float(dots));    // sim::bandSpreadKm
-            if (length(n - b.xyz) * 6371.0 > spread + dotKm + 0.2) continue;
+            int dots = clamp(int(b.w + 0.5), 3, 200);        // sim::bandDots
+            float spread = 0.012 + 0.004 * sqrt(float(dots)); // sim::bandSpreadKm
+            if (length(n - b.xyz) * 6371.0 > spread + dotKm) continue;
             vec3 east = normalize(vec3(-b.y, b.x, 0.0));
             vec3 north = cross(b.xyz, east);
             for (int k = 0; k < dots; k++) {
@@ -865,8 +866,8 @@ void main() {
                       ? fieldsNear(n)
                       : vec4(0.0);
     if (walkers) albedo = vec3(0.85, 0.55, 0.10);         // people on the move
-    else if (built == 3) albedo = vec3(0.45, 0.40, 0.31); // the ground between houses
-    else if (built == 1) albedo = vec3(0.42, 0.31, 0.20); // thatch and daub
+    else if (built == 3) albedo = vec3(0.34, 0.28, 0.21); // the ground between houses
+    else if (built == 1) albedo = vec3(0.64, 0.55, 0.34); // thatch, pale from above
     else if (built == 2) albedo = vec3(0.80, 0.64, 0.26); // granaries: straw-coloured stores
     else if (uHasHydro == 1 && !isWater && ruinNear(n) > 0.0)
         albedo = vec3(0.42, 0.40, 0.38); // ruins: weathered stone and ash

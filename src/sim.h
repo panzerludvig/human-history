@@ -285,21 +285,25 @@ inline population::SeasonCtx seasonCtx(const population::Settlement& s,
 // shaders/globe.frag (granaryNear) so drawing and the tooltip cannot drift.
 // Granaries stand among the houses, on the same golden-angle scatter, each
 // one a little further out than the last.
-constexpr float GRANARY_R0_KM = 0.20f, GRANARY_DR_KM = 0.055f;
+constexpr float GRANARY_R0_KM = 0.03f, GRANARY_DR_KM = 0.008f;
 
 // How wide the houses stand: a hut to a household, and enough ground under
-// them to walk between. Mirrored in the shader, which draws them.
+// them to walk between. Real distances -- a longhouse is 8 m across and its
+// neighbour stands 15 m off, so a village of sixty households is a couple of
+// hundred metres end to end, not a kilometre. Mirrored in the shader.
 inline int hutCount(float P) {
     int n = (int)(P / 12.0f + 0.5f);
-    return n < 3 ? 3 : (n > 28 ? 28 : n);
+    return n < 3 ? 3 : (n > 60 ? 60 : n);
 }
-inline float villageRadiusKm(float P) { return 0.25f + 0.11f * std::sqrt((float)hutCount(P)); }
-// A band on the march: one dot to a household, spread over open ground.
+inline float villageRadiusKm(float P) { return 0.02f + 0.011f * std::sqrt((float)hutCount(P)); }
+// A band on the march is people, one dot each: a column of forty strung out
+// over forty or fifty metres of ground. Beyond a couple of hundred the dots
+// stop being countable and the cap only bounds the drawing cost.
 inline int bandDots(float P) {
-    int n = (int)(P / 6.0f + 0.5f);
-    return n < 3 ? 3 : (n > 30 ? 30 : n);
+    int n = (int)(P + 0.5f);
+    return n < 3 ? 3 : (n > 200 ? 200 : n);
 }
-inline float bandSpreadKm(float P) { return 0.14f + 0.06f * std::sqrt((float)bandDots(P)); }
+inline float bandSpreadKm(float P) { return 0.012f + 0.004f * std::sqrt((float)bandDots(P)); }
 // Where the fields begin: outside the houses, with room to walk between.
 inline float fieldInnerKm(float P) { return villageRadiusKm(P) * 1.2f; }
 inline terrain::V3 granaryPos(int cell, int k) {
