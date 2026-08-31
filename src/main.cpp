@@ -849,18 +849,20 @@ constexpr double WALK_KMPP = 0.0006; // and closer than this, the people in a ba
 // dot at continental range, where what matters is where people are thick on
 // the ground rather than which place is which.
 //
-// Past MARK_FIX_KMPP it stops being a symbol sized for the eye and behaves
-// like the place itself: fixed on the ground, so it shrinks with the view
-// instead of swelling to cover a province. It bottoms out at two pixels, so
-// a settlement is always at least a speck, and since the markers no longer
-// grow they no longer crowd each other out -- which is what made them wink
-// out of existence a few at a time while zooming out.
-constexpr double MARK_FIX_KMPP = 0.23; // about 200 km up
+// It changes character where the names do, so a settlement and a band say
+// the same amount about themselves at any given range: while there are
+// names the marker is big enough to hold its hut (6 px and up), and beyond
+// them it stops being a symbol sized for the eye and becomes a fixed size on
+// the ground, shrinking with the view rather than swelling to cover a
+// province. It bottoms out at two pixels, near enough the smallest band
+// marker that a village does not look like less than a walking party. Since
+// the markers no longer grow they no longer crowd each other out, which is
+// what made them wink away a few at a time while zooming out.
 static int markerRadius(double kmpp) {
-    if (kmpp <= MARK_FIX_KMPP)
-        return std::clamp((int)std::lround(8.0 - std::log10(kmpp / HUT_KMPP)), 3, 8);
-    double fixedKm = 6.0 * MARK_FIX_KMPP; // its size on the ground, from the handover
-    return std::max(1, (int)std::lround(fixedKm / kmpp));
+    if (kmpp < NAME_KMPP)
+        return std::clamp((int)std::lround(8.0 - std::log10(kmpp / HUT_KMPP)), 6, 8);
+    double fixedKm = 6.0 * NAME_KMPP; // its size on the ground, from the handover
+    return std::max(2, (int)std::lround(fixedKm / kmpp));
 }
 
 // Where a point on the unit sphere lands on the screen; false when it is
@@ -935,11 +937,9 @@ static void paintOverlay() {
     bool walking = kmpp < WALK_KMPP;    // and the people of a band, one by one
     bool names = kmpp < NAME_KMPP;
     int mr = markerRadius(kmpp);
-    // Markers only need to keep off each other; when they are ground-sized
-    // they barely touch, so the thinning all but stops.
-    double spacingKm = (kmpp > MARK_FIX_KMPP ? std::max(2 * mr + 2, 4)
-                                             : std::max(2 * mr + 6, THIN_PX)) *
-                       kmpp;
+    // Names need room; bare markers only need to keep off each other, and
+    // ground-sized ones barely touch, so the thinning all but stops.
+    double spacingKm = (names ? std::max(2 * mr + 6, THIN_PX) : std::max(2 * mr + 2, 4)) * kmpp;
 
     // Thinning: a thousand settlements in view is a legible map only if the
     // small ones give way to the large. The squares are on the GROUND, not on
@@ -1004,7 +1004,7 @@ static void paintOverlay() {
                 // thousands of them once the whole world is in view.
                 if (mr <= 2) Rectangle(dc, cx - mr, cy - mr, cx + mr + 1, cy + mr + 1);
                 else Ellipse(dc, cx - mr, cy - mr, cx + mr + 1, cy + mr + 1);
-                if (mr >= 6) {
+                if (mr >= 6) { // the hut, wherever a band would still name itself
                     SelectObject(dc, ink);
                     drawHutGlyph(dc, cx, cy, mr);
                 }
