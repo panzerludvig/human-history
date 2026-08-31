@@ -646,7 +646,7 @@ inline float drinkableAt(const population::Field& pf, const hydrology::Result& h
 
 inline void integrateBand(population::Band& b, float flowBase, double span, bool resting,
                           const atmosphere::Climatology& clim, terrain::V3 n, float h,
-                          double startT, float drinkable) {
+                          double startT, float drinkable, float thirst) {
     using namespace population;
     float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
     float lon = std::atan2(n.y, n.x);
@@ -672,10 +672,12 @@ inline void integrateBand(population::Band& b, float flowBase, double span, bool
         b.S = std::clamp(b.S + (H - b.P) * dt * act, 0.0f, CAP_DAYS_BAND * std::max(b.P, 1.0f));
         // Water: drink what is here, carry away the surplus, spend the rest
         // out of the skins. Dry, and the ground giving nothing, kills fast.
+        // The skins hold what they hold; in the heat that is fewer days.
         float wCap = CAP_WATER_DAYS * std::max(b.P, 1.0f);
-        b.water = std::clamp(b.water + (drinkable - b.P) * dt, 0.0f, wCap);
-        if (b.water <= 0.0f && drinkable < b.P) {
-            float dry = std::clamp(1.0f - drinkable / std::max(b.P, 1.0f), 0.0f, 1.0f);
+        float need = b.P * thirst; // fewer mouths, less water, same heat
+        b.water = std::clamp(b.water + (drinkable - need) * dt, 0.0f, wCap);
+        if (b.water <= 0.0f && drinkable < need) {
+            float dry = std::clamp(1.0f - drinkable / std::max(need, 1.0f), 0.0f, 1.0f);
             bandStarve(b.pop, THIRST_DEATH_RATE * b.P * dry * dt);
             b.P = b.pop.total();
         }
@@ -906,9 +908,12 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
                       pf.kFoodPMap[hereCell];
         flowBase *= std::max(scale, 0.0f);
     }
-    integrateBand(b, flowBase, span, b.resting, clim, pos,
-                  std::max(hy.heightM[hereCell], 0.0f), startT,
-                  drinkableAt(pf, hy, clim, pos, hereCell, now - span * 0.5, b.P));
+    // Thirst rises with the heat, so the same skins go less far in the south.
+    float hHere0 = std::max(hy.heightM[hereCell], 0.0f);
+    float thirst = thirstFactor(seasonalT(clim, pos, hHere0, now - span * 0.5));
+    integrateBand(b, flowBase, span, b.resting, clim, pos, hHere0, startT,
+                  drinkableAt(pf, hy, clim, pos, hereCell, now - span * 0.5, b.P * thirst),
+                  thirst);
     if (b.P < BAND_MIN_P) {
         if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
         pf.bands.erase(pf.bands.begin() + bi);

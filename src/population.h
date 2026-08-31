@@ -133,6 +133,15 @@ constexpr float CAP_WATER_DAYS = 3.0f;
 // deal more than a hungry one. At a tenth a day, a band could still cross
 // 200 km of open sea by dying down to a remnant on the way.
 constexpr float THIRST_DEATH_RATE = 0.30f;
+
+// How much a person drinks is not a constant. At rest in cool country it is
+// two or three litres a day; walking in tropical heat it is four to six, and
+// in desert heat more than ten. Without this the skins last three days in
+// the Sahara and three days in Siberia, which quietly makes hot country the
+// easier crossing.
+inline float thirstFactor(float tempC) {
+    return std::clamp(1.0f + (tempC - 12.0f) / 22.0f, 1.0f, 2.2f);
+}
 constexpr float HOARD_FILL = 0.25f;      // famine sets in below this fill fraction
 constexpr float STARVE_MAX = 0.02f;      // /day at full exclusion and total shortfall
 
