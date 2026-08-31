@@ -615,9 +615,38 @@ inline float farmRadiusKm(const population::Settlement& s, double now) {
 // A band forages the cell it stands on: same famine rule as a settlement, but
 // a moving band gathers on a third of the day and carries only a small store.
 // No growth on the march; a migration is months, not generations.
+// What a band can drink where it stands, in people supported per day. The
+// yield maps are land only, so open sea is zero and needs no rule of its
+// own; a lake or a river is as much as anyone can drink, and ice is water
+// you have to melt but water all the same. Salt is the distinction that
+// matters -- without it the Great Lakes would be as deadly as the Atlantic.
+inline float drinkableAt(const population::Field& pf, const hydrology::Result& hy,
+                         const atmosphere::Climatology& clim, terrain::V3 n, int cell,
+                         double now, float need) {
+    bool lake = hy.cells[cell].lakeLevel > hydrology::NO_LAKE + 1.0f;
+    bool sea = hy.heightM[cell] <= 0 && !lake;
+    if (lake) return need;   // fresh, and more of it than anyone can drink
+    if (sea) {
+        // Sea ice is fresh once it has aged, and a frozen surface can be
+        // melted; open salt water cannot be drunk at all.
+        float t = seasonalT(clim, n, 0.0f, now);
+        return t < FROZEN_T ? need : 0.0f;
+    }
+    // On land, kWaterMap counts what the rivers carry -- which is the right
+    // measure for a settlement of hundreds drawing every day, and the wrong
+    // one for a band walking through. Where rain falls there is water in
+    // pools, seeps andsmall streams below this grid, and nobody dies of thirst
+    // in a rainforest for want of a river. Dry country is what kills.
+    float rain = clim.rainMmDay.empty()
+                     ? 2.0f
+                     : atmosphere::seasonalAt(clim.rainMmDay, atmosphere::climFuzz(n), now);
+    float wet = std::clamp((rain - 0.3f) / 0.7f, 0.0f, 1.0f);
+    return std::max(pf.kWaterMap[cell], wet * need);
+}
+
 inline void integrateBand(population::Band& b, float flowBase, double span, bool resting,
                           const atmosphere::Climatology& clim, terrain::V3 n, float h,
-                          double startT) {
+                          double startT, float drinkable) {
     using namespace population;
     float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
     float lon = std::atan2(n.y, n.x);
@@ -641,6 +670,15 @@ inline void integrateBand(population::Band& b, float flowBase, double span, bool
         bandStarve(b.pop, STARVE_MAX * b.P * excl * shortfall * dt);
         b.P = b.pop.total();
         b.S = std::clamp(b.S + (H - b.P) * dt * act, 0.0f, CAP_DAYS_BAND * std::max(b.P, 1.0f));
+        // Water: drink what is here, carry away the surplus, spend the rest
+        // out of the skins. Dry, and the ground giving nothing, kills fast.
+        float wCap = CAP_WATER_DAYS * std::max(b.P, 1.0f);
+        b.water = std::clamp(b.water + (drinkable - b.P) * dt, 0.0f, wCap);
+        if (b.water <= 0.0f && drinkable < b.P) {
+            float dry = std::clamp(1.0f - drinkable / std::max(b.P, 1.0f), 0.0f, 1.0f);
+            bandStarve(b.pop, THIRST_DEATH_RATE * b.P * dry * dt);
+            b.P = b.pop.total();
+        }
     }
 }
 
@@ -869,7 +907,8 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
         flowBase *= std::max(scale, 0.0f);
     }
     integrateBand(b, flowBase, span, b.resting, clim, pos,
-                  std::max(hy.heightM[hereCell], 0.0f), startT);
+                  std::max(hy.heightM[hereCell], 0.0f), startT,
+                  drinkableAt(pf, hy, clim, pos, hereCell, now - span * 0.5, b.P));
     if (b.P < BAND_MIN_P) {
         if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
         pf.bands.erase(pf.bands.begin() + bi);
@@ -1063,6 +1102,7 @@ inline bool maybeRaid(population::Field& pf, technology::WorldState& ws, int si,
     b.P = party.total();
     b.bows = s.bows * RAID_MEN_SHARE;
     b.S = std::min(s.S * RAID_MEN_SHARE, CAP_DAYS_BAND * b.P);
+    b.water = CAP_WATER_DAYS * b.P; // nobody sets out with empty skins
     b.targetCell = pf.settlements[ti].cell;
     b.t = now;
     b.nextUpdate = now + BAND_STEP_DAYS;
@@ -1203,6 +1243,7 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     if (!wholeGroup) b.pop.scale(SPLIT_SHARE);
     b.P = b.pop.total();
     b.S = std::min((wholeGroup ? s.S : s.S * SPLIT_SHARE), CAP_DAYS_BAND * b.P);
+    b.water = CAP_WATER_DAYS * b.P; // nobody sets out with empty skins
     b.bows = wholeGroup ? s.bows : s.bows * SPLIT_SHARE; // people take their bows
     b.targetCell = tgt;
     b.setOut = now;

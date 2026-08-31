@@ -359,7 +359,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 20\n";
+    f << "version 21\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -385,7 +385,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     for (const population::Band& b : w.pop.bands) {
         f << "band " << b.id << " " << b.pop.C << " " << b.pop.M << " " << b.pop.W << " "
           << b.pop.E << " " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
-          << b.targetCell << " " << (int)b.resting << " " << b.restStart;
+          << b.targetCell << " " << (int)b.resting << " " << b.restStart << " " << b.water;
         for (int t = 0; t < population::NTECH; t++)
             f << " " << (int)b.tech[t].aware << " " << (int)b.tech[t].practising << " "
               << b.tech[t].practiceT << " " << b.tech[t].lostT;
@@ -433,7 +433,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     };
     struct SavedBand {
         double id = 0, px = 0, py = 0, pz = 0, P = 0, S = 0;
-        double target = -1, resting = 0, restStart = 0, bows = 0;
+        double target = -1, resting = 0, restStart = 0, bows = 0, water = -1;
         double purpose = 0, homeId = 0, targetId = 0, returning = 0, loot = 0, lootHerd = 0,
                sid = 0;
         double children = 0, men = 0, women = 0, elderly = 0;
@@ -494,6 +494,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             if (version >= 15) f >> bv.children >> bv.men >> bv.women >> bv.elderly;
             f >> bv.px >> bv.py >> bv.pz >> bv.P >> bv.S >> bv.target >> bv.resting >>
                 bv.restStart;
+            if (version >= 21) f >> bv.water;
             int nt = version >= 19 ? 5 : version >= 13 ? 4 : version >= 8 ? 3 : version >= 7 ? 2 : 0;
             for (int t = 0; t < nt; t++) {
                 f >> bv.tech[t][0] >> bv.tech[t][1] >> bv.tech[t][2];
@@ -632,6 +633,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             b.resting = bv.resting > 0.5;
             b.restStart = bv.restStart;
             b.bows = (float)bv.bows;
+            b.water = bv.water >= 0 ? (float)bv.water : population::CAP_WATER_DAYS * (float)bv.P;
             b.purpose = (int)bv.purpose;
             b.homeId = (uint32_t)bv.homeId;
             b.targetId = (uint32_t)bv.targetId;

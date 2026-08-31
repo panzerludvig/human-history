@@ -121,6 +121,18 @@ constexpr float GATHER_SETTLED = 1.5f;   // rations/person/day gatherable settle
 constexpr float GATHER_MOVING = 0.5f;    // a moving band forages on a third of its time
 constexpr float CAP_DAYS_SETTLED = 90.0f;
 constexpr float CAP_DAYS_BAND = 10.0f;
+// Water is carried too, and on a different clock. Food runs on weeks and
+// bleeds a band; water runs on days and kills it. That difference is the
+// whole reason a desert or an open sea is a barrier while poor country is
+// merely expensive -- no amount of hunger stops anybody in three days.
+//
+// Three days is what people carry in skins and gourds. Pots would carry
+// more, which is a job waiting for a technology that does not exist yet.
+constexpr float CAP_WATER_DAYS = 3.0f;
+// Dehydration kills in three or four days, so a dry day has to cost a great
+// deal more than a hungry one. At a tenth a day, a band could still cross
+// 200 km of open sea by dying down to a remnant on the way.
+constexpr float THIRST_DEATH_RATE = 0.30f;
 constexpr float HOARD_FILL = 0.25f;      // famine sets in below this fill fraction
 constexpr float STARVE_MAX = 0.02f;      // /day at full exclusion and total shortfall
 
@@ -539,6 +551,7 @@ struct Band {
     // cannot be the place they settle again. Journey state, not saved.
     double setOut = 0; // when this journey began, for fading hope
     int fromCell = -1; // where they started, so arrivals can say how far
+    float water = 0;   // person-days of water in the skins
     float bows = 0;    // carried: the first possession that travels
     uint16_t culture = 0;
     char name[16] = {};  // the community's name; the suffix comes from purpose

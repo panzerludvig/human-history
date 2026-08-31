@@ -2,6 +2,16 @@
 
 **Status:** Implemented — see [[Meta/Status Vocabulary]]
 
+**Water is carried, and it is what makes a barrier** (2026-08-31). Food and water are not the same constraint wearing different clothes: food runs on weeks and bleeds a band, water runs on days and kills it. Before this, water did not exist for bands at all, and the measurement was stark -- bands rafted **507 km** of open ocean, made **5,853 crossings** over 5 km in five centuries, and reached all but 8 of the 28 substantial landmasses. The sea was a road.
+
+A band now carries `CAP_WATER_DAYS` (3) days of water in skins, drinks what the ground offers where it stands, and loses `THIRST_DEATH_RATE` (30%) of its people a day when the skins are empty and the ground gives nothing -- dehydration kills in three or four days, so a dry day must cost far more than a hungry one. At a tenth a day, first tried, a band could still cross 200 km by dying down to a remnant.
+
+What the ground offers (`sim::drinkableAt`) needs no rule for the sea: the yield maps are land only, so open salt water is simply zero. Four things follow for free. **Lakes and rivers are fresh** and give as much as anyone can drink -- named explicitly, or the Great Lakes would be as deadly as the Atlantic. **Ice is water**, so frozen straits stay the crossing season they already were. **A desert is a trickle, not a wall**: drainage is rarely exactly zero, so a small band crosses ground that kills a large one. And **a river through a desert is a road**, because drainage area is what `kWaterMap` counts.
+
+`kWaterMap` alone was too harsh for a band, though: it counts what rivers carry, which is right for a settlement of hundreds drawing every day and wrong for people walking through country where rain falls. Nobody dies of thirst in a rainforest for want of a river, so rainfall above about 1 mm/day counts as water enough.
+
+Measured over 500 years: crossings over 5 km fell from 5,853 to **1,450**, crossings over 100 km from 1,052 to **78**, the longest survived from 507 km to 235 (the long ones now run over ice). **17 of the 28 substantial landmasses are unreached**, up from 8 -- they are what boats are for. The settled world is 15% smaller: 5,568 settlements and 1.21M people against 6,578 and 1.42M.
+
 Since 2026-08-31 a settlement holds a claim rather than a fixed catchment, and hunger widens that claim before it sends anyone away: see [[Design/Borders]]. Emigration is now what a hemmed-in people do.
 
 How people leave, move, and settle anew. The central idea: a migrating band is a settlement with velocity, and "settled" is an outcome, not a type. This note also introduces **storage** (the food a group has already harvested, as distinct from what the land offers) and the project's first **agent** — the band.
