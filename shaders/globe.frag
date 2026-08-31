@@ -27,6 +27,7 @@ uniform sampler2D uPlates; // uplift, crust, km to nearest plate boundary
 uniform sampler2D uPop;    // carrying capacity K, settlement index + 1, band index + 1
 uniform sampler2D uBands;  // one texel per band: position xyz on the unit sphere, headcount
 uniform sampler2D uSites;  // one texel per settlement: people, granaries, field radius km
+uniform sampler2D uOverlay; // markers and labels drawn on the CPU; magenta = nothing here
 uniform vec3 uSun;         // world-space sun direction (day-night and seasons)
 uniform sampler2D uClim;   // climatology, 4 season bands: cloud, rain, wind u, wind v
 uniform sampler2D uClim2;  // climatology 2: mean T, snowfall, coarse elevation
@@ -282,45 +283,97 @@ vec4 siteAt(ivec2 cw) {
     return texelFetch(uSites, ivec2(idx % 256, idx / 256), 0);
 }
 
-// Population of a settlement whose marker covers n, else 0. The marker
-// shrinks to a village-sized 1.2 km when zoomed right in: at that range it
-// stops being a pin on a map and would otherwise cover the fields.
-float settlementNear(vec3 n) {
+// The houses themselves, drawn on the ground when the view is close enough
+// to hold them: one hut to a household, scattered on a golden-angle spiral
+// inside the village, with the granaries standing among them. Further out
+// there is no dot here at all -- the marker and the name are drawn over the
+// globe instead (paintOverlay), the way a map names a place.
+//
+// Huts are drawn at ~60 m across where a real one is 8 m: at this planet's
+// maximum zoom a pixel is still 8 m, so a truthful hut would never be
+// visible. The scatter is the truth; the size is a symbol.
+const float HUT_KMPP = 0.05; // closer than this and the houses come out
+
+float villageRadiusKm(float P) { // mirrors sim::villageRadiusKm
+    int n = clamp(int(P / 12.0 + 0.5), 3, 28);
+    return 0.25 + 0.11 * sqrt(float(n));
+}
+
+// Returns 1 for a hut, 2 for a granary, 3 for the trodden ground they
+// stand on, 0 for country that is none of those.
+int hutsNear(vec3 n) {
+    if (uKmPerPixel > HUT_KMPP) return 0;
+    float hutKm = max(0.09, uKmPerPixel * 2.2);
+    float granKm = max(0.11, uKmPerPixel * 2.6);
     ivec2 c0 = hydroCell(n);
-    float radiusKm = clamp(uKmPerPixel * 5.0, 1.2, 18.0);
     for (int dy = -1; dy <= 1; dy++)
         for (int dx = -1; dx <= 1; dx++) {
             ivec2 c = c0 + ivec2(dx, dy);
             ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
             vec4 site = siteAt(cw);
             if (site.r <= 0.0) continue;
-            float dist = length(n - cellCentre(cw)) * 6371.0;
-            if (dist < radiusKm) return site.r;
+            vec3 cc = cellCentre(cw);
+            float rKm = villageRadiusKm(site.r);
+            if (length(n - cc) * 6371.0 > rKm + granKm + 0.4) continue;
+            vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
+            vec3 north = cross(cc, east);
+            int cell = cw.y * HW + cw.x;
+            float ph = float(cell % 628) * 0.01;
+            int huts = clamp(int(site.r / 12.0 + 0.5), 3, 28);
+            for (int k = 0; k < huts; k++) {
+                float a = 2.39996 * float(k) + ph;
+                // Spiral out from the middle, jittered so the rows of a
+                // sunflower do not show through as a pattern.
+                float rr = rKm * (0.18 + 0.82 * sqrt(float(k) / float(huts))) *
+                           (0.82 + 0.36 * fract(sin(float(k) * 12.9898 + ph) * 43758.5453));
+                vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
+                if (length(n - p) * 6371.0 < hutKm) return 1;
+            }
+            // Granaries: sim::granaryPos, mirrored exactly -- same angle, and
+            // each one a little further out than the last.
+            int g = int(max(site.g, 0.0) + 0.5);
+            for (int k = 0; k < g && k < 8; k++) {
+                float a = 2.39996 * float(k) + ph;
+                float rr = 0.20 + 0.055 * float(k);
+                vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
+                if (length(n - p) * 6371.0 < granKm) return 2;
+            }
+            // Ground walked bare between the houses: without it a village
+            // reads as a hole in the fields rather than a place.
+            if (length(n - cc) * 6371.0 < rKm * 1.2) return 3;
         }
-    return 0.0;
+    return 0;
 }
 
-// Population of a migrating band whose marker covers n, else 0. A cell
-// names the band standing on it; the band texture says where it actually
-// is, so the marker slides across the ground instead of hopping cell to
-// cell (a 20 km jump at the equator, plainly visible when following one).
-float bandNear(vec3 n) {
+// A band close up is the people themselves: a scatter of small dots around
+// the point the simulation walks, as many as the band has households.
+// Further out it gets a marker and a name in the overlay, like a settlement.
+bool bandDotsNear(vec3 n) {
+    if (uKmPerPixel > HUT_KMPP) return false;
+    float dotKm = max(0.05, uKmPerPixel * 1.8);
     ivec2 c0 = hydroCell(n);
-    float radiusKm = clamp(uKmPerPixel * 4.0, 3.0, 14.0);
-    // A band sits anywhere inside its cell, so a marker can reach further
-    // than the neighbouring cell; columns narrow towards the poles, so the
-    // sweep in longitude widens with latitude to keep the dot whole.
-    int rx = clamp(int(radiusKm / max(20.0 * cos(asin(n.z)), 1.0)) + 2, 2, 8);
-    for (int dy = -2; dy <= 2; dy++)
+    int rx = clamp(int(1.0 / max(20.0 * cos(asin(n.z)), 1.0)) + 2, 2, 8);
+    for (int dy = -1; dy <= 1; dy++)
         for (int dx = -rx; dx <= rx; dx++) {
             ivec2 c = c0 + ivec2(dx, dy);
             ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
             int idx = int(texelFetch(uPop, cw, 0).b + 0.5) - 1;
             if (idx < 0) continue;
-            vec4 bandTexel = texelFetch(uBands, ivec2(idx % 256, idx / 256), 0);
-            if (length(n - bandTexel.xyz) * 6371.0 < radiusKm) return bandTexel.w;
+            vec4 b = texelFetch(uBands, ivec2(idx % 256, idx / 256), 0);
+            int dots = clamp(int(b.w / 6.0 + 0.5), 3, 30); // sim::bandDots
+            float spread = 0.14 + 0.06 * sqrt(float(dots));    // sim::bandSpreadKm
+            if (length(n - b.xyz) * 6371.0 > spread + dotKm + 0.2) continue;
+            vec3 east = normalize(vec3(-b.y, b.x, 0.0));
+            vec3 north = cross(b.xyz, east);
+            for (int k = 0; k < dots; k++) {
+                float a = 2.39996 * float(k) + float(idx) * 0.37;
+                float rr = spread * sqrt(float(k) / float(dots)) *
+                           (0.7 + 0.6 * fract(sin(float(k) * 78.233 + float(idx)) * 43758.5453));
+                vec3 p = normalize(b.xyz + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
+                if (length(n - p) * 6371.0 < dotKm) return true;
+            }
         }
-    return 0.0;
+    return false;
 }
 
 // Ruins of an abandoned settlement: the population channel carries -1 where
@@ -336,34 +389,6 @@ float ruinNear(vec3 n) {
             ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
             if (texelFetch(uPop, cw, 0).g >= 0.0) continue;
             if (length(n - cellCentre(cw)) * 6371.0 < rad) return 1.0;
-        }
-    return 0.0;
-}
-
-// Granary markers: a ring of small structures around the settlement's cell
-// centre, visible only zoomed right in. Mirrors sim::granaryPos EXACTLY
-// (golden-angle ring, integer per-cell phase, 6.5 km radius) so the tooltip
-// and the drawing can never drift apart.
-float granaryNear(vec3 n) {
-    if (uKmPerPixel > 2.5) return 0.0;
-    float rad = clamp(uKmPerPixel * 2.0, 0.6, 2.5);
-    ivec2 c0 = hydroCell(n);
-    for (int dy = -1; dy <= 1; dy++)
-        for (int dx = -1; dx <= 1; dx++) {
-            ivec2 c = c0 + ivec2(dx, dy);
-            ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
-            vec4 site = siteAt(cw);
-            int g = int(max(site.g, 0.0) + 0.5);
-            if (g <= 0) continue;
-            vec3 cc = cellCentre(cw);
-            vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
-            vec3 north = cross(cc, east);
-            int cell = cw.y * HW + cw.x;
-            for (int k = 0; k < g && k < 8; k++) {
-                float a = 2.39996 * float(k) + float(cell % 628) * 0.01;
-                vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (6.5 / 6371.0));
-                if (length(n - p) * 6371.0 < rad) return 1.0;
-            }
         }
     return 0.0;
 }
@@ -388,7 +413,7 @@ vec4 fieldsNear(vec3 n) {
             if (rKm <= 0.0) continue;
             vec3 cc = cellCentre(cw);
             float distKm = length(n - cc) * 6371.0;
-            if (distKm >= rKm || distKm < 0.7) continue;
+            if (distKm >= rKm || distKm < villageRadiusKm(site.r) * 1.2) continue;
             // Nothing about a clearing is circular: the outline wanders with
             // the ground, the wood and where the last stumps were left.
             // Local ground frame, in km, turned by a per-cell angle so
@@ -806,7 +831,7 @@ void main() {
             vec3 warm = mix(vec3(0.9, 0.85, 0.2), vec3(0.85, 0.1, 0.05), smoothstep(0.66, 1.0, t2));
             c = mix(vec3(0.08, 0.08, 0.1), mix(vec3(0.1, 0.3, 0.7), warm, smoothstep(0.33, 0.9, t2)), smoothstep(0.0, 0.4, t2));
         }
-        if (settlementNear(n) > 0.0) c = vec3(1.0);
+        if (siteAt(hydroCell(n)).r > 0.0) c = vec3(1.0);
         fragColor = vec4(scaleBarOverlay(c * uDim), 1.0);
         return;
     }
@@ -834,15 +859,15 @@ void main() {
         fragColor = vec4(scaleBarOverlay(c * uDim), 1.0);
         return;
     }
-    float sp = uHasHydro == 1 ? settlementNear(n) : 0.0;
-    float bp = uHasHydro == 1 ? bandNear(n) : 0.0;
-    vec4 fields = (uHasHydro == 1 && !isWater && !isRiver && !isPond && sp <= 0.0 && bp <= 0.0)
+    int built = (uHasHydro == 1 && !isWater) ? hutsNear(n) : 0;
+    bool walkers = uHasHydro == 1 && built == 0 && bandDotsNear(n);
+    vec4 fields = (uHasHydro == 1 && !isWater && !isRiver && !isPond && built == 0 && !walkers)
                       ? fieldsNear(n)
                       : vec4(0.0);
-    if (sp > 0.0 && !isWater) albedo = vec3(0.55, 0.08, 0.05) * (0.75 + 0.25 * clamp(log(sp) / 11.0, 0.0, 1.0));
-    else if (bp > 0.0) albedo = vec3(0.85, 0.55, 0.10); // bands: amber, even mid-crossing
-    else if (uHasHydro == 1 && !isWater && granaryNear(n) > 0.0)
-        albedo = vec3(0.80, 0.64, 0.26); // granaries: straw-coloured stores
+    if (walkers) albedo = vec3(0.85, 0.55, 0.10);         // people on the move
+    else if (built == 3) albedo = vec3(0.45, 0.40, 0.31); // the ground between houses
+    else if (built == 1) albedo = vec3(0.42, 0.31, 0.20); // thatch and daub
+    else if (built == 2) albedo = vec3(0.80, 0.64, 0.26); // granaries: straw-coloured stores
     else if (uHasHydro == 1 && !isWater && ruinNear(n) > 0.0)
         albedo = vec3(0.42, 0.40, 0.38); // ruins: weathered stone and ash
     else if (isRiver) albedo = mix(vec3(0.10, 0.30, 0.48), vec3(0.80, 0.86, 0.92), iceAt(n, h));
@@ -893,6 +918,14 @@ void main() {
     }
     // Violet: a hue the terrain palette never uses, so the zone reads at low alpha.
     col = mix(col, vec3(0.55, 0.20, 1.0), aw * 0.32);
+
+    // Markers and names are drawn on the CPU into a screen-sized overlay
+    // (paintOverlay) and laid over everything here, clouds included: they
+    // are a map's furniture, not part of the world. Magenta means the
+    // overlay left this pixel alone -- no alpha channel needed, and no
+    // antialiasing to fringe against it.
+    vec4 ov = texelFetch(uOverlay, ivec2(gl_FragCoord.xy), 0);
+    if (dot(abs(ov.rgb - vec3(1.0, 0.0, 1.0)), vec3(1.0)) > 0.02) col = ov.rgb;
 
     fragColor = vec4(scaleBarOverlay(col), 1.0);
 }

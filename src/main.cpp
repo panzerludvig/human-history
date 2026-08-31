@@ -43,6 +43,7 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_TEXTURE4 0x84C4
 #define GL_TEXTURE5 0x84C5
 #define GL_TEXTURE6 0x84C6
+#define GL_TEXTURE7 0x84C7
 #define GL_RG32F 0x8230
 #define GL_RG 0x8227
 #define GL_CLAMP_TO_EDGE 0x812F
@@ -725,6 +726,14 @@ struct App {
     int bandRows = 0;
     GLuint siteTex = 0;
     int siteRows = 0;
+    // The marker overlay: a screen-sized image drawn with GDI and laid over
+    // the globe by the shader. Magenta means "nothing here".
+    HDC ovDC = nullptr;
+    HBITMAP ovBmp = nullptr;
+    unsigned char* ovBits = nullptr;
+    int ovW = 0, ovH = 0;
+    GLuint ovTex = 0;
+    HFONT markerFont = nullptr, markerBold = nullptr;
     GLuint climTex = 0;
     GLuint clim2Tex = 0;
     bool running = true;
@@ -818,6 +827,225 @@ static std::vector<float> bandTexData(int& rows) {
         d[i * 4 + 3] = std::max(bs[i].P, 1.0f);
     }
     return d;
+}
+
+// ------------------------------------------------------- marker overlay
+//
+// Close up, a settlement is its houses and a band is its people, both drawn
+// on the ground by the shader. From further off that is a smear of pixels,
+// so the map takes over: a round marker with a hut in it for a settlement, a
+// labelled rectangle for a band, and the name underneath until the view is
+// wide enough that names would be a thicket. Markers and names are drawn
+// here with GDI into a screen-sized image and laid over the globe by the
+// shader -- pixel work belongs in pixels, and it puts the same font on the
+// map as on the panels.
+constexpr int MARKER_R = 9;         // the settlement circle's radius
+constexpr double NAME_KMPP = 1.5;   // wider views than this drop the names
+constexpr int THIN_PX = 22;         // at most one marker to a square this size
+constexpr double HUT_KMPP = 0.05;   // closer than this the shader draws houses
+
+// Where a point on the unit sphere lands on the screen; false when it is
+// behind the camera or hidden by the curve of the world.
+static bool projectToScreen(const terrain::V3& p, float& sx, float& sy) {
+    Vec3 pw{p.x, p.y, p.z};
+    Vec3 o = app.cam.position();
+    double r = std::sqrt(dot(o, o));
+    if (dot(pw, o) < 1.0) return false; // over the horizon
+    Vec3 d = pw - o;
+    double z = dot(d, app.cam.forward());
+    if (z <= 1e-9) return false;
+    double nx = dot(d, app.cam.right()) / z / (app.cam.tanHalfV() * app.cam.aspect());
+    double ny = dot(d, app.cam.up()) / z / app.cam.tanHalfV();
+    sx = (float)((nx + 1.0) * 0.5 * app.cam.width - 0.5);
+    sy = (float)((1.0 - ny) * 0.5 * app.cam.height - 0.5);
+    return true;
+}
+
+static void overlayEnsure() {
+    if (app.ovDC && app.ovW == app.cam.width && app.ovH == app.cam.height) return;
+    if (app.ovBmp) { DeleteObject(app.ovBmp); app.ovBmp = nullptr; }
+    if (app.ovDC) { DeleteDC(app.ovDC); app.ovDC = nullptr; }
+    app.ovW = app.cam.width;
+    app.ovH = app.cam.height;
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = app.ovW;
+    bi.bmiHeader.biHeight = app.ovH; // bottom-up, so rows arrive in OpenGL order
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    HDC screen = GetDC(nullptr);
+    app.ovDC = CreateCompatibleDC(screen);
+    app.ovBmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, (void**)&app.ovBits, nullptr, 0);
+    ReleaseDC(nullptr, screen);
+    SelectObject(app.ovDC, app.ovBmp);
+    SetBkMode(app.ovDC, TRANSPARENT);
+}
+
+// A house seen from the side, sized to sit inside a marker of radius r.
+static void drawHutGlyph(HDC dc, int cx, int cy, int r) {
+    int w = r * 5 / 9, hgt = r * 6 / 9;
+    POINT roof[3] = {{cx - w - 1, cy - 1}, {cx, cy - hgt}, {cx + w + 1, cy - 1}};
+    Polygon(dc, roof, 3);
+    Rectangle(dc, cx - w + 2, cy - 1, cx + w - 1, cy + hgt - 1);
+}
+
+// One line of text centred on x, with a dark copy under it so a name stays
+// legible over snow as well as over forest.
+static void drawLabel(HDC dc, int x, int y, const char* txt) {
+    int n = (int)strlen(txt);
+    SetTextColor(dc, RGB(24, 20, 14));
+    TextOutA(dc, x + 1, y + 1, txt, n);
+    SetTextColor(dc, RGB(250, 246, 234));
+    TextOutA(dc, x, y, txt, n);
+}
+
+static void paintOverlay() {
+    overlayEnsure();
+    if (!app.ovDC) return;
+    HDC dc = app.ovDC;
+    RECT full{0, 0, app.ovW, app.ovH};
+    HBRUSH clear = CreateSolidBrush(RGB(255, 0, 255)); // "nothing here", to the shader
+    FillRect(dc, &full, clear);
+    DeleteObject(clear);
+    if (app.screen != Screen::InGame || app.world.pop.settlements.empty()) return;
+    double kmpp = app.cam.kmPerPixel();
+    // Close up the shader draws the houses and the walking people
+    // themselves, so the overlay adds only the names.
+    bool ground = kmpp < HUT_KMPP;
+    bool names = kmpp < NAME_KMPP;
+    // The marker shrinks as the view widens. At continental range a field of
+    // identical badges hides the thing worth seeing -- where people are thick
+    // on the ground and where they are not -- so the hut inside it goes when
+    // it stops being legible, and the marker ends as a dot.
+    int mr = names ? MARKER_R : (kmpp < 8.0 ? 5 : 3);
+    int thin = std::max(2 * mr + 4, names ? THIN_PX : 0);
+
+    // One marker to a square: a thousand settlements in view is a legible map
+    // only if the small ones give way to the large. Two passes, no sorting.
+    int gw = app.ovW / thin + 1, gh = app.ovH / thin + 1;
+    struct Cand { float x, y, w; int idx; bool band; };
+    std::vector<Cand> cands;
+    std::vector<int> best((size_t)gw * gh, -1);
+    auto offer = [&](float x, float y, float w, int idx, bool band) {
+        if (x < -60 || y < -30 || x > app.ovW + 60 || y > app.ovH + 30) return;
+        cands.push_back({x, y, w, idx, band});
+        int gx = std::clamp((int)(x / thin), 0, gw - 1);
+        int gy = std::clamp((int)(y / thin), 0, gh - 1);
+        int& b = best[(size_t)gy * gw + gx];
+        if (b < 0 || cands[b].w < w) b = (int)cands.size() - 1;
+    };
+    const population::Field& pf = app.world.pop;
+    float sx, sy;
+    for (size_t i = 0; i < pf.settlements.size(); i++)
+        if (projectToScreen(sim::cellCentre(pf.settlements[i].cell), sx, sy))
+            offer(sx, sy, pf.settlements[i].P, (int)i, false);
+    // Bands outrank settlements for the square they stand on: they are the
+    // thing that moves, and losing one to a village it is passing is worse
+    // than losing the village.
+    for (size_t i = 0; i < pf.bands.size(); i++) {
+        const population::Band& b = pf.bands[i];
+        if (projectToScreen({b.px, b.py, b.pz}, sx, sy)) offer(sx, sy, b.P + 1e6f, (int)i, true);
+    }
+
+    HBRUSH cream = CreateSolidBrush(RGB(238, 230, 208));
+    HBRUSH amber = CreateSolidBrush(RGB(232, 176, 66));
+    HBRUSH ink = CreateSolidBrush(RGB(96, 52, 28));
+    HPEN edge = CreatePen(PS_SOLID, 1, RGB(40, 28, 18));
+    HGDIOBJ oldPen = SelectObject(dc, edge);
+    SetTextAlign(dc, TA_CENTER | TA_TOP);
+    for (int gi : best) {
+        if (gi < 0) continue;
+        const Cand& c = cands[gi];
+        int cx = (int)std::lround(c.x), cy = (int)std::lround(c.y);
+        if (!c.band) {
+            const population::Settlement& st = pf.settlements[c.idx];
+            int below = mr + 2;
+            if (ground) {
+                below = (int)(sim::fieldInnerKm(st.P) / kmpp) + 3;
+            } else {
+                SelectObject(dc, mr >= 7 ? cream : ink);
+                Ellipse(dc, cx - mr, cy - mr, cx + mr + 1, cy + mr + 1);
+                if (mr >= 7) {
+                    SelectObject(dc, ink);
+                    drawHutGlyph(dc, cx, cy, mr);
+                }
+            }
+            if (names) {
+                SelectObject(dc, app.markerFont);
+                drawLabel(dc, cx, cy + below, st.name);
+            }
+        } else {
+            const population::Band& b = pf.bands[c.idx];
+            const char* kind = b.purpose == population::BAND_RAID ? "Raiders"
+                               : b.colonists                     ? "Colonists"
+                                                                 : "Tribe";
+            SelectObject(dc, app.markerBold);
+            SIZE ts{};
+            GetTextExtentPoint32A(dc, kind, (int)strlen(kind), &ts);
+            int hw = (int)ts.cx / 2 + 5, hh = 9;
+            if (!names) { hw = mr + 1; hh = mr - 1; } // no room for the word
+            int below = hh + 2;
+            if (ground) {
+                below = (int)(sim::bandSpreadKm(b.P) / kmpp) + 3;
+            } else {
+                SelectObject(dc, amber);
+                Rectangle(dc, cx - hw, cy - hh, cx + hw, cy + hh);
+                if (names) {
+                    SetTextColor(dc, RGB(38, 26, 10));
+                    TextOutA(dc, cx, cy - hh + 2, kind, (int)strlen(kind));
+                }
+            }
+            if (names) {
+                SelectObject(dc, app.markerFont);
+                drawLabel(dc, cx, cy + below, b.name);
+            }
+        }
+    }
+    SelectObject(dc, oldPen);
+    DeleteObject(cream);
+    DeleteObject(amber);
+    DeleteObject(ink);
+    DeleteObject(edge);
+}
+
+// The overlay is a function of the camera, the world and the window, so it
+// only needs redrawing when one of those moves. Repainting and uploading it
+// costs about 2.4 ms, which is a quarter of a frame to spend on a picture
+// that usually has not changed.
+static bool overlayStale() {
+    static double la = 1e9, lo = 1e9, alt = 0, t = -1;
+    static int w = 0, h = 0, ns = -1, nb = -1, scr = -1;
+    const population::Field& pf = app.world.pop;
+    bool same = la == app.cam.lat && lo == app.cam.lon && alt == app.cam.altitude &&
+                w == app.cam.width && h == app.cam.height && t == app.world.simTime &&
+                ns == (int)pf.settlements.size() && nb == (int)pf.bands.size() &&
+                scr == (int)app.screen;
+    if (same) return false;
+    la = app.cam.lat;
+    lo = app.cam.lon;
+    alt = app.cam.altitude;
+    w = app.cam.width;
+    h = app.cam.height;
+    t = app.world.simTime;
+    ns = (int)pf.settlements.size();
+    nb = (int)pf.bands.size();
+    scr = (int)app.screen;
+    return true;
+}
+
+static void uploadOverlay() {
+    glActiveTexture(GL_TEXTURE7);
+    if (!app.ovTex) {
+        glGenTextures(1, &app.ovTex);
+        glBindTexture(GL_TEXTURE_2D, app.ovTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+    glBindTexture(GL_TEXTURE_2D, app.ovTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, app.ovW, app.ovH, 0, 0x80E1 /*GL_BGRA*/,
+                 GL_UNSIGNED_BYTE, app.ovBits);
+    glActiveTexture(GL_TEXTURE0);
 }
 
 static void uploadPopulation() {
@@ -965,6 +1193,13 @@ static void createControls() {
     app.titleFont = CreateFontA(56, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
     app.panelFont = CreateFontA(18, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
     app.panelBold = CreateFontA(18, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
+    // Marker text is drawn without antialiasing on purpose: the overlay has
+    // no alpha channel -- the shader keys on magenta -- so blended edges
+    // would fringe. Crisp small type also suits a map.
+    app.markerFont = CreateFontA(15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                                 NONANTIALIASED_QUALITY, 0, "Segoe UI");
+    app.markerBold = CreateFontA(14, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                                 NONANTIALIASED_QUALITY, 0, "Segoe UI");
     app.bgBrush = CreateSolidBrush(RGB(8, 8, 16));
     addControl(ID_TITLE, "STATIC", "Human History", SS_CENTER);
     addControl(ID_STATUS, "STATIC", "", SS_CENTER);
@@ -1402,7 +1637,8 @@ static std::string describePoint(Vec3 n) {
                 const population::Settlement& st = wd.pop.settlements[si];
                 float fr = sim::farmRadiusKm(st, wd.simTime);
                 float d = sim::distKm(nf, sim::cellCentre(st.cell));
-                if (fr > sim::VILLAGE_KM && d < fr && d > sim::VILLAGE_KM) {
+                float inner = sim::fieldInnerKm(st.P);
+                if (fr > inner && d < fr && d > inner) {
                     char fb[64];
                     snprintf(fb, sizeof fb, "Fields of %s  |  ", st.name);
                     building = fb;
@@ -2246,8 +2482,10 @@ static void pickAt(int x, int y) {
     terrain::V3 n = {(float)hit.x, (float)hit.y, (float)hit.z};
     const population::Field& pf = app.world.pop;
     // Pick radius = draw radius plus ~3 px of slop: clicks are aim-limited.
-    float slop = (float)(app.cam.kmPerPixel() * 3.0);
-    float sRadius = (float)std::clamp(app.cam.kmPerPixel() * 5.0, 1.2, 18.0) + slop;
+    // Close up that is the village itself; further out it is the marker, so
+    // it stays the same size on screen however far the view is zoomed.
+    double kmpp = app.cam.kmPerPixel();
+    float sRadius = kmpp < HUT_KMPP ? 0.9f : (float)(kmpp * (MARKER_R + 3));
     int best = -1;
     float bestD = sRadius;
     for (int i = 0; i < (int)pf.settlements.size(); i++) {
@@ -2255,7 +2493,7 @@ static void pickAt(int x, int y) {
         if (d < bestD) { bestD = d; best = i; }
     }
     if (best >= 0) { openPanel(0, pf.settlements[best].id, 0); return; }
-    float bRadius = (float)std::clamp(app.cam.kmPerPixel() * 4.0, 3.0, 14.0) + slop;
+    float bRadius = kmpp < HUT_KMPP ? 0.55f : (float)(kmpp * (MARKER_R + 3));
     uint32_t bestId = 0;
     bestD = bRadius;
     for (const population::Band& bd : pf.bands) {
@@ -2488,6 +2726,7 @@ int main(int argc, char** argv) {
     glUniform1i(glGetUniformLocation(app.program, "uClim2"), 4);
     glUniform1i(glGetUniformLocation(app.program, "uBands"), 5);
     glUniform1i(glGetUniformLocation(app.program, "uSites"), 6);
+    glUniform1i(glGetUniformLocation(app.program, "uOverlay"), 7);
     GLint uDoy = glGetUniformLocation(app.program, "uDoy");
     GLint uClock = glGetUniformLocation(app.program, "uClock");
     GLint uAware = glGetUniformLocation(app.program, "uAware");
@@ -2671,6 +2910,12 @@ int main(int argc, char** argv) {
                 }
             } else {
                 glUniform4f(uScaleBar, -1, -1, -1, -1);
+            }
+            // Markers and names: redrawn every frame, since they follow the
+            // camera as much as the world.
+            if (overlayStale()) {
+                paintOverlay();
+                uploadOverlay();
             }
             glBindTexture(GL_TEXTURE_2D, app.hydroTex);
             glDrawArrays(GL_TRIANGLES, 0, 3);

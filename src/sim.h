@@ -283,14 +283,32 @@ inline population::SeasonCtx seasonCtx(const population::Settlement& s,
 // settlement's cell centre, spaced by the golden angle with a per-cell
 // integer phase. Defined ONCE here and mirrored exactly in
 // shaders/globe.frag (granaryNear) so drawing and the tooltip cannot drift.
-constexpr float GRANARY_RING_KM = 6.5f;
+// Granaries stand among the houses, on the same golden-angle scatter, each
+// one a little further out than the last.
+constexpr float GRANARY_R0_KM = 0.20f, GRANARY_DR_KM = 0.055f;
+
+// How wide the houses stand: a hut to a household, and enough ground under
+// them to walk between. Mirrored in the shader, which draws them.
+inline int hutCount(float P) {
+    int n = (int)(P / 12.0f + 0.5f);
+    return n < 3 ? 3 : (n > 28 ? 28 : n);
+}
+inline float villageRadiusKm(float P) { return 0.25f + 0.11f * std::sqrt((float)hutCount(P)); }
+// A band on the march: one dot to a household, spread over open ground.
+inline int bandDots(float P) {
+    int n = (int)(P / 6.0f + 0.5f);
+    return n < 3 ? 3 : (n > 30 ? 30 : n);
+}
+inline float bandSpreadKm(float P) { return 0.14f + 0.06f * std::sqrt((float)bandDots(P)); }
+// Where the fields begin: outside the houses, with room to walk between.
+inline float fieldInnerKm(float P) { return villageRadiusKm(P) * 1.2f; }
 inline terrain::V3 granaryPos(int cell, int k) {
     terrain::V3 c = cellCentre(cell);
     terrain::V3 east = norm3({-c.y, c.x, 0.0f});
     terrain::V3 north = {c.y * east.z - c.z * east.y, c.z * east.x - c.x * east.z,
                          c.x * east.y - c.y * east.x};
     float a = 2.39996f * k + (float)(cell % 628) * 0.01f;
-    float r = GRANARY_RING_KM / 6371.0f;
+    float r = (GRANARY_R0_KM + GRANARY_DR_KM * k) / 6371.0f;
     return norm3(c + (east * std::cos(a) + north * std::sin(a)) * r);
 }
 
@@ -304,7 +322,7 @@ inline terrain::V3 granaryPos(int cell, int k) {
 // regrowth, the trees not yet taken -- is what farming looks like from
 // above, so it is the footprint drawn.
 constexpr float FARM_HA_PER_FARMER = 8.0f;
-constexpr float VILLAGE_KM = 0.8f; // the houses; fields ring them, not cover them
+
 
 // How far the fields reach: the outer edge of an annulus around the village
 // holding the area this settlement's farmers work. Zero for anyone who does
@@ -318,7 +336,8 @@ inline float farmRadiusKm(const population::Settlement& s, double now) {
     // people: the number of mouths the fields actually feed.
     float farmers = s.P * std::min(s.kFoodP * technology::FARM_YIELD_GAIN * s.sFarm * fExp / k, 1.0f);
     float areaKm2 = farmers * FARM_HA_PER_FARMER * 0.01f; // 100 ha to the km^2
-    return std::sqrt(VILLAGE_KM * VILLAGE_KM + areaKm2 / 3.14159265f);
+    float inner = fieldInnerKm(s.P);
+    return std::sqrt(inner * inner + areaKm2 / 3.14159265f);
 }
 
 // A band forages the cell it stands on: same famine rule as a settlement, but
