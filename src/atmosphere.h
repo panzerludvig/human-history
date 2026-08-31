@@ -26,7 +26,71 @@ constexpr double OMEGA = 7.292e-5;       // rad/s
 
 // Energy budget (W/m^2, degC, J/K/m^2)
 constexpr double SOLAR = 1361.0;
-constexpr double OLR_A = 202.0, OLR_B = 2.0;    // outgoing = A + B*T (Budyko); A tuned so the equator sits ~24 C
+// A grey one-layer atmosphere, replacing outgoing = A + B*T (Budyko, 2026-09-01).
+//
+// That form is a GLOBAL feedback: it says what the planet as a whole does
+// when its mean temperature moves. Used cell by cell it says a surface must
+// warm 50 K to shed 100 W/m2, which is not what ground does -- ground
+// convects into the air above it in minutes. Every honest flux added to the
+// old budget therefore produced a huge excursion, and the model only looked
+// reasonable because it never reached equilibrium: the measured summer
+// maxima ran 15-20 degC hot, and winters to the -90 floor because the ground
+// radiated to space with nothing above it.
+//
+// Instead: the surface radiates sigma*T^4 upward, the air absorbs a share of
+// it and radiates the same from BOTH faces -- up to space and back down --
+// which is the greenhouse in one honest number. Local damping is then about
+// 5 W/m2/K of radiation plus 15 of convection, twenty times the old figure,
+// and it stiffens as things warm, which is what stops a runaway.
+constexpr double SIGMA = 5.670374e-8;
+constexpr double EMISS = 0.955;        // how much of the surface's longwave the air holds
+constexpr double C_AIR = 1.0e7;        // J/m2/K: cp * p / g, the whole column
+constexpr double K_SURF_AIR = 15.0;    // W/m2/K, convection into the air above
+// A one-layer atmosphere radiates from its middle, so Ta is a mid-troposphere
+// temperature -- around -30 degC on a planet whose ground is at +15. The
+// surface is warmer than that by the lapse rate through the depth between
+// them, and convection only carries what is ABOVE that difference. Coupling
+// the two without it drains some 600 W/m2 out of the ground: measured, and
+// it put 60N summer at -8 degC.
+constexpr double LAPSE_OFFSET = 27.0;  // K, surface warmer than the emitting level
+// Convection is a one-way street. Ground warmer than the air above it boils
+// heat upward; ground colder than the air sits under an inversion and barely
+// exchanges at all -- which is exactly what a polar winter night is, and why
+// it gets so cold. Treating both directions alike held polar winters at
+// -7 degC by pouring heat back down out of the air.
+constexpr double K_STABLE = 1.5;       // W/m2/K under an inversion
+// Evaporation carries heat as well as water: it leaves the surface with the
+// vapour and the air gets it back where that vapour condenses. This is the
+// second-largest heat transport on the planet, and the reason a wet surface
+// is cooler than a dry one under the same sun.
+constexpr double LATENT_J_PER_KG = 2.45e6;
+// And it has to be paid for. Unpriced, the water cycle is a pump: the model
+// ran at 7 mm a day of global rain against Earth's 2.7, which is 200 W/m2 of
+// latent flux conjured from nothing. A surface can only evaporate what the
+// sun gave it plus what it stored.
+constexpr double STORED_FLUX_WATER = 60.0, STORED_FLUX_LAND = 10.0; // W/m2
+// Land cannot evaporate what it has not been given, either. Without a store
+// to draw on the driest air draws the most water, so a desert would cool
+// itself harder than a rainforest.
+constexpr double SOIL_CAP_MM = 120.0, SOIL_REF_MM = 40.0;
+// Melting holds a surface at freezing: ice takes 334 kJ/kg without changing
+// temperature, which is why a polar summer sits near zero however long the
+// sun is up.
+constexpr double MELT_DAMP = 0.12;
+// Snow and ice reflect most of what falls on them, and the albedo field was
+// static -- painted once from an analytic first guess, so nothing got
+// brighter when it froze. That is a real feedback and a strong one: it is
+// most of why a polar summer stays cold.
+constexpr double ALBEDO_SNOW = 0.62, ALBEDO_SEAICE = 0.55;
+// Ramped, not switched. A hard step at freezing is a trapdoor: cross it once
+// and the extra reflection keeps you below it, and the whole mid-latitude
+// world locks into a snowball -- measured, at -17 degC in midsummer. Cover
+// builds up over several degrees, as it does in life.
+constexpr double SNOW_FULL_C = -8.0, SNOW_NONE_C = 2.0;
+// Clouds reflect about a fifth of the sunlight. With only ground albedo the
+// model absorbs some 300 W/m2 against Earth's 240, and no greenhouse setting
+// can balance that.
+constexpr double CLOUD_ALBEDO = 0.22;
 constexpr double C_WATER = 1.0e8;               // ~25 m slab ocean
 constexpr double C_LAND = 3.0e6;                // thin soil; scaled by inertia
 // Winds: diagnostic Ekman-style balance r*u - f x u = -grad(P)/rho, solved
@@ -40,7 +104,11 @@ constexpr double RHO = 1.2;
 constexpr double ADV_EFF = 1.0;                 // surface-wind moisture-advection efficiency
 // Moisture (kg/m^2 precipitable water)
 constexpr double CAP0 = 15.0, CAP_T0 = 15.0, CAP_SCALE = 14.4; // doubles per 10 C
-constexpr double EVAP_WATER = 0.20, EVAP_LAND = 0.05;          // kg/m^2 per h at full deficit
+// Earth evaporates about 2.7 mm a day over its whole surface, 3.2 over the
+// oceans. At 0.20 this model asked for 7 once the heat was allowed to follow
+// the water, and the heat released where that rain fell cooked the poles to
+// +50 degC.
+constexpr double EVAP_WATER = 0.09, EVAP_LAND = 0.025;         // kg/m^2 per h at full deficit
 constexpr double H_FLOW = 1500.0;               // m, depth of the inflow layer
 // Rain falls when moisture exceeds a fraction of the effective capacity.
 // Vertical motion modulates that capacity: uplift (convergence, windward
@@ -66,9 +134,10 @@ constexpr double SNOW_T = 0.5;                  // degC: colder precipitation is
 // lows (the upper return flow that closes the loop is not modelled). A large
 // eddy diffusivity stands in for the whole poleward heat transport, as in
 // Budyko-style energy-balance models.
-constexpr double KT_DIFF = 2.5e6;               // m^2/s eddy diffusion of heat
+constexpr double KT_DIFF = 1.1e6;               // m^2/s eddy diffusion of heat
 
 struct Climatology {
+    double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
     // [season][cell]
     std::vector<float> meanT, rainMmDay, snowMmDay, rainProb, windU, windV, cloud, diurnal;
     std::vector<float> elev; // [cell], the model's smoothed elevation (for lapse correction)
@@ -108,6 +177,9 @@ struct Model {
     std::vector<double> T, Wv, u, v;
     // scratch
     std::vector<double> nT, nW, nu, nv, div, rainStep, Tsl;
+    std::vector<double> Ta, nTa, Tasl; // the air: its own heat, and reduced to sea level
+    std::vector<double> soil;          // land water store, mm: what there is to evaporate
+    double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
     // probe diagnostics (an equatorial cell): daily sums of the T budget terms
     int probe = 4 * W + W / 2; // south-polar cell for the current investigation
     double pSw = 0, pOlr = 0, pAdv = 0, pDif = 0;
@@ -167,6 +239,10 @@ struct Model {
         div.assign(W * H, 0.0);
         rainStep.assign(W * H, 0.0);
         Tsl.assign(W * H, 0.0);
+        Ta = T; // the air starts wherever the ground is
+        nTa.assign(W * H, 0.0);
+        Tasl.assign(W * H, 0.0);
+        soil.assign(W * H, SOIL_REF_MM); // half full; the spin-up settles it
     }
 
     // One hour. doy in [0,365), hourOfDay in [0,24).
@@ -181,7 +257,10 @@ struct Model {
         // cliffs create neither false mixing nor phantom storm tracks. The
         // surface processes (evaporation, capacity, snow) use actual T.
 #pragma omp parallel for
-        for (int i = 0; i < W * H; i++) Tsl[i] = T[i] + 6.5 * elev[i] / 1000.0;
+        for (int i = 0; i < W * H; i++) {
+            Tsl[i] = T[i] + 6.5 * elev[i] / 1000.0;
+            Tasl[i] = Ta[i] + 6.5 * elev[i] / 1000.0;
+        }
 
         // Pressure field from twice-smoothed T, then the balanced wind:
         // r*u - f v = -Px/rho ; f*u + r*v = -Py/rho.
@@ -239,7 +318,11 @@ struct Model {
         for (int y = 1; y < H - 1; y++) {
             double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.2);
             double dx = dx0 * cosl;
-            double kx = std::min(K_DIFF * DT / (dx * dx), 0.2), ky = std::min(K_DIFF * DT / (dy * dy), 0.2);
+            // Moisture mixing, capped well below the old 0.2: at that rate two
+            // fifths of a cell's water crossed into its neighbours every hour,
+            // which is a pipeline rather than a diffusion, and it flooded the
+            // poles with water no polar air could hold.
+            double kx = std::min(K_DIFF * DT / (dx * dx), 0.09), ky = std::min(K_DIFF * DT / (dy * dy), 0.09);
             double ktx = std::min(KT_DIFF * DT / (dx * dx), 0.22), kty = std::min(KT_DIFF * DT / (dy * dy), 0.22);
             for (int x = 0; x < W; x++) {
                 int i = idx(x, y);
@@ -249,25 +332,67 @@ struct Model {
                 double lat = latRad[i];
                 double ha = 2 * 3.14159265 * (hour / 24.0 + (x + 0.5) / (double)W) + 3.14159265;
                 double cosz = std::sin(lat) * std::sin(dec) + std::cos(lat) * std::cos(dec) * std::cos(ha);
-                double sw = SOLAR * std::max(cosz, 0.0) * (1.0 - albedo[i]);
-                double olr = OLR_A + OLR_B * Tsl[i];
-                // heat: radiation + diffusion only (see KT_DIFF note)
+                double white = std::clamp((SNOW_NONE_C - T[i]) / (SNOW_NONE_C - SNOW_FULL_C),
+                                          0.0, 1.0);
+                double alb = albedo[i] + white * ((water[i] ? ALBEDO_SEAICE : ALBEDO_SNOW) -
+                                                  albedo[i]);
+                double sw = SOLAR * std::max(cosz, 0.0) * (1.0 - alb) * (1.0 - CLOUD_ALBEDO);
+                // Longwave, both ways. The air holds EMISS of what the ground
+                // sends up and radiates that much again from each of its two
+                // faces: half to space, half back down. The half coming down
+                // is the greenhouse, and it is what the old budget had no way
+                // to express.
+                double Tk = T[i] + 273.15, Tak = Ta[i] + 273.15;
+                double lwUp = SIGMA * Tk * Tk * Tk * Tk;
+                double lwDown = EMISS * SIGMA * Tak * Tak * Tak * Tak;
+                double lapseGap = T[i] - Ta[i] - LAPSE_OFFSET;
+                double sens = (lapseGap > 0 ? K_SURF_AIR : K_STABLE) * lapseGap;
+                // Evaporation, priced: what the air can still hold, what the
+                // ground has to give, and what the sun can pay for.
+                double capMul = 1.0 - 0.5 * std::tanh(div[i] / DIV_CAP_SCALE);
+                double cap = capOf(T[i]) * capMul;
+                double supply = water[i] ? 1.0 : std::clamp(soil[i] / SOIL_REF_MM, 0.0, 1.0);
+                double evap = (water[i] ? EVAP_WATER : EVAP_LAND) * supply *
+                              std::max(1.0 - Wv[i] / std::max(cap, 1.0), 0.0) *
+                              std::clamp(0.3 + T[i] / 25.0, 0.0, 1.5);
+                // What the sun pays over a whole day, not what it pays at noon:
+                // capping against the instantaneous figure lets the daylight
+                // hours evaporate three or four times a day's worth of water.
+                double h0 = std::acos(std::clamp(-std::tan(lat) * std::tan(dec), -1.0, 1.0));
+                double swDay = SOLAR / 3.14159265 *
+                               (h0 * std::sin(lat) * std::sin(dec) +
+                                std::cos(lat) * std::cos(dec) * std::sin(h0)) *
+                               (1.0 - alb) * (1.0 - CLOUD_ALBEDO);
+                double afford = std::max(swDay, 0.0) +
+                                (water[i] ? STORED_FLUX_WATER : STORED_FLUX_LAND);
+                double lFlux = evap * LATENT_J_PER_KG / DT;
+                if (lFlux > afford) {
+                    evap *= afford / lFlux;
+                    lFlux = afford;
+                }
+                // heat: radiation + diffusion only (see KT_DIFF note). The air
+                // is what moves heat sideways now; the ground follows the air
+                // above it.
                 double uMax = 0.8 * dx / DT, vMax = 0.8 * dy / DT;
                 double ua = std::clamp(u[i], -uMax, uMax), va = std::clamp(v[i], -vMax, vMax);
-                double difT = ktx * (Tsl[xe] + Tsl[xw] - 2 * Tsl[i]) + kty * (Tsl[yn] + Tsl[ys] - 2 * Tsl[i]);
-                nT[i] = std::clamp(T[i] + (sw - olr) / heatC[i] * DT + difT, -90.0, 65.0);
+                double difT = ktx * (Tasl[xe] + Tasl[xw] - 2 * Tasl[i]) +
+                              kty * (Tasl[yn] + Tasl[ys] - 2 * Tasl[i]);
+                double dT = (sw - lwUp + lwDown - sens - lFlux) / heatC[i] * DT;
+                if (water[i] && T[i] > -2.0 && T[i] < 2.0 && dT > 0) dT *= MELT_DAMP;
+                nT[i] = std::clamp(T[i] + dT, -90.0, 65.0);
+                // The air keeps what the ground gave it and what the rain
+                // released, and radiates from both its faces.
+                double condense = rainStep[i] * LATENT_J_PER_KG / C_AIR;
+                nTa[i] = std::clamp(Ta[i] + (EMISS * lwUp - 2.0 * lwDown + sens) / C_AIR * DT +
+                                        condense + difT,
+                                    -95.0, 70.0);
                 if (i == probe) { // one cell only: no write contention
                     pSw += sw / heatC[i] * DT;
-                    pOlr -= olr / heatC[i] * DT;
+                    pOlr -= (lwUp - lwDown) / heatC[i] * DT;
                     pDif += difT;
                 }
                 // moisture: flux-form advection so convergence piles it up,
                 // rain from the excess over the motion-modulated capacity
-                double capMul = 1.0 - 0.5 * std::tanh(div[i] / DIV_CAP_SCALE);
-                double cap = capOf(T[i]) * capMul;
-                double evap = (water[i] ? EVAP_WATER : EVAP_LAND) *
-                              std::max(1.0 - Wv[i] / std::max(cap, 1.0), 0.0) *
-                              std::clamp(0.3 + T[i] / 25.0, 0.0, 1.5); // cold seas barely evaporate
                 double rain = std::max(Wv[i] - RAIN_FRAC * cap, 0.0) * RAIN_RATE;
                 if (!water[i]) rain += Wv[i] * (DT / LAND_RAINOUT_TAU);
                 double gtx = (Tsl[xe] - Tsl[xw]) / (2 * dx), gty = (Tsl[yn] - Tsl[ys]) / (2 * dy);
@@ -280,10 +405,30 @@ struct Model {
                 double fw = face(0.5 * (u[xw] + u[i]), Wv[xw], Wv[i], dx);
                 double fn = face(0.5 * (v[i] + v[yn]), Wv[i], Wv[yn], dy);
                 double fs = face(0.5 * (v[ys] + v[i]), Wv[ys], Wv[i], dy);
+                // Flux form with per-face CFL limiting still lets four faces
+                // between them export more than the cell contains, and the
+                // clamp below then invents the shortfall. Measured: rain came
+                // to 4.6x evaporation, and the whole difference was made at
+                // that clamp -- water conjured, rained out, and (once latent
+                // heat was coupled) used to cook the poles to +50 degC.
                 double advW = ADV_EFF * (fe - fw + fn - fs);
+                advW = std::min(advW, 0.5 * Wv[i] / DT);
                 double difW = kx * (Wv[xe] + Wv[xw] - 2 * Wv[i]) + ky * (Wv[yn] + Wv[ys] - 2 * Wv[i]);
                 rain = std::min(rain, Wv[i]);
-                nW[i] = std::clamp(Wv[i] + evap - rain - advW * DT + difW, 0.0, 90.0);
+                // Rain cannot exceed the water that is actually here. Advection
+                // and diffusion between them can ask for more than the cell
+                // holds, and clamping the result at zero used to invent the
+                // difference: measured at 4.6 times the world's evaporation,
+                // conjured, rained out, and -- once rain carried heat -- used
+                // to cook the poles to +50 degC. Take the shortfall out of the
+                // rain, which is the term that matters, before the clamp.
+                double raw = Wv[i] + evap - rain - advW * DT + difW;
+                if (raw < 0.0) {
+                    rain = std::max(0.0, rain + raw);
+                    raw = 0.0;
+                }
+                nW[i] = std::clamp(raw, 0.0, 90.0);
+                if (!water[i]) soil[i] = std::clamp(soil[i] + rain - evap, 0.0, SOIL_CAP_MM);
                 rainStep[i] = rain;
                 (void)ua; (void)va;
             }
@@ -312,6 +457,7 @@ struct Model {
             }
         }
         std::swap(T, nT);
+        std::swap(Ta, nTa);
         std::swap(Wv, nW);
     }
 };
@@ -370,6 +516,9 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                     day, totalDays, tmin, tmax, umax, wmax);
         }
     }
+    c.dbgEvap = m.dbgEvap;
+    c.dbgRain = m.dbgRain;
+    c.dbgClamp = m.dbgClamp;
     for (int s = 0; s < SEASONS; s++) {
         double hours = cnt[s] * 24.0;
         for (int i = 0; i < W * H; i++) {
