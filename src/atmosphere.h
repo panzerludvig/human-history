@@ -43,8 +43,12 @@ constexpr double SOLAR = 1361.0;
 // 5 W/m2/K of radiation plus 15 of convection, twenty times the old figure,
 // and it stiffens as things warm, which is what stops a runaway.
 constexpr double SIGMA = 5.670374e-8;
-constexpr double EMISS = 0.955;        // how much of the surface's longwave the air holds
-constexpr double C_AIR = 1.0e7;        // J/m2/K: cp * p / g, the whole column
+constexpr double EMISS = 0.975;        // how much of the surface's longwave the air holds
+// The whole column. A thinner, more responsive layer (3e6, the lowest
+// kilometre or two) gives a far better seasonal swing and much better
+// mid-latitudes -- and hands the poles back to the latent pump, +22 degC in
+// summer. That trade is the open question on this branch.
+constexpr double C_AIR = 1.0e7;        // J/m2/K: cp * p / g
 constexpr double K_SURF_AIR = 15.0;    // W/m2/K, convection into the air above
 // A one-layer atmosphere radiates from its middle, so Ta is a mid-troposphere
 // temperature -- around -30 degC on a planet whose ground is at +15. The
@@ -114,8 +118,23 @@ constexpr double H_FLOW = 1500.0;               // m, depth of the inflow layer
 // Vertical motion modulates that capacity: uplift (convergence, windward
 // slopes) shrinks it -- adiabatic cooling -- and subsidence swells it, which
 // is what makes descent zones and lee sides dry.
-constexpr double RAIN_FRAC = 0.65;              // rain begins above this fraction of capacity
-constexpr double RAIN_RATE = 0.15;              // fraction of the excess per hour
+// Rain has one cause: air rises, cools, and cannot hold what it carried up.
+// Everything below is a way for air to rise. What was here before -- a
+// three-day timer over land, a storm term acting straight on the column, and
+// convergence fiddling with the capacity rather than lifting anything -- were
+// shortcuts, and they behaved like shortcuts: each switched itself off in the
+// regime where it was needed, because each was keyed to the temperature it
+// was supposed to be controlling.
+constexpr double H_MOIST = 2500.0;    // m, depth the vapour is carried through
+// Large-scale ascent is centimetres a second, not metres: a whole grid cell
+// does not rise like a thunderhead. First pass had fronts lifting at 22 cm/s
+// and the world raining 18 mm a day.
+constexpr double W_OROG = 0.35;       // only the windward slope of a cell rises
+constexpr double W_CONV = 0.0012;     // m/s per K of surface-air instability
+constexpr double W_DIVERGE = 600.0;   // m/s per (1/s) of low-level convergence
+constexpr double W_FRONT = 1200.0;    // m/s per (K/m) of temperature gradient
+constexpr double RAIN_FRAC = 0.80;    // sub-grid: part of a cell saturates first
+constexpr double RAIN_RATE = 0.15;    // fraction of that excess per hour
 constexpr double DIV_CAP_SCALE = 0.05;          // m/s of uplift for a ~46% capacity swing
 // Over land, moisture rains out progressively along its path (precipitation
 // is not withheld until a convergence line): an e-folding of ~3 days, i.e.
@@ -134,7 +153,7 @@ constexpr double SNOW_T = 0.5;                  // degC: colder precipitation is
 // lows (the upper return flow that closes the loop is not modelled). A large
 // eddy diffusivity stands in for the whole poleward heat transport, as in
 // Budyko-style energy-balance models.
-constexpr double KT_DIFF = 1.1e6;               // m^2/s eddy diffusion of heat
+constexpr double KT_DIFF = 2.2e6;               // m^2/s eddy diffusion of heat
 
 struct Climatology {
     double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
@@ -179,6 +198,7 @@ struct Model {
     std::vector<double> nT, nW, nu, nv, div, rainStep, Tsl;
     std::vector<double> Ta, nTa, Tasl; // the air: its own heat, and reduced to sea level
     std::vector<double> soil;          // land water store, mm: what there is to evaporate
+    std::vector<double> evapAcc, rainAcc, madeAcc; // PROBE, one cell per thread: no atomics
     double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
     // probe diagnostics (an equatorial cell): daily sums of the T budget terms
     int probe = 4 * W + W / 2; // south-polar cell for the current investigation
@@ -243,6 +263,9 @@ struct Model {
         nTa.assign(W * H, 0.0);
         Tasl.assign(W * H, 0.0);
         soil.assign(W * H, SOIL_REF_MM); // half full; the spin-up settles it
+        evapAcc.assign(W * H, 0.0);
+        rainAcc.assign(W * H, 0.0);
+        madeAcc.assign(W * H, 0.0);
     }
 
     // One hour. doy in [0,365), hourOfDay in [0,24).
@@ -318,6 +341,15 @@ struct Model {
         for (int y = 1; y < H - 1; y++) {
             double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.2);
             double dx = dx0 * cosl;
+            // Meridians converge, and a flux per unit area does not. Cells at
+            // 80 degrees hold a seventh of the area of cells at the equator, so
+            // moving a kg per square metre out of a big cell and into a small
+            // one CREATES water -- and heat, in the temperature diffusion. The
+            // spherical divergence weights each face by its own length; these
+            // are those weights, relative to this row.
+            double cosN = std::max(std::cos(((y + 1.0) / (double)H - 0.5) * 3.14159265), 0.05);
+            double cosS = std::max(std::cos(((y + 0.0) / (double)H - 0.5) * 3.14159265), 0.05);
+            double fN = cosN / cosl, fS = cosS / cosl;
             // Moisture mixing, capped well below the old 0.2: at that rate two
             // fifths of a cell's water crossed into its neighbours every hour,
             // which is a pipeline rather than a diffusion, and it flooded the
@@ -349,8 +381,7 @@ struct Model {
                 double sens = (lapseGap > 0 ? K_SURF_AIR : K_STABLE) * lapseGap;
                 // Evaporation, priced: what the air can still hold, what the
                 // ground has to give, and what the sun can pay for.
-                double capMul = 1.0 - 0.5 * std::tanh(div[i] / DIV_CAP_SCALE);
-                double cap = capOf(T[i]) * capMul;
+                double cap = capOf(T[i]);
                 double supply = water[i] ? 1.0 : std::clamp(soil[i] / SOIL_REF_MM, 0.0, 1.0);
                 double evap = (water[i] ? EVAP_WATER : EVAP_LAND) * supply *
                               std::max(1.0 - Wv[i] / std::max(cap, 1.0), 0.0) *
@@ -376,7 +407,7 @@ struct Model {
                 double uMax = 0.8 * dx / DT, vMax = 0.8 * dy / DT;
                 double ua = std::clamp(u[i], -uMax, uMax), va = std::clamp(v[i], -vMax, vMax);
                 double difT = ktx * (Tasl[xe] + Tasl[xw] - 2 * Tasl[i]) +
-                              kty * (Tasl[yn] + Tasl[ys] - 2 * Tasl[i]);
+                              kty * (fN * (Tasl[yn] - Tasl[i]) + fS * (Tasl[ys] - Tasl[i]));
                 double dT = (sw - lwUp + lwDown - sens - lFlux) / heatC[i] * DT;
                 if (water[i] && T[i] > -2.0 && T[i] < 2.0 && dT > 0) dT *= MELT_DAMP;
                 nT[i] = std::clamp(T[i] + dT, -90.0, 65.0);
@@ -391,12 +422,26 @@ struct Model {
                     pOlr -= (lwUp - lwDown) / heatC[i] * DT;
                     pDif += difT;
                 }
-                // moisture: flux-form advection so convergence piles it up,
-                // rain from the excess over the motion-modulated capacity
-                double rain = std::max(Wv[i] - RAIN_FRAC * cap, 0.0) * RAIN_RATE;
-                if (!water[i]) rain += Wv[i] * (DT / LAND_RAINOUT_TAU);
+                // How fast the air here is rising, from every cause there is.
                 double gtx = (Tsl[xe] - Tsl[xw]) / (2 * dx), gty = (Tsl[yn] - Tsl[ys]) / (2 * dy);
-                rain += K_STORM * std::sqrt(gtx * gtx + gty * gty) * Wv[i];
+                // Orographic: wind blowing up a slope. Absent until now, and it
+                // is most of why a coast is wet and the country behind a range
+                // is not.
+                double dhx = (elev[xe] - elev[xw]) / (2 * dx), dhy = (elev[yn] - elev[ys]) / (2 * dy);
+                double wOro = W_OROG * (ua * dhx + va * dhy);
+                // Convective: ground hotter than the air above it, which is
+                // exactly the instability the surface budget already computes.
+                double wConv = W_CONV * std::max(lapseGap, 0.0);
+                // Large-scale ascent where the flow converges, and frontal
+                // lifting where warm air meets cold.
+                double wDiv = W_DIVERGE * std::max(-div[i], 0.0);
+                double wFront = W_FRONT * std::sqrt(gtx * gtx + gty * gty);
+                double wUp = std::max(wOro, 0.0) + wConv + wDiv + wFront;
+                // What that lifting carries through the condensation level,
+                // plus what condenses simply because the air cooled below its
+                // dew point on the way here.
+                double lifted = Wv[i] * std::clamp(wUp * DT / H_MOIST, 0.0, 0.6);
+                double rain = lifted + std::max(Wv[i] - RAIN_FRAC * cap, 0.0) * RAIN_RATE;
                 auto face = [&](double ur, double Wl, double Wr, double dd) {
                     double uc = std::clamp(ur, -0.8 * dd / DT, 0.8 * dd / DT);
                     return (uc > 0 ? Wl : Wr) * uc / dd;
@@ -411,9 +456,15 @@ struct Model {
                 // to 4.6x evaporation, and the whole difference was made at
                 // that clamp -- water conjured, rained out, and (once latent
                 // heat was coupled) used to cook the poles to +50 degC.
-                double advW = ADV_EFF * (fe - fw + fn - fs);
-                advW = std::min(advW, 0.5 * Wv[i] / DT);
-                double difW = kx * (Wv[xe] + Wv[xw] - 2 * Wv[i]) + ky * (Wv[yn] + Wv[ys] - 2 * Wv[i]);
+                double advW = ADV_EFF * (fe - fw + fN * fn - fS * fs);
+                // (An export limiter here was a water source: capping what a
+                // cell gives up does not stop its neighbours taking the full
+                // flux, so every capped cell minted the difference. Measured at
+                // 20 mm a day of phantom water against 2.8 of evaporation. The
+                // shortfall is taken out of the rain below instead, which
+                // conserves.)
+                double difW = kx * (Wv[xe] + Wv[xw] - 2 * Wv[i]) +
+                              ky * (fN * (Wv[yn] - Wv[i]) + fS * (Wv[ys] - Wv[i]));
                 rain = std::min(rain, Wv[i]);
                 // Rain cannot exceed the water that is actually here. Advection
                 // and diffusion between them can ask for more than the cell
@@ -427,6 +478,9 @@ struct Model {
                     rain = std::max(0.0, rain + raw);
                     raw = 0.0;
                 }
+                evapAcc[i] += evap;
+                rainAcc[i] += rain;
+                madeAcc[i] += std::clamp(raw, 0.0, 90.0) - raw;
                 nW[i] = std::clamp(raw, 0.0, 90.0);
                 if (!water[i]) soil[i] = std::clamp(soil[i] + rain - evap, 0.0, SOIL_CAP_MM);
                 rainStep[i] = rain;
@@ -516,9 +570,24 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                     day, totalDays, tmin, tmax, umax, wmax);
         }
     }
-    c.dbgEvap = m.dbgEvap;
-    c.dbgRain = m.dbgRain;
-    c.dbgClamp = m.dbgClamp;
+    {
+        double e = 0, r = 0, mk = 0, wsum = 0;
+        for (int y = 0; y < H; y++) {
+            double wgt = std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265);
+            for (int x = 0; x < W; x++) {
+                int i = y * W + x;
+                e += m.evapAcc[i] * wgt;
+                r += m.rainAcc[i] * wgt;
+                mk += m.madeAcc[i] * wgt;
+                wsum += wgt;
+            }
+        }
+        double hours = 0;
+        for (int s2 = 0; s2 < SEASONS; s2++) hours += cnt[s2] * 24.0;
+        c.dbgEvap = e / wsum / std::max(hours, 1.0) * 24.0;
+        c.dbgRain = r / wsum / std::max(hours, 1.0) * 24.0;
+        c.dbgClamp = mk / wsum / std::max(hours, 1.0) * 24.0;
+    }
     for (int s = 0; s < SEASONS; s++) {
         double hours = cnt[s] * 24.0;
         for (int i = 0; i < W * H; i++) {
