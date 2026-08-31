@@ -352,7 +352,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 17\n";
+    f << "version 18\n";
     f << "seed " << w.seed << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
@@ -371,7 +371,9 @@ static bool saveWorld(const World& w, const Camera& c) {
           << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << " " << s.id << " "
           << s.starvedYr << " " << s.bows << " " << (s.name[0] ? s.name : "-") << " "
           << s.culture << " " << s.aff.hunt << " " << s.aff.gather << " " << s.aff.farm << " "
-          << s.aff.herd << " " << s.aff.fight << "\n";
+          << s.aff.herd << " " << s.aff.fight << " " << s.claimT;
+        for (int k = 0; k < population::CLAIM_SECTORS; k++) f << " " << s.claim[k];
+        f << "\n";
     }
     for (const population::Band& b : w.pop.bands) {
         f << "band " << b.id << " " << b.pop.C << " " << b.pop.M << " " << b.pop.W << " "
@@ -418,6 +420,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         double children = 0, men = 0, women = 0, elderly = 0;
         std::string name;
         double culture = 0, affHunt = 0, affGather = 0, affFarm = 0, affHerd = 0, affFight = 0;
+        double claimT = 0;
+        double claim[population::CLAIM_SECTORS] = {};
         double tech[population::NTECH][3] = {};
     };
     struct SavedBand {
@@ -463,6 +467,10 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
                 if (version >= 16)
                     f >> sv.name >> sv.culture >> sv.affHunt >> sv.affGather >> sv.affFarm >>
                         sv.affHerd >> sv.affFight;
+                if (version >= 18) {
+                    f >> sv.claimT;
+                    for (int k = 0; k < population::CLAIM_SECTORS; k++) f >> sv.claim[k];
+                }
             } else {
                 if (version >= 4) f >> sv.S >> sv.scarce;
                 else sv.S = 0.5 * population::CAP_DAYS_SETTLED * sv.P;
@@ -577,6 +585,11 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
                       (float)sv.affHerd, (float)sv.affFight};
             if (sv.name.size() && sv.name != "-")
                 for (int i = 0; i < 15 && i < (int)sv.name.size(); i++) st.name[i] = sv.name[i];
+            // A claim from the save, or the floor for a world that predates
+            // borders; the yields are rescaled to it below.
+            st.claimT = sv.claimT;
+            for (int k = 0; k < population::CLAIM_SECTORS; k++)
+                st.claim[k] = sv.claim[k] > 0 ? (float)sv.claim[k] : population::CLAIM_FLOOR_KM;
             st.id = sv.id > 0 ? (uint32_t)sv.id : w.pop.nextSettlementId++;
             w.pop.nextSettlementId = std::max(w.pop.nextSettlementId, st.id + 1);
             if (st.tech[population::TECH_HUSBANDRY].practising && st.herd <= 0)
@@ -799,17 +812,22 @@ static std::vector<float> popTexData() {
     return d;
 }
 
-// One texel per settlement: its people, its granaries, and how far its
-// fields reach in km (zero for anyone who does not farm).
+// Five texels per settlement: its people, granaries and field reach, then
+// the sixteen sectors of its claim, four to a texel. A settlement is
+// SITE_STRIDE texels along the row, so the shader indexes site*5 + k.
 constexpr int SITE_TEX_W = 256;
+constexpr int SITE_STRIDE = 5;
 static std::vector<float> siteTexData(int& rows) {
     const std::vector<population::Settlement>& ss = app.world.pop.settlements;
-    rows = std::max(1, ((int)ss.size() + SITE_TEX_W - 1) / SITE_TEX_W);
+    size_t texels = ss.size() * SITE_STRIDE;
+    rows = std::max(1, (int)((texels + SITE_TEX_W - 1) / SITE_TEX_W));
     std::vector<float> d((size_t)SITE_TEX_W * rows * 4, 0.0f);
     for (size_t i = 0; i < ss.size(); i++) {
-        d[i * 4 + 0] = std::max(ss[i].P, 1.0f);
-        d[i * 4 + 1] = ss[i].granaries;
-        d[i * 4 + 2] = sim::farmRadiusKm(ss[i], app.world.simTime);
+        size_t o = i * SITE_STRIDE * 4;
+        d[o + 0] = std::max(ss[i].P, 1.0f);
+        d[o + 1] = ss[i].granaries;
+        d[o + 2] = sim::farmRadiusKm(ss[i], app.world.simTime);
+        for (int k = 0; k < population::CLAIM_SECTORS; k++) d[o + 4 + k] = ss[i].claim[k];
     }
     return d;
 }
@@ -1858,6 +1876,20 @@ static std::string envText(const population::Settlement& st) {
     out += b;
     snprintf(b, sizeof b, "Land condition: %d%%\n", (int)std::lround(st.R * 100));
     out += b;
+    {
+        float lo = 1e9f, hi = 0;
+        for (int k = 0; k < population::CLAIM_SECTORS; k++) {
+            lo = std::min(lo, st.claim[k]);
+            hi = std::max(hi, st.claim[k]);
+        }
+        float want = sim::wantedReachKm(wd.pop, st.cell, st.P, st.R);
+        const char* state = hi >= population::CLAIM_CAP_KM - 0.01f ? "all one place can reach"
+                            : want > hi + 0.01f                   ? "pressing outward"
+                                                                  : "as much as they need";
+        snprintf(b, sizeof b, "Territory: %d-%d km, %d km2 worked -- %s\n",
+                 (int)std::lround(lo), (int)std::lround(hi), (int)std::lround(st.claimKm2), state);
+        out += b;
+    }
     if (st.kGame > 0) {
         float plantF = st.kFoodP - st.kGame;
         float gameF = st.kGame * population::huntEff(st.gameNow);

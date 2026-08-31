@@ -18,6 +18,52 @@ constexpr int W = hydrology::W, H = hydrology::H;
 
 // Rules (Design/Population.md).
 constexpr float FORAGE_KM2 = 314.0f;          // 10 km radius disc
+
+// ------------------------------------------------------------- territory
+//
+// A settlement holds a claim: the ground it works and keeps others off. It
+// grows with what the people need, a little ahead of them, and stops where
+// it meets a claim already made -- whoever was there first keeps it, and a
+// border once settled does not move on its own (challenging one is a
+// mechanism still to come). Sixteen sectors, each with its own reach, so a
+// claim blocked to the east can still grow west; a single radius could only
+// grow until its first neighbour and then never again.
+//
+// Land far out is worth less than land underfoot: it is a walk each way,
+// and a day spent walking is a day not spent gathering. Value per km2 falls
+// as 1/(1+(d/CLAIM_TAPER)^2), which integrates over a disc to
+// pi*T^2*ln(1+r^2/T^2) -- normalised below so the floor claim is worth
+// exactly the 314 km2 a settlement used to be given outright.
+constexpr int CLAIM_SECTORS = 16;
+// The floor is what a community holds however small it is, and it sets how
+// close two of them can ever stand: at 20 km they are 40 km apart, half the
+// spacing the old fixed rule enforced. Ten was tried and packs the world
+// four times denser again -- 54,000 settlements by year 350, and a step the
+// simulation could not finish.
+constexpr float CLAIM_FLOOR_KM = 20.0f;  // the least ground a settlement holds
+constexpr float CLAIM_CAP_KM = 60.0f;    // the most one place can ever reach
+constexpr float CLAIM_TAPER_KM = 20.0f;  // beyond this, land starts to pay less
+constexpr float CLAIM_MARGIN = 1.4f;     // claim somewhat more than is needed now
+constexpr float CLAIM_GROW_KM_YR = 0.1f; // ten km a century: a lifetime of ranging further
+
+// Worked value of a disc of radius r, in km2 of land-at-the-door.
+inline float claimValueKm2(float r) {
+    float t2 = CLAIM_TAPER_KM * CLAIM_TAPER_KM;
+    return 3.14159265f * t2 * std::log(1.0f + r * r / t2);
+}
+// The same, scaled so a floor-sized claim is worth today's fixed catchment.
+inline float claimYieldKm2(float r) {
+    static const float unit = FORAGE_KM2 / claimValueKm2(CLAIM_FLOOR_KM);
+    return claimValueKm2(r) * unit;
+}
+// The radius whose worked value is `km2` -- the inverse, for asking how far
+// a settlement needs to reach to feed the people it has.
+inline float claimRadiusFor(float km2) {
+    static const float unit = FORAGE_KM2 / claimValueKm2(CLAIM_FLOOR_KM);
+    float t2 = CLAIM_TAPER_KM * CLAIM_TAPER_KM;
+    float e = std::exp(std::max(km2, 0.0f) / unit / (3.14159265f * t2)) - 1.0f;
+    return std::sqrt(std::max(e, 0.0f) * t2);
+}
 constexpr float WATER_L_PER_PERSON = 20.0f;   // per day
 constexpr float USABLE_WATER = 0.05f;         // fraction of discharge usable
 constexpr float GROWTH_MAX = 0.028f;          // per year at full surplus
@@ -395,6 +441,11 @@ struct Settlement {
     TechState tech[NTECH];
     double nextTech[NTECH] = {1e18, 1e18, 1e18, 1e18}; // next draw or resample moment
     bool techFires[NTECH] = {false, false, false, false};
+    // How far the claim reaches in each of CLAIM_SECTORS directions, sector 0
+    // due east and turning north. Set to the floor when the place is founded.
+    float claim[CLAIM_SECTORS] = {};
+    float claimKm2 = FORAGE_KM2; // worked value of the whole claim, cached
+    double claimT = 0;           // when the frontier was last worked outward
 };
 
 // A migrating group: a settlement with velocity (Design/Migration.md). It
@@ -708,6 +759,9 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         s.pasture = f.pastureMap[c.cell];
         s.buildMat = f.buildMatMap[c.cell];
         s.S = storageCapDays(s.P, s.granaries) * s.P; // the world opens on full stores
+        // The floor claim is worth exactly the catchment settlements used to
+        // be handed outright, so the yields above are already right for it.
+        for (int k = 0; k < CLAIM_SECTORS; k++) s.claim[k] = CLAIM_FLOOR_KM;
         if (clim) atmosphere::seasonProfile(*clim, cellN(c.cell),
                                             std::max(hy.heightM[c.cell], 0.0f), s.tSeason,
                                             s.meanF, s.meanG2);
@@ -855,7 +909,7 @@ inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double
 // watches for the store crossing the hoarding threshold.
 inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     if (K <= 0) { s.t = now; s.nextUpdate = now + 3650; return false; }
-    float herdCap = s.pasture * FORAGE_KM2 * HERD_PASTURE_K / SUSTAIN_R *
+    float herdCap = s.pasture * s.claimKm2 * HERD_PASTURE_K / SUSTAIN_R *
                     (0.3f + 0.7f * ctx.husbExp);
     Cohorts pop = s.pop;
     float P = pop.total(), R = s.R, S = s.S;

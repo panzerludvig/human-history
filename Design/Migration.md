@@ -2,6 +2,8 @@
 
 **Status:** Implemented — see [[Meta/Status Vocabulary]]
 
+Since 2026-08-31 a settlement holds a claim rather than a fixed catchment, and hunger widens that claim before it sends anyone away: see [[Design/Borders]]. Emigration is now what a hemmed-in people do.
+
 How people leave, move, and settle anew. The central idea: a migrating band is a settlement with velocity, and "settled" is an outcome, not a type. This note also introduces **storage** (the food a group has already harvested, as distinct from what the land offers) and the project's first **agent** — the band.
 
 ---

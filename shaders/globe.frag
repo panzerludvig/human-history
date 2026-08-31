@@ -26,7 +26,8 @@ uniform int uHasHydro;
 uniform sampler2D uPlates; // uplift, crust, km to nearest plate boundary
 uniform sampler2D uPop;    // carrying capacity K, settlement index + 1, band index + 1
 uniform sampler2D uBands;  // one texel per band: position xyz on the unit sphere, headcount
-uniform sampler2D uSites;  // one texel per settlement: people, granaries, field radius km
+uniform sampler2D uSites;  // five texels per settlement: people/granaries/fields, then the
+                           // sixteen sectors of its claim, four to a texel
 uniform sampler2D uOverlay; // markers and labels drawn on the CPU; magenta = nothing here
 uniform vec3 uSun;         // world-space sun direction (day-night and seasons)
 uniform sampler2D uClim;   // climatology, 4 season bands: cloud, rain, wind u, wind v
@@ -277,10 +278,67 @@ const ivec2 DIRS[8] = ivec2[8](ivec2(1, 0), ivec2(1, 1), ivec2(0, 1), ivec2(-1, 
 
 // What a cell's green channel names: the settlement standing there, or -1
 // for its texel when nobody does.
+const int SITE_STRIDE = 5;
+
+vec4 siteTexel(int idx, int k) {
+    int t = idx * SITE_STRIDE + k;
+    return texelFetch(uSites, ivec2(t % 256, t / 256), 0);
+}
+
+int siteIndex(ivec2 cw) { return int(texelFetch(uPop, cw, 0).g + 0.5) - 1; }
+
 vec4 siteAt(ivec2 cw) {
-    int idx = int(texelFetch(uPop, cw, 0).g + 0.5) - 1;
+    int idx = siteIndex(cw);
     if (idx < 0) return vec4(-1.0);
-    return texelFetch(uSites, ivec2(idx % 256, idx / 256), 0);
+    return siteTexel(idx, 0);
+}
+
+// How far a settlement claims towards a point: sector 0 faces east, and they
+// turn north. Mirrors sim::claimReach.
+float claimReach(int idx, vec3 cc, vec3 q) {
+    vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
+    vec3 north = cross(cc, east);
+    vec3 d = q - cc;
+    float a = atan(dot(d, north), dot(d, east)) / 6.2831853 * 16.0 - 0.5;
+    float f = fract(a);
+    int k0 = int(floor(a)), k1 = k0 + 1;
+    k0 = ((k0 % 16) + 16) % 16;
+    k1 = ((k1 % 16) + 16) % 16;
+    float r0 = siteTexel(idx, 1 + k0 / 4)[k0 % 4];
+    float r1 = siteTexel(idx, 1 + k1 / 4)[k1 % 4];
+    return mix(r0, r1, f);
+}
+
+// A dashed line along the edge of a claim. One pass over the settlements
+// that could reach this ground -- the border IS the edge of somebody's
+// claim, so there is no need to ask who holds the ground on either side.
+float borderNear(vec3 n) {
+    if (uKmPerPixel > 40.0) return 0.0;
+    float w = max(uKmPerPixel * 1.1, 0.35); // half the line, in km
+    ivec2 c0 = hydroCell(n);
+    int rx = clamp(int(62.0 / max(20.0 * cos(asin(n.z)), 1.0)) + 1, 2, 9);
+    for (int dy = -4; dy <= 4; dy++)
+        for (int dx = -rx; dx <= rx; dx++) {
+            ivec2 c = c0 + ivec2(dx, dy);
+            ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
+            int idx = siteIndex(cw);
+            if (idx < 0) continue;
+            vec3 cc = cellCentre(cw);
+            float d = length(n - cc) * 6371.0;
+            if (d < 5.0 || d > 66.0) continue;
+            float reach = claimReach(idx, cc, n);
+            if (abs(d - reach) > w) continue;
+            // Dashes run along the border: stepped by the angle turned about
+            // the settlement, so they follow the line however it bends.
+            vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
+            vec3 north = cross(cc, east);
+            vec3 dv = n - cc;
+            float ang = atan(dot(dv, north), dot(dv, east));
+            float along = ang * reach; // km travelled along the edge
+            float dash = max(uKmPerPixel * 12.0, 3.0);
+            if (fract(along / dash) < 0.58) return 1.0;
+        }
+    return 0.0;
 }
 
 // The houses themselves, drawn on the ground when the view is close enough
@@ -988,6 +1046,10 @@ void main() {
     }
     // Violet: a hue the terrain palette never uses, so the zone reads at low alpha.
     col = mix(col, vec3(0.55, 0.20, 1.0), aw * 0.32);
+
+    // Borders: a dashed line where one people's ground gives way to
+    // another's, or to nobody's.
+    if (uHasHydro == 1 && borderNear(n) > 0.0) col = mix(col, vec3(0.96, 0.93, 0.80), 0.75);
 
     // Markers and names are drawn on the CPU into a screen-sized overlay
     // (paintOverlay) and laid over everything here, clouds included: they

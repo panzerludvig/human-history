@@ -106,21 +106,171 @@ inline void logAt(const char* what, int id, terrain::V3 n, float P, double day) 
 // Any settlement within 80 km? Checked through the settlementAt grid: a box
 // of +-5 rows (100 km) and enough columns for 80 km at this latitude covers
 // every cell that could hold one; found entries are then measured exactly.
-inline bool spacingOK(const population::Field& pf, terrain::V3 n) {
+// The claim, sector by sector. Sector 0 faces east and they turn north.
+inline terrain::V3 sectorDir(const terrain::V3& c, int k) {
+    terrain::V3 east = norm3({-c.y, c.x, 0.0f});
+    terrain::V3 north = {c.y * east.z - c.z * east.y, c.z * east.x - c.x * east.z,
+                         c.x * east.y - c.y * east.x};
+    float a = 6.2831853f * (k + 0.5f) / population::CLAIM_SECTORS;
+    return norm3(east * std::cos(a) + north * std::sin(a));
+}
+
+// How far settlement `s` reaches towards the point `q`.
+inline float claimReach(const population::Settlement& s, const terrain::V3& q) {
+    terrain::V3 c = cellCentre(s.cell);
+    terrain::V3 east = norm3({-c.y, c.x, 0.0f});
+    terrain::V3 north = {c.y * east.z - c.z * east.y, c.z * east.x - c.x * east.z,
+                         c.x * east.y - c.y * east.x};
+    terrain::V3 d = {q.x - c.x, q.y - c.y, q.z - c.z};
+    // Blended between the two nearest sectors, so a claim is a closed curve
+    // rather than sixteen arcs with steps between them -- and so what the
+    // map draws is exactly what the simulation enforces.
+    float a = std::atan2(d.x * north.x + d.y * north.y + d.z * north.z,
+                         d.x * east.x + d.y * east.y + d.z * east.z) /
+                  6.2831853f * population::CLAIM_SECTORS -
+              0.5f;
+    float fl = std::floor(a), f = a - fl;
+    int k0 = ((int)fl % population::CLAIM_SECTORS + population::CLAIM_SECTORS) %
+             population::CLAIM_SECTORS;
+    int k1 = (k0 + 1) % population::CLAIM_SECTORS;
+    return s.claim[k0] * (1.0f - f) + s.claim[k1] * f;
+}
+
+// Who holds this ground, if anyone. `skip` is the settlement doing the asking.
+inline int claimant(const population::Field& pf, const terrain::V3& q, int skip) {
     using namespace population;
-    int cell = cellOf(n), cx = cell % W, cy = cell / W;
-    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
-    int rx = std::min((int)std::ceil(4.0f / std::max(std::cos(lat), 0.05f)) + 1, W / 2);
-    for (int dy = -5; dy <= 5; dy++) {
+    int cell = cellOf(q), cx = cell % W, cy = cell / W;
+    float lat = std::asin(std::clamp(q.z, -1.0f, 1.0f));
+    int rx = std::min((int)std::ceil(2.5f / std::max(std::cos(lat), 0.05f)) + 1, W / 2);
+    for (int dy = -3; dy <= 3; dy++) {
         int y = cy + dy;
         if (y < 0 || y >= H) continue;
         for (int dx = -rx; dx <= rx; dx++) {
             int si = pf.settlementAt[y * W + hydrology::wrapX(cx + dx)];
-            if (si >= 0 && distKm(n, cellCentre(pf.settlements[si].cell)) < 80.0f) return false;
+            if (si < 0 || si == skip || pf.settlements[si].leaving) continue;
+            const Settlement& o = pf.settlements[si];
+            if (distKm(q, cellCentre(o.cell)) < claimReach(o, q)) return si;
         }
     }
-    return true;
+    return -1;
 }
+
+// How far a newcomer here could claim before meeting somebody: the room
+// left between this ground and the nearest claim, capped at what one place
+// can ever hold. Room is the whole reason one site is worth more than
+// another with the same soil -- land you cannot claim feeds nobody.
+inline float roomKm(const population::Field& pf, terrain::V3 n) {
+    using namespace population;
+    float room = CLAIM_CAP_KM;
+    int cell = cellOf(n), cx = cell % W, cy = cell / W;
+    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
+    int rx = std::min((int)std::ceil(5.5f / std::max(std::cos(lat), 0.05f)) + 1, W / 2);
+    for (int dy = -6; dy <= 6; dy++) {
+        int y = cy + dy;
+        if (y < 0 || y >= H) continue;
+        for (int dx = -rx; dx <= rx; dx++) {
+            int si = pf.settlementAt[y * W + hydrology::wrapX(cx + dx)];
+            if (si < 0 || pf.settlements[si].leaving) continue;
+            const Settlement& o = pf.settlements[si];
+            room = std::min(room, distKm(n, cellCentre(o.cell)) - claimReach(o, n));
+            if (room <= 0) return 0.0f;
+        }
+    }
+    return room;
+}
+
+// Enough unclaimed room to hold a new settlement's floor claim.
+inline bool claimFits(const population::Field& pf, terrain::V3 n) {
+    return roomKm(pf, n) >= population::CLAIM_FLOOR_KM;
+}
+
+// What a claim of this reach is worth against the fixed catchment every
+// settlement used to be handed: 1 at the floor, about 3.3 at the cap.
+inline float claimFactor(float reachKm) {
+    return population::claimYieldKm2(std::clamp(reachKm, population::CLAIM_FLOOR_KM,
+                                                population::CLAIM_CAP_KM)) /
+           population::FORAGE_KM2;
+}
+
+// What the claim is worth, and the yields that follow from it. A settlement
+// eats what its ground produces, so its cached capacities are the per-cell
+// figures scaled by the claim -- at the floor that is exactly the fixed
+// catchment every settlement used to be handed.
+inline void applyClaim(population::Field& pf, population::Settlement& s) {
+    using namespace population;
+    float v = 0;
+    for (int k = 0; k < CLAIM_SECTORS; k++) v += claimYieldKm2(s.claim[k]);
+    s.claimKm2 = v / CLAIM_SECTORS;
+    float f = s.claimKm2 / FORAGE_KM2;
+    s.kFoodP = pf.kFoodPMap[s.cell] * f;
+    s.kGame = pf.kGameMap[s.cell] * f;
+    s.kSmall = pf.kSmallMap[s.cell] * f;
+    s.kWater = pf.kWaterMap[s.cell] * f;
+}
+
+inline void claimFloor(population::Field& pf, population::Settlement& s) {
+    for (int k = 0; k < population::CLAIM_SECTORS; k++) s.claim[k] = population::CLAIM_FLOOR_KM;
+    applyClaim(pf, s);
+}
+
+// How far a group of this size would have to reach on this ground to feed
+// itself, with something in hand for the people coming. kFoodP already
+// carries the sustain ratio, so the per-km2 figure it gives is people
+// supported -- counting the ratio again here asked for half the land that
+// was needed, and no claim ever wanted to grow.
+inline float wantedReachKm(const population::Field& pf, int cell, float P, float R) {
+    using namespace population;
+    // What a km2 of this ground actually feeds: its yield at the condition
+    // the land is in. Lived-on land settles at about SUSTAIN_R, so a
+    // settlement at equilibrium holds only half the people its pristine
+    // yield suggests -- price the need at the pristine figure and every
+    // claim in the world decides it already has land to spare.
+    float perKm2 = pf.kFoodPMap[cell] / FORAGE_KM2 * std::max(R, 0.2f);
+    if (perKm2 <= 0 || P <= 0) return CLAIM_FLOOR_KM;
+    float want = claimRadiusFor(P / perKm2 * CLAIM_MARGIN);
+    return std::clamp(want, CLAIM_FLOOR_KM, CLAIM_CAP_KM);
+}
+
+// A frontier creeps outward: people work further out each year than they
+// did, faster when they are hungry, and stop where somebody else was first.
+// Borders do not move once they meet. Returns true if anything is still
+// free to grow -- a settlement that has nowhere left to widen is hemmed in,
+// which is what turns pressure into emigration and, later, into a fight.
+inline bool growClaim(population::Field& pf, int si, double now) {
+    using namespace population;
+    Settlement& s = pf.settlements[si];
+    if (s.leaving || s.P <= 0) return false;
+    double span = std::max(now - s.claimT, 0.0);
+    s.claimT = now;
+    float want = wantedReachKm(pf, s.cell, s.P, s.R);
+    // Most settlements, most of the time, already reach as far as they want
+    // to: check that before walking the frontier, which is the expensive part.
+    bool wants = false;
+    for (int k = 0; k < CLAIM_SECTORS && !wants; k++) wants = s.claim[k] < want - 0.01f;
+    // Not wanting more land is not the same as having room for more: a
+    // settlement that already reaches as far as it needs, or as far as one
+    // place can, is done expanding, and pressure has to find another outlet.
+    if (!wants) return false;
+    // Hunger pushes the border: people range further before they leave.
+    float phi = s.P > 1 ? technology::effectiveK(s, now) * s.R / s.P : 2.0f;
+    float step = (float)(CLAIM_GROW_KM_YR * span / 365.0) * (1.0f + 6.0f * needRamp(phi));
+    terrain::V3 c = cellCentre(s.cell);
+    bool moved = false, free = false;
+    for (int k = 0; k < CLAIM_SECTORS; k++) {
+        if (s.claim[k] >= want - 0.01f) continue;
+        float r = std::min(s.claim[k] + std::max(step, 0.01f), want);
+        terrain::V3 u = sectorDir(c, k);
+        terrain::V3 q = norm3(c + u * (r / 6371.0f));
+        if (claimant(pf, q, si) >= 0) continue; // somebody was here first
+        free = true;
+        if (step <= 0) continue;
+        s.claim[k] = r;
+        moved = true;
+    }
+    if (moved) applyClaim(pf, s);
+    return free;
+}
+
 
 // The capacity a mover with these skills would command at a cell: forager
 // yield plus the farming and herding bonuses for what it practises. This is
@@ -146,13 +296,28 @@ inline float moverCapScarred(const population::Field& pf, int cell, float farmEx
     return moverCap(pf, cell, farmExp, husbExp, now) * population::cellCondition(pf, cell, now);
 }
 
+// The same, priced for the room there is to claim: hemmed-in ground is worth
+// what its gap allows, open country what one people could ever hold. This is
+// what sends colonists to the frontier ahead of the gaps behind them, and it
+// is why claims have anywhere to grow.
+inline float wantedReachKm(const population::Field& pf, int cell, float P, float R);
+
+inline float moverCapRoom(const population::Field& pf, int cell, float farmExp, float husbExp,
+                          double now, float movers) {
+    float room = std::min(roomKm(pf, cellCentre(cell)), population::CLAIM_CAP_KM);
+    if (room < population::CLAIM_FLOOR_KM) return 0.0f;
+    // What they would hold on arrival: what they need, or what fits.
+    float take = std::min(wantedReachKm(pf, cell, movers, population::SUSTAIN_R), room);
+    return moverCapScarred(pf, cell, farmExp, husbExp, now) * claimFactor(take);
+}
+
 // The best-looking unclaimed prospect within the knowledge range, judged with
 // noise that grows with distance: near things resolve exactly, far things are
 // rumours; each candidate is valued at what THIS mover could make of it.
 // Returns a cell index, or -1 if nothing known is worth going to.
 inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t& rng,
                         float radiusKm, double now, float farmExp = 0, float husbExp = 0,
-                        float* estOut = nullptr) {
+                        float* estOut = nullptr, float movers = 0) {
     using namespace population;
     bool skilled = farmExp > 0 || husbExp > 0;
     float lat0 = std::asin(std::clamp(from.z, -1.0f, 1.0f));
@@ -190,13 +355,28 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
                 if (est > top[worst].est) top[worst] = {est, cell};
             }
         }
+    // Room is priced only here, on the two dozen finalists: the scan for it
+    // is far too costly to run over every cell in a search radius. A site
+    // hemmed in by other people's claims is worth what its gap allows, so
+    // open country outbids a gap of the same soil, and the frontier fills
+    // before the spaces behind it.
+    for (int k = 0; k < nTop; k++) {
+        float room = std::min(roomKm(pf, cellCentre(top[k].cell)), CLAIM_CAP_KM);
+        if (room < CLAIM_FLOOR_KM) { top[k] = top[--nTop]; k--; continue; }
+        // Priced by the claim its takers would actually make, not by all the
+        // room there is: valuing a target at the largest claim anyone could
+        // ever hold made every prospect outbid home three to one, and whole
+        // settlements marched off rather than sending colonists.
+        top[k].est *=
+            claimFactor(std::min(wantedReachKm(pf, top[k].cell, movers, SUSTAIN_R), room));
+    }
     while (nTop > 0) {
         int bi = 0;
         for (int k = 1; k < nTop; k++)
             if (top[k].est > top[bi].est) bi = k;
         int cell = top[bi].cell;
         float scar = population::cellCondition(pf, cell, now);
-        if (scar * top[bi].est >= MIN_SETTLEMENT_K && spacingOK(pf, cellCentre(cell))) {
+        if (scar * top[bi].est >= MIN_SETTLEMENT_K) {
             if (estOut) *estOut = top[bi].est * scar; // the rumour, not the truth
             return cell;
         }
@@ -469,17 +649,22 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     pf.scars.erase(cell); // the land's condition is live state again
     for (int i = (int)pf.ruins.size() - 1; i >= 0; i--)
         if (pf.ruins[i].cell == cell) pf.ruins.erase(pf.ruins.begin() + i); // rebuilt over
-    s.kFoodP = pf.kFoodPMap[cell];
-    s.kGame = pf.kGameMap[cell];
-    s.kSmall = pf.kSmallMap[cell];
     s.bows = b.bows; // carried on the march
     s.gRegion = population::gameRegion(cell);
     s.gameNow = pf.gameG.empty() ? 1.0f : pf.gameG[s.gRegion];
-    s.kWater = pf.kWaterMap[cell];
     s.sFarm = pf.sFarmMap[cell];
     s.pasture = pf.pastureMap[cell];
     s.buildMat = pf.buildMatMap[cell];
-    s.cycleT = now; // the fill cycle starts with the settlement
+    s.cycleT = now;  // the fill cycle starts with the settlement
+    s.claimT = now;  // and so does the frontier
+    // They claim what they need on the day they arrive, as far as the room
+    // allows: a community that walked here with five hundred people does not
+    // wait a century to work enough ground to feed them.
+    float take = std::min(wantedReachKm(pf, cell, s.P, population::SUSTAIN_R),
+                          std::min(roomKm(pf, cellCentre(cell)), CLAIM_CAP_KM));
+    take = std::max(take, CLAIM_FLOOR_KM);
+    for (int k = 0; k < CLAIM_SECTORS; k++) s.claim[k] = take;
+    applyClaim(pf, s);
     s.S = std::min(b.S, CAP_DAYS_SETTLED * b.P);
     for (int t = 0; t < NTECH; t++) s.tech[t] = b.tech[t];
     if (s.tech[TECH_HUSBANDRY].practising) {
@@ -683,17 +868,18 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
     // judged against its population, settling against a fixed threshold.
     float fExp = technology::expertise(b.tech[TECH_FARMING], now);
     float hExp = technology::expertise(b.tech[TECH_HUSBANDRY], now);
-    auto canHold = [&](int c) { return moverCap(pf, c, fExp, hExp, now) >= b.P; };
+    auto canHold = [&](int c) { return moverCapRoom(pf, c, fExp, hExp, now, b.P) >= b.P; };
     if (distKm(pos, tgt) < 20.0f) {
         // Arrived: the rumour meets reality.
         if (pf.settlementAt[cell] < 0 && moverCap(pf, cell, fExp, hExp, now) >= MIN_SETTLEMENT_K &&
-            canHold(cell) && spacingOK(pf, pos)) {
+            canHold(cell) && claimFits(pf, pos)) {
             foundSettlement(pf, ws, hy, clim, b, cell, now);
             done = true;
         } else {
             double rest = b.resting ? now - b.restStart : 0.0;
             int nt = bestProspect(pf, pos, ws.rng,
-                                  bandAwareKm(rest, prominenceM(hy, clim, cell)), now, fExp, hExp);
+                                  bandAwareKm(rest, prominenceM(hy, clim, cell)), now, fExp, hExp,
+                                  nullptr, b.P);
             if (nt >= 0) b.targetCell = nt;
             else {
                 if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
@@ -701,10 +887,11 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
             }
         }
     } else if (!b.resting && pf.settlementAt[cell] < 0 &&
-               moverCap(pf, cell, fExp, hExp, now) >= MIN_SETTLEMENT_K && canHold(cell) &&
-               moverCap(pf, cell, fExp, hExp, now) >=
-                   hopeRatio(now - b.setOut) * moverCap(pf, b.targetCell, fExp, hExp, now) &&
-               spacingOK(pf, pos)) {
+               moverCap(pf, cell, fExp, hExp, now) >= MIN_SETTLEMENT_K && claimFits(pf, pos) &&
+               canHold(cell) &&
+               moverCapRoom(pf, cell, fExp, hExp, now, b.P) >=
+                   hopeRatio(now - b.setOut) *
+                       moverCapRoom(pf, b.targetCell, fExp, hExp, now, b.P)) {
         // Ground under their feet, judged against where they were going:
         // early on it has to be clearly better to be worth giving up the
         // plan, and as the months pass they grow readier to take less.
@@ -862,6 +1049,14 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     if (now - s.scarceSince < s.lookAgainDays) return;
     s.scarceSince = now; // whether or not anyone leaves, the pressure resets
     if (starving) s.nextUpdate = std::min(s.nextUpdate, now + s.lookAgainDays);
+    // Hunger widens the border before it empties the village. People range
+    // further from the houses they have long before they abandon them, so a
+    // settlement with anywhere left to widen works the ground it just took
+    // and asks again later. Only when the claim can grow no further -- the
+    // cap reached, or neighbours on every side -- does anybody leave. This
+    // is what makes a border worth having, and being hemmed in the thing
+    // that turns pressure into a journey and eventually into a fight.
+    if (growClaim(pf, si, now)) return;
     if (s.P < BAND_MIN_P) return; // too few to survive any journey
     float fExp = technology::expertise(s.tech[TECH_FARMING], now);
     float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
@@ -869,7 +1064,7 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     float est = 0;
     int tgt = bestProspect(pf, home, ws.rng,
                            settlementAwareKm(now - s.founded, prominenceM(hy, clim, s.cell)), now,
-                           fExp, hExp, &est);
+                           fExp, hExp, &est, s.P);
     bool wasStuck = s.noProspect; // the last survey came up empty too
     s.noProspect = tgt < 0;
     if (tgt < 0) {
@@ -1073,6 +1268,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
         } else if (ev.kind == 1) {
             Settlement& s = pf.settlements[ev.idx];
             if (t != s.nextUpdate) continue;
+            growClaim(pf, ev.idx, t);
             changed |= population::advance(s, technology::effectiveK(s, t),
                                            seasonCtx(s, hy, clim, t), t);
             reportGranaries(pf, s, t);
@@ -1131,6 +1327,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
     for (int i = 0; i < (int)pf.settlements.size(); i++) {
         Settlement& s = pf.settlements[i];
         if (!s.leaving && s.t < now - 1e-9) {
+            growClaim(pf, i, now);
             changed |= population::advance(s, technology::effectiveK(s, now),
                                            seasonCtx(s, hy, clim, now), now);
             reportGranaries(pf, s, now);

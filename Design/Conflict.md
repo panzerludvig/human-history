@@ -2,6 +2,8 @@
 
 **Status:** Implemented — see [[Meta/Status Vocabulary]]
 
+Being hemmed in is now a measured state rather than an inference from failed searches: a settlement whose claim can grow no further, at the cap or against neighbours on every side, is circumscribed in the literal sense. See [[Design/Borders]].
+
 Why people fight, and what it costs them. Decided 2026-08-29.
 
 ---
