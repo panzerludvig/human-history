@@ -848,8 +848,19 @@ constexpr double WALK_KMPP = 0.0006; // and closer than this, the people in a ba
 // The marker shrinks as the view widens: it is a pin at local range and a
 // dot at continental range, where what matters is where people are thick on
 // the ground rather than which place is which.
+//
+// Past MARK_FIX_KMPP it stops being a symbol sized for the eye and behaves
+// like the place itself: fixed on the ground, so it shrinks with the view
+// instead of swelling to cover a province. It bottoms out at two pixels, so
+// a settlement is always at least a speck, and since the markers no longer
+// grow they no longer crowd each other out -- which is what made them wink
+// out of existence a few at a time while zooming out.
+constexpr double MARK_FIX_KMPP = 0.23; // about 200 km up
 static int markerRadius(double kmpp) {
-    return std::clamp((int)std::lround(8.0 - std::log10(kmpp / HUT_KMPP)), 3, 8);
+    if (kmpp <= MARK_FIX_KMPP)
+        return std::clamp((int)std::lround(8.0 - std::log10(kmpp / HUT_KMPP)), 3, 8);
+    double fixedKm = 6.0 * MARK_FIX_KMPP; // its size on the ground, from the handover
+    return std::max(1, (int)std::lround(fixedKm / kmpp));
 }
 
 // Where a point on the unit sphere lands on the screen; false when it is
@@ -924,7 +935,11 @@ static void paintOverlay() {
     bool walking = kmpp < WALK_KMPP;    // and the people of a band, one by one
     bool names = kmpp < NAME_KMPP;
     int mr = markerRadius(kmpp);
-    double spacingKm = std::max(2 * mr + 6, THIN_PX) * kmpp;
+    // Markers only need to keep off each other; when they are ground-sized
+    // they barely touch, so the thinning all but stops.
+    double spacingKm = (kmpp > MARK_FIX_KMPP ? std::max(2 * mr + 2, 4)
+                                             : std::max(2 * mr + 6, THIN_PX)) *
+                       kmpp;
 
     // Thinning: a thousand settlements in view is a legible map only if the
     // small ones give way to the large. The squares are on the GROUND, not on
@@ -971,7 +986,9 @@ static void paintOverlay() {
     HBRUSH amber = CreateSolidBrush(RGB(232, 176, 66));
     HBRUSH ink = CreateSolidBrush(RGB(96, 52, 28));
     HPEN edge = CreatePen(PS_SOLID, 1, RGB(40, 28, 18));
-    HGDIOBJ oldPen = SelectObject(dc, edge);
+    // Under a few pixels the outline is the whole marker, so it goes and the
+    // fill speaks for itself.
+    HGDIOBJ oldPen = SelectObject(dc, mr <= 2 ? GetStockObject(NULL_PEN) : (HGDIOBJ)edge);
     SetTextAlign(dc, TA_CENTER | TA_TOP);
     for (const auto& kv : best) {
         const Cand& c = cands[kv.second - 1];
@@ -983,7 +1000,10 @@ static void paintOverlay() {
                 below = std::min((int)(sim::fieldInnerKm(st.P) / kmpp), 60) + 3;
             } else {
                 SelectObject(dc, mr >= 6 ? cream : ink);
-                Ellipse(dc, cx - mr, cy - mr, cx + mr + 1, cy + mr + 1);
+                // A two-pixel circle is a rectangle anyway, and there can be
+                // thousands of them once the whole world is in view.
+                if (mr <= 2) Rectangle(dc, cx - mr, cy - mr, cx + mr + 1, cy + mr + 1);
+                else Ellipse(dc, cx - mr, cy - mr, cx + mr + 1, cy + mr + 1);
                 if (mr >= 6) {
                     SelectObject(dc, ink);
                     drawHutGlyph(dc, cx, cy, mr);
@@ -1002,7 +1022,7 @@ static void paintOverlay() {
             SIZE ts{};
             GetTextExtentPoint32A(dc, kind, (int)strlen(kind), &ts);
             int hw = (int)ts.cx / 2 + 5, hh = 9;
-            if (!names) { hw = mr + 1; hh = mr - 1; } // no room for the word
+            if (!names) { hw = std::max(mr + 2, 3); hh = std::max(mr, 2); } // no room for the word
             int below = hh + 2;
             if (walking) {
                 below = std::min((int)(sim::bandSpreadKm(b.P) / kmpp), 60) + 3;
