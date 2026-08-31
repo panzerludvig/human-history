@@ -75,7 +75,8 @@ inline terrain::V3 moveToward(terrain::V3 p, terrain::V3 q, float km) {
 // Record something worth telling. Counts stay exact; the stored entries
 // stop at a cap so a thousand-year step cannot eat memory.
 inline void note(population::Field& pf, int kind, double t, uint32_t sid, uint32_t sid2,
-                 uint32_t bandId, float amount, const char* text) {
+                 uint32_t bandId, float amount, const char* text, float lossHere = 0,
+                 float lossThem = 0) {
     using namespace population;
     if (kind < 0 || kind >= EV_KINDS) return;
     pf.eventCount[kind]++;
@@ -83,6 +84,8 @@ inline void note(population::Field& pf, int kind, double t, uint32_t sid, uint32
     Event e;
     e.kind = (uint8_t)kind;
     e.t = t;
+    e.lossHere = lossHere;
+    e.lossThem = lossThem;
     // Note where it happened while the people involved are still findable:
     // they may be gone by the time anyone reads this.
     int at = indexById(pf, sid);
@@ -592,6 +595,7 @@ inline void resolveRaid(population::Field& pf, technology::WorldState& ws,
     // The men are the ones in the fight; a few of the rest are caught up
     // in it. A settlement that loses its men is crippled for a generation,
     // and the flows above are what let that scar heal slowly.
+    float beforeA = b.P, beforeD = t.P;
     b.pop.M *= 1.0f - lossA;
     b.P = b.pop.total();
     t.pop.M *= 1.0f - lossD;
@@ -601,6 +605,8 @@ inline void resolveRaid(population::Field& pf, technology::WorldState& ws,
     t.P = t.pop.total();
     b.bows *= 1.0f - lossA;
     t.bows *= 1.0f - lossD;
+    int deadA = (int)std::lround(std::max(beforeA - b.P, 0.0f));
+    int deadD = (int)std::lround(std::max(beforeD - t.P, 0.0f));
     if (won) {
         float carry = b.P * LOOT_CARRY_DAYS;
         b.loot = std::min(t.S * LOOT_STORE_SHARE, carry);
@@ -619,12 +625,15 @@ inline void resolveRaid(population::Field& pf, technology::WorldState& ws,
                      t.name, (int)b.loot, (int)b.lootHerd);
         else
             snprintf(txt, sizeof txt, "%s beat off a raid by %s", t.name, b.name);
+        // Both sides count their dead. The numbers travel with the event
+        // rather than inside its sentence: a line long enough to hold them
+        // both runs off the end of the panel that shows it.
         note(pf, won ? population::EV_RAID_HIT : population::EV_RAID_HELD, now, t.id, b.homeId,
-             b.id, won ? b.loot : 0.0f, txt);
+             b.id, won ? b.loot : 0.0f, txt, (float)deadD, (float)deadA);
     }
     b.returning = true;
-    fprintf(stderr, "raid: %s settlement %u, %d rations %d livestock, day %.0f\n",
-            won ? "sacked" : "beaten off by", t.id, (int)b.loot, (int)b.lootHerd, now);
+    fprintf(stderr, "raid: %s settlement %u, %d rations %d livestock, %d + %d dead, day %.0f\n",
+            won ? "sacked" : "beaten off by", t.id, (int)b.loot, (int)b.lootHerd, deadA, deadD, now);
 }
 
 // A band that arrives (or gives up) becomes a settlement on unclaimed ground.

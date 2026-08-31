@@ -345,6 +345,10 @@ struct Event {
     int cell = -1;       // where it happened, so it can always be found again
     float amount = 0;    // people, rations -- whatever the kind means
     char text[96] = {};
+    // What a fight cost, counted on both sides: `lossHere` is the people of
+    // the settlement the event names, `lossThem` whoever it was against.
+    // Zero for everything that is not a fight.
+    float lossHere = 0, lossThem = 0;
 };
 
 // A step can cover a thousand years; keep the counts exact but stop

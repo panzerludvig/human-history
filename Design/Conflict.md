@@ -61,3 +61,5 @@ With demography (2026-08-29): 4,142 raids in a millennium across ~1,240 settleme
 - Intercepting a loaded raiding party on its way home — tempting, but it needs bands to see each other.
 - Conquest, tribute, captives, alliances, and any lasting political relationship.
 - Raiding bands as targets, and raids on the move against migrating groups.
+
+**Both sides count their dead** (2026-08-31). A raid records what it cost each of them — `Event::lossHere` for the people of the settlement the event names, `lossThem` for whoever it was against — and the news detail and the settlement's History tab both show them, phrased from the side of whoever is reading ("3 of theirs dead, 1 of ours"). The numbers ride alongside the sentence rather than inside it: a line long enough to carry both runs off the end of the panel that shows it. Typical outcome at present: one to four dead among raiders, one to seven among the raided, with the loser of the fight losing more — people run, and that is the point.

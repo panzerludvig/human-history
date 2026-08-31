@@ -2218,6 +2218,14 @@ static std::string historyText(const population::Settlement& st) {
         }
         snprintf(b, sizeof b, "%d: %s\n", (int)(e.t / 365.0) + 1, e.text);
         out += b;
+        if (e.lossHere > 0 || e.lossThem > 0) {
+            // Whose dead are whose depends on which side of it you are.
+            bool theirs = e.sid != st.id;
+            snprintf(b, sizeof b, "   %d of theirs dead, %d of ours\n",
+                     (int)std::lround(theirs ? e.lossHere : e.lossThem),
+                     (int)std::lround(theirs ? e.lossThem : e.lossHere));
+            out += b;
+        }
     }
     if (!shown) out += "Nothing happened to them this step.\n";
     return out;
@@ -2590,6 +2598,12 @@ static void paintNews(HWND h) {
             }
             if (e.amount > 0) {
                 snprintf(line, sizeof line, "How many: %d", (int)e.amount);
+                TextOutA(dc, 12, y, line, (int)strlen(line));
+                y += NEWS_LINE;
+            }
+            if (e.lossHere > 0 || e.lossThem > 0) {
+                snprintf(line, sizeof line, "Dead: %d here, %d attacking",
+                         (int)std::lround(e.lossHere), (int)std::lround(e.lossThem));
                 TextOutA(dc, 12, y, line, (int)strlen(line));
                 y += NEWS_LINE;
             }
