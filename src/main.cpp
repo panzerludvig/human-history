@@ -754,7 +754,11 @@ struct App {
     unsigned char* ovBits = nullptr;
     int ovW = 0, ovH = 0;
     GLuint ovTex = 0;
-    HFONT markerFont = nullptr, markerBold = nullptr;
+    HFONT markerFont = nullptr, markerBold = nullptr, markBold = nullptr;
+    // Where each event chip was drawn, so a click can find it. Rebuilt with
+    // the overlay; a chip belongs to a settlement or to a band, never both.
+    struct MarkHit { int x, y, w, h; uint32_t sid, bandId; };
+    std::vector<MarkHit> markHits;
     GLuint climTex = 0;
     GLuint clim2Tex = 0;
     bool running = true;
@@ -890,6 +894,133 @@ static int markerRadius(double kmpp) {
     return std::max(2, (int)std::lround(fixedKm / kmpp));
 }
 
+
+// ------------------------------------------------------------ event marks
+//
+// What happened to a place this turn, drawn as a row of chips above its
+// marker: a family-coloured square with a cream glyph cut out of it, eleven
+// pixels across. The chip is what makes it readable -- a bare glyph over an
+// ice sheet is invisible -- and the colour sorts the event before the glyph
+// is even looked at. Marks last exactly as long as the news feed does: they
+// are the same events, cleared at the start of every step.
+//
+// Every glyph is filled polygons on an 11x11 grid: no curves, no thin
+// diagonals, nothing that needs a second pixel to read. Coordinates below
+// match the proposal drawing exactly.
+struct MarkPoly { const float* xy; int n; };
+struct MarkGlyph { const MarkPoly* fill; int nf; const MarkPoly* cut; int nc; };
+
+// clang-format off
+static const float MP_RELOCATE[] = {1,4, 6,4, 6,2, 10,5.5f, 6,9, 6,7, 1,7};
+static const float MP_SPLIT_A[]  = {0.4f,4.7f, 4.6f,4.7f, 4.6f,6.3f, 0.4f,6.3f};
+static const float MP_SPLIT_B[]  = {3.5f,4.9f, 4.6f,6.1f, 8.2f,2.9f, 7.1f,1.7f};
+static const float MP_SPLIT_C[]  = {6.3f,1.5f, 10.2f,0.6f, 9.2f,4.4f};
+static const float MP_SPLIT_D[]  = {3.5f,6.1f, 4.6f,4.9f, 8.2f,8.1f, 7.1f,9.3f};
+static const float MP_SPLIT_E[]  = {6.3f,9.5f, 10.2f,10.4f, 9.2f,6.6f};
+static const float MP_SET_A[]    = {2,9, 9,9, 9,10, 2,10};
+static const float MP_SET_B[]    = {5.5f,1, 10,5, 1,5};
+static const float MP_SET_C[]    = {2,5, 9,5, 9,8, 2,8};
+static const float MP_FOUND_A[]  = {5.5f,2, 10,6, 1,6};
+static const float MP_FOUND_B[]  = {2,6, 9,6, 9,10, 2,10};
+static const float MP_FOUND_C[]  = {0,1, 2,0, 3,2, 1,3};
+static const float MP_MERGE_A[]  = {1.0f,1.4f, 2.1f,0.4f, 5.6f,4.1f, 4.5f,5.1f};
+static const float MP_MERGE_B[]  = {1.0f,9.6f, 2.1f,10.6f, 5.6f,6.9f, 4.5f,5.9f};
+static const float MP_MERGE_C[]  = {4.2f,4.7f, 8.0f,4.7f, 8.0f,6.3f, 4.2f,6.3f};
+static const float MP_MERGE_D[]  = {7.4f,2.6f, 10.8f,5.5f, 7.4f,8.4f};
+static const float MP_DIED_A[]   = {4,1, 7,1, 7,10, 4,10};
+static const float MP_DIED_B[]   = {1,3, 10,3, 10,5, 1,5};
+static const float MP_BLADE[]    = {2.1f,9.6f, 3.3f,8.4f, 10.4f,1.3f, 10.9f,0.2f, 9.6f,0.6f, 2.6f,7.7f};
+static const float MP_BLADE2[]   = {8.9f,9.6f, 7.7f,8.4f, 0.6f,1.3f, 0.1f,0.2f, 1.4f,0.6f, 8.4f,7.7f};
+static const float MP_GUARD[]    = {1.0f,7.3f, 1.9f,6.4f, 4.6f,9.1f, 3.7f,10.0f};
+static const float MP_GUARD2[]   = {10.0f,7.3f, 9.1f,6.4f, 6.4f,9.1f, 7.3f,10.0f};
+static const float MP_POMMEL[]   = {0.4f,9.0f, 1.6f,7.8f, 3.2f,9.4f, 2.0f,10.6f};
+static const float MP_SHIELD[]   = {1,1, 10,1, 10,5, 5.5f,10, 1,5};
+static const float MP_HOME[]     = {10,4, 5,4, 5,2, 1,5.5f, 5,9, 5,7, 10,7};
+static const float MP_STAR[]     = {5.5f,0, 7,4, 11,5.5f, 7,7, 5.5f,11, 4,7, 0,5.5f, 4,4};
+static const float MP_STAR_S[]   = {5.5f,0, 6.6f,3, 9.5f,4, 6.6f,5, 5.5f,8, 4.4f,5, 1.5f,4, 4.4f,3};
+static const float MP_DOWN[]     = {4.5f,7, 6.5f,7, 6.5f,9, 8,9, 5.5f,11, 3,9, 4.5f,9};
+static const float MP_GRAN_A[]   = {2,1, 9,1, 10,4, 1,4};
+static const float MP_GRAN_B[]   = {2,4, 9,4, 9,8, 2,8};
+static const float MP_GRAN_C[]   = {2,8, 3.5f,8, 3.5f,11, 2,11};
+static const float MP_GRAN_D[]   = {7.5f,8, 9,8, 9,11, 7.5f,11};
+static const float MP_BONE_A[]   = {0.6f,10.4f, 1.6f,11.2f, 10.4f,6.6f, 9.4f,5.8f};
+static const float MP_BONE_B[]   = {0.6f,6.6f, 1.6f,5.8f, 10.4f,10.4f, 9.4f,11.2f};
+static const float MP_KNOB_A[]   = {0.0f,10.0f, 1.4f,9.3f, 2.0f,10.6f, 0.6f,11.3f};
+static const float MP_KNOB_B[]   = {9.0f,5.7f, 10.4f,5.0f, 11.0f,6.3f, 9.6f,7.0f};
+static const float MP_KNOB_C[]   = {0.0f,6.3f, 1.4f,7.0f, 2.0f,5.7f, 0.6f,5.0f};
+static const float MP_KNOB_D[]   = {9.0f,10.6f, 10.4f,11.3f, 11.0f,10.0f, 9.6f,9.3f};
+static const float MP_SKULL[]    = {2.6f,1.2f, 3.6f,0.2f, 7.4f,0.2f, 8.4f,1.2f, 8.4f,5.4f, 2.6f,5.4f};
+static const float MP_JAW[]      = {3.7f,5.4f, 7.3f,5.4f, 7.3f,7.4f, 3.7f,7.4f};
+static const float MP_EYE_L[]    = {3.5f,2.0f, 5.0f,2.0f, 5.0f,4.0f, 3.5f,4.0f};
+static const float MP_EYE_R[]    = {6.0f,2.0f, 7.5f,2.0f, 7.5f,4.0f, 6.0f,4.0f};
+static const float MP_NOSE[]     = {5.0f,4.4f, 6.0f,4.4f, 6.0f,5.4f, 5.0f,5.4f};
+static const float MP_TOOTH_L[]  = {4.6f,6.2f, 5.1f,6.2f, 5.1f,7.4f, 4.6f,7.4f};
+static const float MP_TOOTH_R[]  = {5.9f,6.2f, 6.4f,6.2f, 6.4f,7.4f, 5.9f,7.4f};
+
+#define MPOLY(a) {a, (int)(sizeof(a) / sizeof(float) / 2)}
+static const MarkPoly MG_RELOCATE[] = {MPOLY(MP_RELOCATE)};
+static const MarkPoly MG_SPLIT[]    = {MPOLY(MP_SPLIT_A), MPOLY(MP_SPLIT_B), MPOLY(MP_SPLIT_C),
+                                       MPOLY(MP_SPLIT_D), MPOLY(MP_SPLIT_E)};
+static const MarkPoly MG_SETTLED[]  = {MPOLY(MP_SET_A), MPOLY(MP_SET_B), MPOLY(MP_SET_C)};
+static const MarkPoly MG_FOUNDED[]  = {MPOLY(MP_FOUND_A), MPOLY(MP_FOUND_B), MPOLY(MP_FOUND_C)};
+static const MarkPoly MG_MERGED[]   = {MPOLY(MP_MERGE_A), MPOLY(MP_MERGE_B), MPOLY(MP_MERGE_C),
+                                       MPOLY(MP_MERGE_D)};
+static const MarkPoly MG_PERISHED[] = {MPOLY(MP_DIED_A), MPOLY(MP_DIED_B)};
+static const MarkPoly MG_RAIDOUT[]  = {MPOLY(MP_BLADE), MPOLY(MP_GUARD), MPOLY(MP_POMMEL)};
+static const MarkPoly MG_RAIDHIT[]  = {MPOLY(MP_BLADE), MPOLY(MP_BLADE2), MPOLY(MP_GUARD),
+                                       MPOLY(MP_GUARD2)};
+static const MarkPoly MG_RAIDHELD[] = {MPOLY(MP_SHIELD)};
+static const MarkPoly MG_RAIDHOME[] = {MPOLY(MP_HOME)};
+static const MarkPoly MG_INVENTED[] = {MPOLY(MP_STAR)};
+static const MarkPoly MG_ADOPTED[]  = {MPOLY(MP_STAR_S), MPOLY(MP_DOWN)};
+static const MarkPoly MG_GRANARY[]  = {MPOLY(MP_GRAN_A), MPOLY(MP_GRAN_B), MPOLY(MP_GRAN_C),
+                                       MPOLY(MP_GRAN_D)};
+static const MarkPoly MG_GAME[]     = {MPOLY(MP_BONE_A), MPOLY(MP_BONE_B), MPOLY(MP_KNOB_A),
+                                       MPOLY(MP_KNOB_B), MPOLY(MP_KNOB_C), MPOLY(MP_KNOB_D),
+                                       MPOLY(MP_SKULL), MPOLY(MP_JAW)};
+static const MarkPoly MG_GAME_CUT[] = {MPOLY(MP_EYE_L), MPOLY(MP_EYE_R), MPOLY(MP_NOSE),
+                                       MPOLY(MP_TOOTH_L), MPOLY(MP_TOOTH_R)};
+#undef MPOLY
+
+#define MGLYPH(a) {a, (int)(sizeof(a) / sizeof(MarkPoly)), nullptr, 0}
+// Indexed by population::EV_*, in that order.
+static const MarkGlyph MARK_GLYPH[population::EV_KINDS] = {
+    MGLYPH(MG_RELOCATE), MGLYPH(MG_SPLIT),    MGLYPH(MG_SETTLED),  MGLYPH(MG_FOUNDED),
+    MGLYPH(MG_MERGED),   MGLYPH(MG_PERISHED), MGLYPH(MG_RAIDOUT),  MGLYPH(MG_RAIDHIT),
+    MGLYPH(MG_RAIDHELD), MGLYPH(MG_RAIDHOME), MGLYPH(MG_INVENTED), MGLYPH(MG_ADOPTED),
+    MGLYPH(MG_GRANARY),
+    {MG_GAME, (int)(sizeof(MG_GAME) / sizeof(MarkPoly)), MG_GAME_CUT,
+     (int)(sizeof(MG_GAME_CUT) / sizeof(MarkPoly))},
+};
+#undef MGLYPH
+// clang-format on
+
+// Five families. Violence first and the emptied land second, so a settlement
+// that was raided always shows the raid: the count chip absorbs granaries,
+// never the fighting.
+static int markFamily(int kind) {
+    switch (kind) {
+    case population::EV_RAID_LAUNCH:
+    case population::EV_RAID_HIT:
+    case population::EV_RAID_HELD:
+    case population::EV_RAID_HOME: return 0; // violence
+    case population::EV_GAME_GONE: return 1; // the land
+    case population::EV_INVENTED:
+    case population::EV_ADOPTED: return 3;   // knowledge
+    case population::EV_GRANARY: return 4;   // building
+    default: return 2;                       // movement
+    }
+}
+static COLORREF markColour(int family) {
+    static const COLORREF c[5] = {RGB(163, 53, 42), RGB(107, 122, 74), RGB(232, 176, 66),
+                                  RGB(216, 194, 90), RGB(185, 146, 90)};
+    return c[family < 0 || family > 4 ? 2 : family];
+}
+
+constexpr int CHIP = 11;      // a mark, square
+constexpr int CHIP_GAP = 1;   // and the air between two of them
+constexpr int CHIP_SHOWN = 4; // before the rest become a number
+
 // Where a point on the unit sphere lands on the screen; false when it is
 // behind the camera or hidden by the curve of the world.
 static bool projectToScreen(const terrain::V3& p, float& sx, float& sy) {
@@ -926,6 +1057,52 @@ static void overlayEnsure() {
     ReleaseDC(nullptr, screen);
     SelectObject(app.ovDC, app.ovBmp);
     SetBkMode(app.ovDC, TRANSPARENT);
+}
+
+// One mark: the family square, a dark edge, and the glyph cut out in cream.
+static void drawChip(HDC dc, int kind, int x, int y, HBRUSH edgeBr, HBRUSH creamBr) {
+    RECT r{x, y, x + CHIP, y + CHIP};
+    FillRect(dc, &r, edgeBr);
+    HBRUSH fam = CreateSolidBrush(markColour(markFamily(kind)));
+    RECT in{x + 1, y + 1, x + CHIP - 1, y + CHIP - 1};
+    FillRect(dc, &in, fam);
+    const MarkGlyph& g = MARK_GLYPH[kind];
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    const float s = (CHIP - 2) / 11.0f;
+    auto run = [&](const MarkPoly* polys, int n, HBRUSH br) {
+        HGDIOBJ old = SelectObject(dc, br);
+        for (int i = 0; i < n; i++) {
+            POINT pt[16];
+            int m = polys[i].n < 16 ? polys[i].n : 16;
+            for (int k = 0; k < m; k++) {
+                pt[k].x = x + 1 + (LONG)std::lround(polys[i].xy[k * 2] * s);
+                pt[k].y = y + 1 + (LONG)std::lround(polys[i].xy[k * 2 + 1] * s);
+            }
+            Polygon(dc, pt, m);
+        }
+        SelectObject(dc, old);
+    };
+    run(g.fill, g.nf, creamBr);
+    if (g.nc) run(g.cut, g.nc, fam); // the skull needs its sockets back
+    SelectObject(dc, oldPen);
+    DeleteObject(fam);
+}
+
+// The overflow: how many marks are not shown. The only chip that holds type.
+static void drawCountChip(HDC dc, int n, int x, int y, HBRUSH edgeBr) {
+    RECT r{x, y, x + CHIP, y + CHIP};
+    FillRect(dc, &r, edgeBr);
+    HBRUSH br = CreateSolidBrush(RGB(74, 64, 52));
+    RECT in{x + 1, y + 1, x + CHIP - 1, y + CHIP - 1};
+    FillRect(dc, &in, br);
+    DeleteObject(br);
+    char t[8];
+    snprintf(t, sizeof t, "%d", n > 99 ? 99 : n);
+    SelectObject(dc, app.markBold);
+    UINT old = SetTextAlign(dc, TA_CENTER | TA_TOP);
+    SetTextColor(dc, RGB(238, 230, 208));
+    TextOutA(dc, x + CHIP / 2, y, t, (int)strlen(t));
+    SetTextAlign(dc, old);
 }
 
 // A house seen from the side, sized to sit inside a marker of radius r.
@@ -973,8 +1150,52 @@ static void zoomAt(double factor, int px, int py) {
     }
 }
 
+// What happened to each settlement and each band this turn, ordered so the
+// most telling marks survive the cut: family first (violence, then the land,
+// then movement, knowledge, building), and within a family the most recent.
+// A raid launched belongs to the settlement that sent the party out, not to
+// the party -- the decision was the settlement's.
+static void gatherMarks(std::unordered_map<uint32_t, std::vector<int>>& bySite,
+                        std::unordered_map<uint32_t, std::vector<int>>& byBand) {
+    const population::Field& pf = app.world.pop;
+    for (size_t i = pf.events.size(); i-- > 0;) { // newest first
+        const population::Event& e = pf.events[i];
+        if (e.sid) bySite[e.sid].push_back(e.kind);
+        if (e.bandId && e.kind != population::EV_RAID_LAUNCH) byBand[e.bandId].push_back(e.kind);
+    }
+    auto sortFamily = [](std::unordered_map<uint32_t, std::vector<int>>& m) {
+        for (auto& kv : m)
+            std::stable_sort(kv.second.begin(), kv.second.end(),
+                             [](int a, int b) { return markFamily(a) < markFamily(b); });
+    };
+    sortFamily(bySite);
+    sortFamily(byBand);
+}
+
+// A row of marks above a marker, centred on it: four of them, then a count
+// of the rest. Records where each chip landed so a click can find it.
+static void drawMarkRow(HDC dc, const std::vector<int>& kinds, int cx, int bottomY, uint32_t sid,
+                        uint32_t bandId, HBRUSH edgeBr, HBRUSH creamBr) {
+    if (kinds.empty()) return;
+    int shown = (int)kinds.size() <= CHIP_SHOWN ? (int)kinds.size() : CHIP_SHOWN;
+    int hidden = (int)kinds.size() - shown;
+    int n = shown + (hidden > 0 ? 1 : 0);
+    int w = n * CHIP + (n - 1) * CHIP_GAP;
+    int x = cx - w / 2, y = bottomY - CHIP;
+    for (int i = 0; i < shown; i++) {
+        drawChip(dc, kinds[i], x, y, edgeBr, creamBr);
+        app.markHits.push_back({x, y, CHIP, CHIP, sid, bandId});
+        x += CHIP + CHIP_GAP;
+    }
+    if (hidden > 0) {
+        drawCountChip(dc, hidden, x, y, edgeBr);
+        app.markHits.push_back({x, y, CHIP, CHIP, sid, bandId});
+    }
+}
+
 static void paintOverlay() {
     overlayEnsure();
+    app.markHits.clear();
     if (!app.ovDC) return;
     HDC dc = app.ovDC;
     RECT full{0, 0, app.ovW, app.ovH};
@@ -1034,10 +1255,13 @@ static void paintOverlay() {
         if (projectToScreen(at, sx, sy)) offer(sx, sy, b.P + 1e6f, (int)i, true, at);
     }
 
+    std::unordered_map<uint32_t, std::vector<int>> markSite, markBand;
+    gatherMarks(markSite, markBand);
     HBRUSH cream = CreateSolidBrush(RGB(238, 230, 208));
     HBRUSH amber = CreateSolidBrush(RGB(232, 176, 66));
     HBRUSH ink = CreateSolidBrush(RGB(96, 52, 28));
     HPEN edge = CreatePen(PS_SOLID, 1, RGB(40, 28, 18));
+    HBRUSH edgeFill = CreateSolidBrush(RGB(40, 28, 18)); // the chip's dark rim
     // Under a few pixels the outline is the whole marker, so it goes and the
     // fill speaks for itself.
     HGDIOBJ oldPen = SelectObject(dc, mr <= 2 ? GetStockObject(NULL_PEN) : (HGDIOBJ)edge);
@@ -1065,6 +1289,9 @@ static void paintOverlay() {
                 SelectObject(dc, app.markerFont);
                 drawLabel(dc, cx, cy + below, st.name);
             }
+            auto it = markSite.find(st.id);
+            if (it != markSite.end() && !ground)
+                drawMarkRow(dc, it->second, cx, cy - mr - 4, st.id, 0, edgeFill, cream);
         } else {
             const population::Band& b = pf.bands[c.idx];
             const char* kind = b.purpose == population::BAND_RAID ? "Raiders"
@@ -1090,6 +1317,32 @@ static void paintOverlay() {
                 SelectObject(dc, app.markerFont);
                 drawLabel(dc, cx, cy + below, b.name);
             }
+            auto it = markBand.find(b.id);
+            if (it != markBand.end() && !walking)
+                drawMarkRow(dc, it->second, cx, cy - hh - 4, 0, b.id, edgeFill, cream);
+        }
+    }
+    // Close up, a row of chips floating over the roofs would be a lie about
+    // where things happened, so only one mark is drawn down here: a building
+    // finished, standing over the building itself.
+    if (ground) {
+        for (const population::Settlement& st : pf.settlements) {
+            auto it = markSite.find(st.id);
+            if (it == markSite.end()) continue;
+            int built = 0;
+            for (int k : it->second) built += k == population::EV_GRANARY ? 1 : 0;
+            for (int i = 0; i < built; i++) {
+                int g = (int)(st.granaries + 0.5f) - 1 - i;
+                if (g < 0 || g >= 8) continue;
+                float gx, gy;
+                if (!projectToScreen(sim::granaryPos(st.cell, g), gx, gy)) continue;
+                int px = (int)std::lround(gx), py = (int)std::lround(gy);
+                drawChip(dc, population::EV_GRANARY, px - CHIP / 2, py - CHIP - 10, edgeFill, cream);
+                app.markHits.push_back({px - CHIP / 2, py - CHIP - 10, CHIP, CHIP, st.id, 0});
+                HGDIOBJ op = SelectObject(dc, edgeFill);
+                PatBlt(dc, px, py - 10, 1, 8, PATCOPY); // a stem down to the store
+                SelectObject(dc, op);
+            }
         }
     }
     SelectObject(dc, oldPen);
@@ -1097,6 +1350,7 @@ static void paintOverlay() {
     DeleteObject(amber);
     DeleteObject(ink);
     DeleteObject(edge);
+    DeleteObject(edgeFill);
 }
 
 // The overlay is a function of the camera, the world and the window, so it
@@ -1290,6 +1544,8 @@ static void createControls() {
                                  NONANTIALIASED_QUALITY, 0, "Segoe UI");
     app.markerBold = CreateFontA(14, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
                                  NONANTIALIASED_QUALITY, 0, "Segoe UI");
+    app.markBold = CreateFontA(11, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                               NONANTIALIASED_QUALITY, 0, "Segoe UI"); // the count in a chip
     app.bgBrush = CreateSolidBrush(RGB(8, 8, 16));
     addControl(ID_TITLE, "STATIC", "Human History", SS_CENTER);
     addControl(ID_STATUS, "STATIC", "", SS_CENTER);
@@ -2207,7 +2463,7 @@ static std::vector<const population::Event*> newsEntries(int kind) {
     return v;
 }
 
-static void openPanel(int kind, uint32_t sid, uint32_t bandId); // defined below
+static void openPanel(int kind, uint32_t sid, uint32_t bandId, int tab = -1); // defined below
 
 // Take the camera to whoever an event happened to, and open their panel:
 // at any useful zoom several settlements sit within a few pixels of each
@@ -2559,9 +2815,14 @@ static LRESULT CALLBACK panelProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcA(h, msg, wp, lp);
 }
 
-static void openPanel(int kind, uint32_t sid, uint32_t bandId) {
-    for (const Panel& pn : app.panels)
+static void openPanel(int kind, uint32_t sid, uint32_t bandId, int tab) {
+    for (Panel& pn : app.panels)
         if (pn.kind == kind && pn.sid == sid && pn.bandId == bandId) {
+            if (tab >= 0 && pn.tab != tab) {
+                pn.tab = tab;
+                pn.techSel = -1;
+                InvalidateRect(pn.wnd, nullptr, TRUE);
+            }
             SetWindowPos(pn.wnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             return; // already open: raise it instead of stacking a twin
         }
@@ -2574,15 +2835,26 @@ static void openPanel(int kind, uint32_t sid, uint32_t bandId) {
     HWND btn = CreateWindowA("BUTTON", "X", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, pw - 34, 6, 24, 24,
                              w, (HMENU)1, inst, nullptr);
     SendMessageA(btn, WM_SETFONT, (WPARAM)app.font, TRUE);
-    app.panels.push_back({w, kind, sid, bandId});
+    app.panels.push_back({w, kind, sid, bandId, tab > 0 ? tab : 0});
     SetWindowPos(w, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 }
 
 // A click on the globe: open a detail panel for the settlement or band whose
 // marker is under the cursor (same radii the shader draws them with).
 static void pickAt(int x, int y) {
+    if (app.screen != Screen::InGame) return;
+    // An event mark is hit before anything under it: it sits above the
+    // marker on purpose, and it is the smaller target. It opens the history
+    // of whoever it happened to, which is the whole sentence the news feed
+    // would have given.
+    for (const App::MarkHit& m : app.markHits)
+        if (x >= m.x - 1 && x < m.x + m.w + 1 && y >= m.y - 1 && y < m.y + m.h + 1) {
+            if (m.sid) openPanel(0, m.sid, 0, TAB_HISTORY);
+            else if (m.bandId) openPanel(1, 0, m.bandId);
+            return;
+        }
     Vec3 hit;
-    if (app.screen != Screen::InGame || !app.cam.hitSphere(x, y, hit)) return;
+    if (!app.cam.hitSphere(x, y, hit)) return;
     terrain::V3 n = {(float)hit.x, (float)hit.y, (float)hit.z};
     const population::Field& pf = app.world.pop;
     // Pick radius = draw radius plus ~3 px of slop: clicks are aim-limited.
