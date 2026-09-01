@@ -130,9 +130,22 @@ inline double H_MOIST = 2500.0;    // m, depth the vapour is carried through
 // does not rise like a thunderhead. First pass had fronts lifting at 22 cm/s
 // and the world raining 18 mm a day.
 inline double W_OROG = 0.35;       // only the windward slope of a cell rises
-inline double W_CONV = 0.0012;     // m/s per K of surface-air instability
+// Convection rises with the heat the ground is actually giving the air, not
+// with a threshold on temperature. Keyed to the lapse gap it almost never
+// fired -- the ground has to stand 27 K above the emitting level before that
+// term wakes up -- and continental rain went with it: 70% of land came out
+// desert against life's third. The sensible heat flux IS the vigour of
+// convection, and it is already computed.
+inline double W_CONV = 0.002;      // m/s per W/m2 of sensible heat into the air
 inline double W_DIVERGE = 600.0;   // m/s per (1/s) of low-level convergence
 inline double W_FRONT = 200.0;    // m/s per (K/m) of temperature gradient
+// Air that is sinking is warming, and warming air is further from
+// saturation: that is why the subtropical oceans are deserts under the
+// descending branch of the Hadley cell, and why their moisture survives to
+// blow somewhere else. Removed as a "shortcut" when rain was rebuilt around
+// uplift -- and without it the sea rained out everything it evaporated, so
+// nothing reached a continental interior and 70% of land was desert.
+inline double SUBSIDE_DRY = 900.0;  // extra capacity per (m/s) of descent
 inline double RAIN_FRAC = 0.80;    // sub-grid: part of a cell saturates first
 inline double RAIN_RATE = 0.15;    // fraction of that excess per hour
 constexpr double DIV_CAP_SCALE = 0.05;          // m/s of uplift for a ~46% capacity swing
@@ -174,9 +187,15 @@ inline double KT_DIFF = 2.2e6;               // m^2/s eddy diffusion of heat
 // the external mode's 300: weather travels at the former, and the latter
 // would need a two-minute timestep. That is what makes ten-minute dynamics
 // inside an hour of physics stable.
-inline double GPRIME = 12.0;        // m/s2, reduced gravity of the active layer
-inline double H_LAYER = 200.0;      // m, its mean thickness: c = sqrt(g'H) ~ 49 m/s
-inline double THERM_H_PER_K = 0.75; // m of thickness per K of warmth
+// Scaled to the real geostrophic relation, v = (g/f) dZ/dy. Earth's 500 mb
+// surface stands about 500 m higher over the tropics than over the pole, and
+// that slope is what drives a 10 m/s wind. The first attempt used a reduced
+// gravity and 0.75 m per K, which gave height anomalies of a few metres and
+// winds of about one -- the air moved, but it carried nothing, and the
+// moisture distribution did not change at all when advection was fixed.
+inline double GPRIME = 9.81;        // m/s2: it is a height, so it is gravity
+inline double H_LAYER = 3000.0;     // m, mean thickness: c = sqrt(gH) ~ 171 m/s
+inline double THERM_H_PER_K = 10.0; // m of height per K of warmth
 inline double THERM_TAU = 2.0 * 86400.0; // s, how fast thickness follows warmth
 // Away from the Coriolis balance -- at the equator, where f goes to zero --
 // drag is the only thing that limits the wind, and at one part in 2.5 days
@@ -371,8 +390,9 @@ struct Model {
                 // air temperature asks for, which is what raises highs over
                 // warm ground and digs lows over cold.
                 double want = THERM_H_PER_K * (Ta[i] - (-25.0));
+                want = std::clamp(want, -600.0, 600.0);
                 nhP[i] = hP[i] + dt * (conv + (want - hP[i]) / THERM_TAU);
-                nhP[i] = std::clamp(nhP[i], -0.8 * H_LAYER, 2.0 * H_LAYER);
+                nhP[i] = std::clamp(nhP[i], -0.5 * H_LAYER, 0.5 * H_LAYER);
             }
         }
         for (int x = 0; x < W; x++) {
@@ -449,15 +469,15 @@ struct Model {
                     int yn = idx(x, std::min(y + 1, H - 1));
                     double ue = 0.5 * (u[i] + u[xe]);
                     double vn = 0.5 * (v[i] + v[yn]);
-                    // Upwind, and each face carries humidity rather than an
-                    // absolute load: air arriving somewhere colder is already
-                    // at saturation and leaves the rest behind it.
-                    double capE = std::min(capArr[i], capArr[xe]);
-                    double capN = std::min(capArr[i], capArr[yn]);
-                    fluxE[i] = ue * (ue > 0 ? Wv[i] / capArr[i] : Wv[xe] / capArr[xe]) * capE / dx;
-                    fluxN[i] = (y >= H - 1) ? 0.0
-                                            : vn * (vn > 0 ? Wv[i] / capArr[i] : Wv[yn] / capArr[yn]) *
-                                                  capN / dy;
+                    // Advection carries what the air holds, upwind. The
+                    // humidity rule belongs to DIFFUSION, which is an
+                    // exchange of parcels; a wind blowing inland really does
+                    // bring its whole load with it, and drops the excess as
+                    // rain when it gets there. Throttling it by the colder
+                    // side's capacity left 70% of all land desert -- nothing
+                    // could reach an interior.
+                    fluxE[i] = ue * (ue > 0 ? Wv[i] : Wv[xe]) / dx;
+                    fluxN[i] = (y >= H - 1) ? 0.0 : vn * (vn > 0 ? Wv[i] : Wv[yn]) / dy;
                 }
             }
 #pragma omp parallel for
@@ -531,7 +551,7 @@ struct Model {
                 double sens = (lapseGap > 0 ? K_SURF_AIR : K_STABLE) * lapseGap;
                 // Evaporation, priced: what the air can still hold, what the
                 // ground has to give, and what the sun can pay for.
-                double cap = capOf(T[i]);
+                double cap = capOf(T[i]) * (1.0 + SUBSIDE_DRY * std::max(-div[i], 0.0));
                 double supply = water[i] ? 1.0 : std::clamp(soil[i] / SOIL_REF_MM, 0.0, 1.0);
                 double evap = (water[i] ? EVAP_WATER : EVAP_LAND) * supply *
                               std::max(1.0 - Wv[i] / std::max(cap, 1.0), 0.0) *
@@ -581,7 +601,7 @@ struct Model {
                 double wOro = W_OROG * (ua * dhx + va * dhy);
                 // Convective: ground hotter than the air above it, which is
                 // exactly the instability the surface budget already computes.
-                double wConv = W_CONV * std::max(lapseGap, 0.0);
+                double wConv = W_CONV * std::max(sens, 0.0);
                 // Large-scale ascent where the flow converges, and frontal
                 // lifting where warm air meets cold.
                 double wDiv = W_DIVERGE * std::max(-div[i], 0.0);

@@ -30,6 +30,7 @@ static const Target TARGETS[] = {
 
 struct Score {
     double err = 0, mean = 0, rain = 0, polarRain = 0;
+    double desert = 0, landRain = 0; // share of land under 0.5 mm/day, and its mean
     double spot[8] = {};
 };
 
@@ -49,6 +50,23 @@ static Score judge(const atmosphere::Climatology& c) {
     }
     s.mean = gT / gw;
     s.rain = gR / gw;
+    // How much of the land is desert. About a third of Earth's is arid or
+    // semi-arid; a world where nearly all of it is has a rainfall problem
+    // that a global mean can hide.
+    {
+        double dry = 0, land = 0, lr = 0;
+        for (int i = 0; i < AW * AH; i++) {
+            if (c.elev[i] <= 0.0f) continue;
+            double r = 0;
+            for (int se = 0; se < atmosphere::SEASONS; se++) r += c.rainMmDay[se * AW * AH + i];
+            r /= atmosphere::SEASONS;
+            land += 1;
+            lr += r;
+            if (r < 0.5) dry += 1;
+        }
+        s.desert = land > 0 ? dry / land : 0;
+        s.landRain = land > 0 ? lr / land : 0;
+    }
     int k = 0;
     for (const Target& t : TARGETS) {
         int y = (int)((t.lat / 180.0f + 0.5f) * AH);
@@ -70,6 +88,9 @@ static Score judge(const atmosphere::Climatology& c) {
     // Poles are deserts: rain there above half a mm a day is the latent pump.
     double dp = std::max(s.polarRain - 0.5, 0.0);
     s.err += 2.0 * dp * dp;
+    // Desert share, and the cold end of the world, both weighted like a spot.
+    double dd = (s.desert - 0.30) / 0.15;
+    s.err += 3.0 * dd * dd;
     return s;
 }
 
@@ -111,11 +132,11 @@ int main(int argc, char** argv) {
     // its way there, so it arrives with its whole load. K_DIFF is that pipe.
     // With transport conservative at last, the pump is bounded and the world
     // can be warmed and watered without it running away.
-    const double cAir[] = {0.12};            // EVAP_WATER
-    const double kdiff2[] = {2.0e6, 4.0e6, 1.0e7};  // C_AIR, the seasonal question
-    const double ktDiff[] = {0.16};   // CLOUD_ALBEDO
+    const double cAir[] = {0.12, 0.20};           // EVAP_WATER
+    const double kdiff2[] = {0.8e6, 2.2e6};        // KT_DIFF: heat to the poles
+    const double ktDiff[] = {0.0005, 0.002, 0.008}; // W_CONV: rain over warm land
     const double kSurf[] = {5.0};
-    const double emiss[] = {0.992};
+    const double emiss[] = {0.992, 0.998};
 
     double best = 1e30;
     std::string bestName;
@@ -124,11 +145,14 @@ int main(int argc, char** argv) {
         for (double kt : ktDiff)
             for (double wf : kSurf)
                 for (double em : emiss) {
-                    atmosphere::C_AIR = kd;
+                    atmosphere::KT_DIFF = kd;
+                    atmosphere::C_AIR = 1.0e7;
                     atmosphere::K_DIFF = 2.0e5;
                     atmosphere::EVAP_WATER = ca2;
                     atmosphere::EVAP_LAND = ca2 * 0.28;
-                    atmosphere::CLOUD_ALBEDO = kt;
+                    atmosphere::W_CONV = kt;
+                    atmosphere::K_STABLE = 0.8;
+                    atmosphere::CLOUD_ALBEDO = 0.16;
                     atmosphere::K_SURF_AIR = wf;
                     atmosphere::W_FRONT = 200.0;
                     atmosphere::EMISS = em;
@@ -137,10 +161,10 @@ int main(int argc, char** argv) {
                     Score s = judge(c);
                     char line[512];
                     snprintf(line, sizeof line,
-                             "EV %.2f CAIR %.0e CA %.2f KS %4.1f EM %.3f | err %6.1f | mean %5.1f rain "
-                             "%4.2f polarRain %5.2f | eq %5.1f sub %5.1f mls %5.1f mlw %5.1f 60s "
+                             "EV %.2f KT %.1e WC %.4f KS %4.1f EM %.3f | err %6.1f | mean %5.1f rain "
+                             "%4.2f pRain %4.1f dry %3.0f%% | eq %5.1f sub %5.1f mls %5.1f mlw %5.1f 60s "
                              "%5.1f 60w %5.1f ps %5.1f pw %5.1f",
-                             ca2, kd, kt, wf, em, s.err, s.mean, s.rain, s.polarRain, s.spot[0],
+                             ca2, kd, kt, wf, em, s.err, s.mean, s.rain, s.polarRain, s.desert * 100, s.spot[0],
                              s.spot[1], s.spot[2], s.spot[3], s.spot[4], s.spot[5], s.spot[6],
                              s.spot[7]);
                     fprintf(stderr, "%s\n", line);
