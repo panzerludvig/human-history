@@ -43,13 +43,57 @@ constexpr double SOLAR = 1361.0;
 // 5 W/m2/K of radiation plus 15 of convection, twenty times the old figure,
 // and it stiffens as things warm, which is what stops a runaway.
 constexpr double SIGMA = 5.670374e-8;
-inline double EMISS = 0.975;        // how much of the surface's longwave the air holds
+// The greenhouse is made of water, so it cannot be one number. Dry polar air
+// holding half a millimetre returns almost as much as saturated tropical air
+// holding thirty, which left the winter pole radiating a net 23 W/m2 when
+// life loses 40-60 -- and no amount of cooling elsewhere could get it below
+// about -19 degC. It is also why deserts are cold at night and the tropics
+// are not.
+// The shape of that is not free. A band absorber whose lines are already
+// saturated at their centres grows on the curve of growth: opacity goes as
+// the square root of the amount, or slower -- not linearly, and not as a
+// simple exponential in the amount either. Measured clear-sky downward
+// longwave anchors it at both ends: about 0.6 of a blackbody over the 2 mm
+// of a polar winter, about 0.87 over the 25 mm of a tropical column. Those
+// two numbers fix the pair below; neither is a dial.
+//
+//   eps = 1 - exp(-A * W^B)
+//
+// The previous version used a plain exponential with a reference depth, and
+// that depth had to be moved from 8 mm to 2 to stop the world freezing --
+// which is the sound of a wrong functional form being pushed through the
+// right point.
+constexpr double EMISS_A = 0.735, EMISS_B = 0.318;
+inline double emissOf(double wv) {
+    return 1.0 - std::exp(-EMISS_A * std::pow(std::max(wv, 1e-3), EMISS_B));
+}
 // The whole column. A thinner, more responsive layer (3e6, the lowest
 // kilometre or two) gives a far better seasonal swing and much better
 // mid-latitudes -- and hands the poles back to the latent pump, +22 degC in
 // summer. That trade is the open question on this branch.
 inline double C_AIR = 1.0e7;        // J/m2/K: cp * p / g
-inline double K_SURF_AIR = 5.0;    // W/m2/K, convection into the air above
+// This used to be a single number, and it was swept: 15, then 5 because that
+// scored well on a summer target, then 18 when a transect showed what 5 was
+// really doing -- land at 900 m sitting at +27.7 degC in a 53-degree-south
+// summer with the air above it at -14, a forty-degree gap, humidity collapsed
+// to 6%, and nothing able to rain. Three settings, none of them derived.
+//
+// It is not a number. It is the bulk aerodynamic formula, measured for a
+// century:
+//
+//   H = rho * cp * C_H * |U| * (Ts - Ta)
+//
+// so the coefficient is rho*cp*C_H*|U| and it DEPENDS ON THE WIND. Over the
+// sea at 7 m/s that is about 11 W/m2/K; over rough land at 4 it is about 19.
+// Both of the numbers this was swept between are in there -- they are just
+// different places, not different worlds.
+constexpr double RHO_CP = 1205.0;    // J/m3/K
+constexpr double CH_SEA = 1.3e-3;    // dimensionless exchange coefficient
+constexpr double CH_LAND = 4.0e-3;   // rougher ground mixes harder
+// Wind is never actually zero at the surface: convection stirs the air on
+// its own in a dead calm, and without this the formula decouples ground from
+// sky entirely wherever the flow is slack. The standard gustiness floor.
+constexpr double U_GUST = 2.0;       // m/s
 // A one-layer atmosphere radiates from its middle, so Ta is a mid-troposphere
 // temperature -- around -30 degC on a planet whose ground is at +15. The
 // surface is warmer than that by the lapse rate through the depth between
@@ -57,12 +101,16 @@ inline double K_SURF_AIR = 5.0;    // W/m2/K, convection into the air above
 // the two without it drains some 600 W/m2 out of the ground: measured, and
 // it put 60N summer at -8 degC.
 inline double LAPSE_OFFSET = 27.0;  // K, surface warmer than the emitting level
-// Convection is a one-way street. Ground warmer than the air above it boils
-// heat upward; ground colder than the air sits under an inversion and barely
-// exchanges at all -- which is exactly what a polar winter night is, and why
-// it gets so cold. Treating both directions alike held polar winters at
-// -7 degC by pouring heat back down out of the air.
-inline double K_STABLE = 0.8;       // W/m2/K under an inversion
+// Convection is a one-way street, and that too has a measured form rather
+// than a second constant. Ground warmer than the air boils heat upward at
+// the full exchange rate; ground colder sits under an inversion, and the
+// turbulence doing the exchanging dies away as the stability grows. The
+// Louis stability function is the standard shape -- exchange falling off as
+// 1/(1 + b*Ri) -- and with the temperature gap standing in for the
+// Richardson number that is the line below. A 25-degree inversion leaves
+// about a fifteenth of the neutral rate, which is where the old 0.8 came
+// from; it just no longer has to be told.
+constexpr double STAB_B = 0.5;      // per K of inversion
 // Evaporation carries heat as well as water: it leaves the surface with the
 // vapour and the air gets it back where that vapour condenses. This is the
 // second-largest heat transport on the planet, and the reason a wet surface
@@ -81,6 +129,13 @@ constexpr double SOIL_CAP_MM = 120.0, SOIL_REF_MM = 40.0;
 // temperature, which is why a polar summer sits near zero however long the
 // sun is up.
 constexpr double MELT_DAMP = 0.12;
+// Sea ice insulates. Below freezing a skin of ice cuts the ocean's 25-metre
+// slab off from the air: the ice SURFACE radiates down towards -40 while the
+// water beneath stays near -1.8. Without it the slab's whole heat capacity
+// resists cooling and a polar winter cannot get below about -6 degC -- which
+// is what left them twenty-five degrees too warm, with a radiation budget
+// that was otherwise correct.
+constexpr double C_SEAICE = 2.0e6; // J/m2/K: a thin skin, not an ocean
 // Snow and ice reflect most of what falls on them, and the albedo field was
 // static -- painted once from an analytic first guess, so nothing got
 // brighter when it froze. That is a real feedback and a strong one: it is
@@ -91,10 +146,47 @@ constexpr double ALBEDO_SNOW = 0.62, ALBEDO_SEAICE = 0.55;
 // world locks into a snowball -- measured, at -17 degC in midsummer. Cover
 // builds up over several degrees, as it does in life.
 constexpr double SNOW_FULL_C = -8.0, SNOW_NONE_C = 2.0;
-// Clouds reflect about a fifth of the sunlight. With only ground albedo the
-// model absorbs some 300 W/m2 against Earth's 240, and no greenhouse setting
-// can balance that.
-inline double CLOUD_ALBEDO = 0.17;
+// Clouds were a flat 17% taken off the sunlight everywhere -- in the desert,
+// under the overcast, at the pole. That is not a cloud, it is a planetary
+// albedo correction wearing a cloud's name, and it meant the one radiative
+// feedback that decides where deserts are was absent from the model
+// entirely: the cloud field was diagnosed at the very end, for the picture,
+// and fed back into nothing.
+//
+// A real cloud reflects about 0.31 of what falls on it. Earth is about 0.67
+// covered, and 0.31 * 0.67 is the 0.21 that clouds contribute to planetary
+// albedo -- so this is anchored to the same measurement the flat number was.
+// It now goes where the cloud actually is.
+constexpr double CLOUD_ALB = 0.31;
+// And clouds work the other way too, which a flat shortwave factor cannot
+// express at all: a deck is nearly black in the longwave and shuts whatever
+// window the vapour left open. It is why a cloudy night does not frost.
+constexpr double CLOUD_LW = 0.75;   // share of the remaining window a full deck shuts
+// How much of a cell is under cloud, from how near its column is to
+// saturation. This cannot be derived, and it is worth being exact about why:
+// cloud forms where a LAYER reaches its dew point, and a column that is 61%
+// saturated on the average contains layers that are at 100%. A model with
+// one layer has no access to that distribution, so the mapping from column
+// humidity to cloud cover is a stand-in for structure it does not carry.
+//
+// Which makes it a free function -- and the discipline for a free function is
+// that it gets calibrated against the thing it represents, never against
+// something downstream that it happens to move. So: RH_CLOUD is set so the
+// global mean cloud fraction comes out at the measured 0.67, and the shape is
+// checked against the ends -- about 0.2 in the driest subtropical descent,
+// about 0.9 under the rising branch. It is NOT set by what it does to the
+// temperature, even though it is the strongest lever in the model on exactly
+// that.
+//
+// The formula it replaces, (rh - 0.62)/0.33, produced a global cloud cover of
+// THREE percent. Clouds were reflecting 0.009 of the sunlight instead of
+// 0.21, the planet was absorbing some 68 W/m2 too much, and that was the
+// whole of a six-degree warm bias.
+constexpr double RH_CLOUD = 0.58;
+inline double cloudOf(double rh) {
+    double r = std::max(rh, 0.0) / RH_CLOUD;
+    return 1.0 - std::exp(-r * r);
+}
 constexpr double C_WATER = 1.0e8;               // ~25 m slab ocean
 constexpr double C_LAND = 3.0e6;                // thin soil; scaled by inertia
 // Winds: diagnostic Ekman-style balance r*u - f x u = -grad(P)/rho, solved
@@ -107,12 +199,38 @@ constexpr double FRICTION = 1.0 / (8.0 * 3600.0); // balance friction r
 constexpr double RHO = 1.2;
 constexpr double ADV_EFF = 1.0;                 // surface-wind moisture-advection efficiency
 // Moisture (kg/m^2 precipitable water)
-constexpr double CAP0 = 15.0, CAP_T0 = 15.0, CAP_SCALE = 14.4; // doubles per 10 C
-// Earth evaporates about 2.7 mm a day over its whole surface, 3.2 over the
-// oceans. At 0.20 this model asked for 7 once the heat was allowed to follow
-// the water, and the heat released where that rain fell cooked the poles to
-// +50 degC.
-inline double EVAP_WATER = 0.18, EVAP_LAND = 0.050;         // kg/m^2 per h at full deficit
+// Saturation capacity of the column, in millimetres, as a function of
+// temperature. Two of these three are fixed by measurement and the third has
+// to agree with them:
+//
+//   CAP_SCALE   Clausius-Clapeyron: saturation humidity doubles for every
+//               ten degrees, so the e-folding is 10/ln2 = 14.4 K.
+//   CAP0        saturation at CAP_T0. At 15 degC the vapour pressure is
+//               17.04 hPa, so q_sat = 0.622 * 17.04 / 1013 = 0.0105 -- and
+//               through the SAME column ratio the evaporation term uses,
+//               Q_SCALE, that is 0.0105 * 2100 = 22 mm.
+//
+// It said 15. The two constants that have to be consistent with each other
+// were not, by nearly a factor of two, and the column was carrying 10 mm of
+// water where life carries 25 -- which is a weaker greenhouse, a colder
+// world, and less rain, all from a disagreement between two lines.
+constexpr double CAP0 = 22.0, CAP_T0 = 15.0, CAP_SCALE = 14.4;
+// Evaporation is that same bulk formula with humidity in place of
+// temperature -- it is the same turbulence doing the carrying:
+//
+//   E = rho * C_E * |U| * (q_sat(Ts) - q_air)
+//
+// C_E equals C_H to within a few percent, so it gets no symbol of its own.
+// What this does need is a way to read a specific humidity off a column
+// depth, since the moisture variable here is precipitable water: Earth's
+// column holds about 25 mm against a surface specific humidity of 0.012, a
+// ratio of about 2100 kg/m2. That is a measured property of the real
+// atmosphere's vertical structure, not a fitted one.
+//
+// The old pair were free constants swept between 0.10 and 0.20, with a
+// linear temperature factor bolted on top that double-counted what the
+// saturation capacity already says.
+constexpr double Q_SCALE = 2100.0;  // kg/m2 of column per unit specific humidity
 constexpr double H_FLOW = 1500.0;               // m, depth of the inflow layer
 // Rain falls when moisture exceeds a fraction of the effective capacity.
 // Vertical motion modulates that capacity: uplift (convergence, windward
@@ -133,7 +251,42 @@ constexpr double H_FLOW = 1500.0;               // m, depth of the inflow layer
 // of water in the air against life's 25, and a residence time of 0.2 days
 // against nine. Nothing could survive the trip from sea to land, so 70% of
 // land was desert no matter what was done to the rain over it.
-inline double LIFT_COOL = 14.0;    // capacity halves at about 5 cm/s of ascent
+// Rising air cools and loses the capacity to hold water; sinking air warms
+// and gains it. That is ONE process with a sign, and it had become two
+// coefficients that did not agree: ascent shrank the capacity as exp(-14 w)
+// and descent grew it as the linear 1 + 50|w|. Neither number was derived,
+// and the disagreement between them was doing real damage -- a cell under
+// mild subsidence was granted several times its saturation capacity, filled
+// up to thirty millimetres at minus twelve degrees, and then dumped the lot
+// the moment it drifted somewhere the sign flipped: fifty-one millimetres a
+// day of rain in a band where the wind field is entirely unremarkable.
+//
+// The one coefficient is not free either -- but nor is it a coefficient. A
+// parcel moving vertically at w for the time it takes to rise, UPLIFT_TAU,
+// is DISPLACED by w*tau, and its temperature changes by the lapse rate times
+// that displacement; saturation capacity follows exp(dT/CAP_SCALE).
+//
+// Written as exp(-Gamma*tau/CAP_SCALE * w) that is an exponential in a
+// velocity the model derives from its own wind field, and that is where it
+// went wrong. The exponent worked out at 36, the hour-to-hour scatter in w
+// is about 0.1 m/s, and the mean of an exponential is not the exponential of
+// the mean: half a squared exponent times the variance is +1.6 in the log,
+// so a band whose MEAN ascent was a perfectly ordinary +0.033 m/s came out
+// with a mean capacity of 2261 mm against the 14.5 still air can hold. A
+// hundred and fifty times over-saturation-proof: nothing there could ever
+// reach its dew point, so nothing rained, so the air stayed at three
+// hundredths of a millimetre, so it was transparent to longwave, so the
+// surface sat at -65 with the air fifty degrees warmer above it. That band
+// was the single largest error left in the model and this was all of it.
+//
+// The fix is not a smaller exponent, it is the missing bound. A parcel
+// cannot be displaced further than the moist layer is deep -- 0.1 m/s for a
+// day is 8.6 km, which is out through the top of the troposphere and not
+// something the air actually does. Bounding the DISPLACEMENT bounds the
+// capacity to a factor of 3.5 either way, which is the real range, and the
+// blow-up goes with it.
+constexpr double LAPSE_MOIST = 0.006;   // K/m, a saturated ascent
+constexpr double H_LIFT_MAX = 3000.0;   // m, the depth that holds the water
 // Large-scale ascent is centimetres a second, not metres: a whole grid cell
 // does not rise like a thunderhead. First pass had fronts lifting at 22 cm/s
 // and the world raining 18 mm a day.
@@ -155,15 +308,25 @@ inline double W_CONV = 5.0e-5;     // m/s per W/m2 of sensible heat into the air
 // updraughts of metres a second: capacity collapsed everywhere, and the
 // column rained itself dry the moment anything evaporated into it.
 inline double W_DIVERGE = 1.0;     // it is already the velocity
+// How long a parcel takes to rise through the depth that rains, and so the
+// window over which condensation actually integrates. Faster than this is
+// weather the grid cannot resolve, and it cancels.
+constexpr double UPLIFT_TAU = 86400.0; // s
 inline double W_FRONT = 200.0;    // m/s per (K/m) of temperature gradient
-// The sea breeze, and every other convergence a sharp change in surface
-// heating drives. The balanced wind is computed from a height field smoothed
-// over a thousand kilometres, which is right for the large-scale flow and
-// erases the very thing that wets a coastline: land and sea heat differently,
-// air converges at the join, and it rains there. Without it the model rained
-// 33% MORE on continental interiors than on their coasts -- life is the other
-// way about, and emphatically so.
-inline double W_COAST = 900.0;    // m/s per (K/m) of SURFACE temperature gradient
+// (There was a W_COAST here: uplift driven by the gradient of the SURFACE
+// temperature, added to wet the coasts when interiors were raining a third
+// more than they should. It was a fitted duplicate of the frontal term above
+// reading the wrong field, and reading that field is what made it wrong. A
+// front is a slope in the LOW-LEVEL AIR, and air is continuous; a skin
+// temperature is not. Across a sea-ice edge the ground jumps fifty-seven
+// degrees in a single cell, which the term read as a quarter of a metre per
+// second of ascent, which collapsed the saturation capacity to a fortieth
+// and rained the whole column out on the spot. That is what left the band
+// from 60 to 80 degrees holding a hundredth of a millimetre of water --
+// transparent, radiating freely to space, and sitting at -65 with air at
+// -12.5 fifty degrees above it. It also explains the coast-interior contrast
+// it was hired to fix, which was never a missing sea breeze: it was the
+// interiors raining out water that should have reached them.)
 // Air that is sinking is warming, and warming air is further from
 // saturation: that is why the subtropical oceans are deserts under the
 // descending branch of the Hadley cell, and why their moisture survives to
@@ -175,7 +338,9 @@ inline double W_COAST = 900.0;    // m/s per (K/m) of SURFACE temperature gradie
 // capacity by under one per cent. Subsidence is what makes the subtropical
 // highs deserts and what keeps the air over a cool coastal sea from raining
 // its load before it reaches the shore.
-inline double SUBSIDE_DRY = 50.0;   // extra capacity per (m/s) of descent
+// (SUBSIDE_DRY lived here: a second, linear, unrelated coefficient for the
+// descending half of the same process. It is LIFT_K now, with the sign it
+// always had.)
 // Rain begins here, so the air settles just above it: at 0.80 the whole
 // world sat at 85% humidity, which -- since cloudiness was humidity, one for
 // one -- covered the globe in cloud. A column is about half saturated in
@@ -253,6 +418,11 @@ struct Climatology {
     double dbgWv = 0, dbgWind = 0, dbgRH = 0;     // PROBE: water, wind, saturation
     // [season][cell]
     std::vector<float> meanT, rainMmDay, snowMmDay, rainProb, windU, windV, cloud, diurnal;
+    // The air itself, kept for diagnosis and for the map: water in the
+    // column, how near saturation it is, the height field that is the
+    // pressure map, and the air's own temperature.
+    std::vector<float> wv, rh, press, airT;
+    std::vector<float> upConv, upDiv, upFront, upOrog, capX; // PROBE: what lifts the air
     std::vector<float> elev; // [cell], the model's smoothed elevation (for lapse correction)
     // elev has one band; bilinearAt/annualAt want [season][cell]. A repeated
     // view is built eagerly at the end of build() -- the lazy path races when
@@ -267,7 +437,9 @@ struct Climatology {
         return elevRep;
     }
     Climatology() {
-        for (auto* v : {&meanT, &rainMmDay, &snowMmDay, &rainProb, &windU, &windV, &cloud, &diurnal})
+        for (auto* v : {&meanT, &rainMmDay, &snowMmDay, &rainProb, &windU, &windV, &cloud,
+                        &diurnal, &wv, &rh, &press, &airT, &upConv, &upDiv, &upFront,
+                        &upOrog, &capX})
             v->assign(SEASONS * W * H, 0.0f);
     }
     static int seasonOfDay(int doy) { // DJF=0 starting Dec 1 (day 334)
@@ -279,6 +451,20 @@ struct Climatology {
 };
 
 inline double capOf(double T) { return CAP0 * std::exp((T - CAP_T0) / CAP_SCALE); }
+// How much water the COLUMN can hold, which is a property of the air and not
+// of the ground beneath it. This was capOf(T_surface), and that is the
+// mechanism the whole polar collapse was hiding behind: ground at -67 has a
+// saturation capacity of five hundredths of a millimetre, so polar air was
+// allowed to hold essentially nothing -- measured at 0.01 mm where life
+// carries one or two. Nothing that dry has any greenhouse effect at all
+// (emissivity 0.15), so it radiated freely to space, got colder, and was
+// permitted less water still. A runaway with a positive feedback on both
+// ends, driven entirely by asking the wrong thermometer.
+//
+// The near-surface air is the emitting layer plus the lapse through the
+// depth between them -- the same quantity the sensible heat term already
+// uses to decide which way the convection goes.
+inline double capAirOf(double Ta) { return capOf(Ta + LAPSE_OFFSET); }
 
 inline int wrapX(int x) { return (x % W + W) % W; }
 
@@ -296,6 +482,19 @@ struct Model {
     std::vector<double> soil;          // land water store, mm: what there is to evaporate
     std::vector<double> evapAcc, rainAcc, madeAcc; // PROBE, one cell per thread: no atomics
     std::vector<double> capArr;                    // how much each cell's air can hold
+    std::vector<double> cloudF;                    // and how much of it has condensed out
+    std::vector<double> pConv, pDiv, pFront, pOrog, pOro; // PROBE: uplift, by cause
+    std::vector<double> divSm; // the ascent that lasts, as opposed to the ascent that wobbles
+    // ONE capacity per cell, and everything that asks what the air can hold
+    // asks this. It used to be two: transport priced a parcel's humidity
+    // against the capacity of still air, while rain measured the excess
+    // against the capacity the vertical motion had left. A cell could
+    // therefore be filled to the first ceiling and only rain against the
+    // second, and it did -- thirty millimetres of water at minus twelve
+    // degrees, a diagnosed relative humidity of 2903%, and fifty-one
+    // millimetres a day falling out of it wherever the sign of the ascent
+    // happened to change.
+    std::vector<double> capEff;
     std::vector<double> fluxE, fluxN;              // moisture across each cell's east/north face
     std::vector<double> wvAcc;                     // PROBE: column water over time
     double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
@@ -352,13 +551,15 @@ struct Model {
         v.assign(W * H, 0.0);
         for (int i = 0; i < W * H; i++) {
             T[i] = terrain::temperatureC(latRad[i], elev[i]);
-            Wv[i] = 0.5 * capOf(T[i]);
         }
         nT = T; nW = Wv; nu = u; nv = v;
         div.assign(W * H, 0.0);
         rainStep.assign(W * H, 0.0);
         Tsl.assign(W * H, 0.0);
         Ta = T; // the air starts wherever the ground is
+        // and the seed humidity follows the air, not the ground -- Ta has to
+        // exist before it can be asked.
+        for (int i = 0; i < W * H; i++) Wv[i] = 0.5 * capAirOf(Ta[i]);
         nTa.assign(W * H, 0.0);
         Tasl.assign(W * H, 0.0);
         hP.assign(W * H, 0.0);
@@ -372,6 +573,14 @@ struct Model {
         rainAcc.assign(W * H, 0.0);
         madeAcc.assign(W * H, 0.0);
         capArr.assign(W * H, 0.0);
+        cloudF.assign(W * H, 0.5);
+        pConv.assign(W * H, 0.0);
+        pDiv.assign(W * H, 0.0);
+        pFront.assign(W * H, 0.0);
+        pOrog.assign(W * H, 0.0);
+        pOro.assign(W * H, 0.0);
+        divSm.assign(W * H, 0.0);
+        capEff.assign(W * H, 0.0);
         fluxE.assign(W * H, 0.0);
         fluxN.assign(W * H, 0.0);
         wvAcc.assign(W * H, 0.0);
@@ -494,8 +703,17 @@ struct Model {
 #pragma omp parallel for
         for (int i = 0; i < W * H; i++) {
             Tsl[i] = T[i] + 6.5 * elev[i] / 1000.0;
-            Tasl[i] = Ta[i] + 6.5 * elev[i] / 1000.0;
-            capArr[i] = std::max(capOf(T[i]), 0.05);
+            // The SURFACE gets a sea-level reduction, because a mountain top
+            // really is colder than the valley and mixing that away would
+            // erase every highland. The AIR does not: Ta is the temperature
+            // of the whole column above the cell, and the column does not get
+            // colder because the ground under it is higher. Adding the lapse
+            // to it put a twenty-degree cliff in the air field at every coast
+            // with mountains behind it -- invisible while the air only
+            // diffused, and a large phantom heat source the moment the wind
+            // began to advect it.
+            Tasl[i] = Ta[i];
+            capArr[i] = std::max(capEff[i] > 0.0 ? capEff[i] : capAirOf(Ta[i]), 0.05);
         }
 
         // The air moves itself: six ten-minute steps of thickness and wind
@@ -516,7 +734,58 @@ struct Model {
                 double oro = (u[i] * (elev[idx(wrapX(x + 1), y)] - elev[idx(wrapX(x - 1), y)]) / (2 * dx) +
                               v[i] * (elev[idx(x, y + 1)] - elev[idx(x, y - 1)]) / (2 * dy));
                 div[i] = wup + std::max(oro, 0.0) - std::max(-oro, 0.0) * 0.5;
+                pOro[i] = std::max(oro, 0.0);
             }
+        }
+        // Divergence is a DERIVATIVE of a field that is only resolved down to
+        // a few cells, so at the grid scale it is noise, and this one gets
+        // multiplied by 1500 m and read as a vertical wind. Measured: 0.59 m/s
+        // of ascent in the band from 68 to 76 degrees against 0.002 in the
+        // tropics -- three orders of magnitude, where life varies by less than
+        // one. That collapsed the saturation capacity to a fortieth, rained
+        // the band dry to a hundredth of a millimetre, made it transparent to
+        // longwave, and sat it at -65 with the air fifty degrees warmer.
+        //
+        // The wind that produced it is already smoothed to the scale the grid
+        // can carry -- that is what polarFilter does for u, v and the height.
+        // Its derivative has to be held to the same standard, or the model
+        // reads its own truncation error as weather. One Laplacian pass takes
+        // out the two-cell component a centred difference cannot represent;
+        // the polar filter takes out what the crowding meridians add.
+        {
+            static std::vector<double> sm;
+            sm.resize(W * H);
+#pragma omp parallel for
+            for (int y = 1; y < H - 1; y++)
+                for (int x = 0; x < W; x++) {
+                    int i = idx(x, y);
+                    sm[i] = 0.5 * div[i] +
+                            0.125 * (div[idx(wrapX(x + 1), y)] + div[idx(wrapX(x - 1), y)] +
+                                     div[idx(x, y + 1)] + div[idx(x, y - 1)]);
+                }
+            for (int x = 0; x < W; x++) {
+                sm[idx(x, 0)] = div[idx(x, 0)];
+                sm[idx(x, H - 1)] = div[idx(x, H - 1)];
+            }
+            div.swap(sm);
+            polarFilter(div);
+            // And smoothing in space is only half of it, because the error
+            // that mattered was in TIME. Uplift enters the rain through
+            // max(div, 0) and dryness through max(-div, 0), and a rectifier
+            // does not care that the two halves of a wave cancel: a gravity
+            // wave rocking a cell up and down condenses nothing over its
+            // period, but taking only the positive half of it reads as a
+            // permanent updraught. Measured: 0.39 m/s of mean ascent in the
+            // band from 68 to 80 degrees out of a wind field whose largest
+            // seasonal-mean speed there is 6.4 m/s and whose meridional shear
+            // accounts for 0.017. The rest was the wave, counted once per
+            // hour and never allowed to come back down.
+            //
+            // Condensation integrates over the time a parcel takes to rise,
+            // which is about a day. Anything faster than that is weather the
+            // grid cannot resolve, and it averages out.
+            for (int i = 0; i < W * H; i++)
+                divSm[i] += (div[i] - divSm[i]) * (DT / UPLIFT_TAU);
         }
 
         // Moisture transport, done conservatively and in three passes.
@@ -576,7 +845,8 @@ struct Model {
                     fluxN[i] *= fluxN[i] > 0 ? capArr[i] : capArr[yn];
                 }
 #pragma omp parallel for
-            for (int i = 0; i < W * H; i++) capArr[i] = std::max(capOf(T[i]), 0.05);
+            for (int i = 0; i < W * H; i++)
+                capArr[i] = std::max(capEff[i] > 0.0 ? capEff[i] : capAirOf(Ta[i]), 0.05);
         }
 
         // Thermodynamics + moisture, upwind advection + diffusion.
@@ -611,7 +881,10 @@ struct Model {
                                           0.0, 1.0);
                 double alb = albedo[i] + white * ((water[i] ? ALBEDO_SEAICE : ALBEDO_SNOW) -
                                                   albedo[i]);
-                double sw = SOLAR * std::max(cosz, 0.0) * (1.0 - alb) * (1.0 - CLOUD_ALBEDO);
+                // What the cloud overhead is doing, both ways. It was
+                // drawn on the map and nowhere else until now.
+                double cf = cloudF[i];
+                double sw = SOLAR * std::max(cosz, 0.0) * (1.0 - alb) * (1.0 - CLOUD_ALB * cf);
                 // Longwave, both ways. The air holds EMISS of what the ground
                 // sends up and radiates that much again from each of its two
                 // faces: half to space, half back down. The half coming down
@@ -619,16 +892,51 @@ struct Model {
                 // to express.
                 double Tk = T[i] + 273.15, Tak = Ta[i] + 273.15;
                 double lwUp = SIGMA * Tk * Tk * Tk * Tk;
-                double lwDown = EMISS * SIGMA * Tak * Tak * Tak * Tak;
+                // Vapour first: the clear-sky greenhouse, radiating from the
+                // level the column emits from.
+                double em0 = emissOf(Wv[i]);
+                double sTa4 = SIGMA * Tak * Tak * Tak * Tak;
+                // Then the cloud, which closes the window the vapour left --
+                // and does NOT radiate at the same temperature. A cloud BASE
+                // is low and warm; the emitting level is the middle of the
+                // column, twenty-seven degrees colder. Radiating the cloud at
+                // Ta gives it the shortwave effect of a cloud and the
+                // longwave effect of nothing, which is why switching the
+                // cover on at its measured 61% took the world from six
+                // degrees too warm to six too cold in one step.
+                //
+                // Its TOP, which is what faces space, really is up near the
+                // emitting level, so the column still radiates upward at Ta.
+                // Warm down, cold up: that asymmetry is the whole reason a
+                // cloudy night does not frost.
+                double cldFrac = (1.0 - em0) * CLOUD_LW * cf;
+                double em = em0 + cldFrac;
+                double Tcb = Ta[i] + LAPSE_OFFSET + 273.15;
+                double lwDown = em0 * sTa4 + cldFrac * SIGMA * Tcb * Tcb * Tcb * Tcb;
+                double heatHere = (water[i] && T[i] < -1.0) ? C_SEAICE : heatC[i];
+                // The exchange coefficient, from the wind that is actually
+                // blowing here. Surface wind is about seven tenths of the
+                // layer's, and never less than the stirring convection does
+                // on its own.
+                double spd = std::sqrt(0.49 * (u[i] * u[i] + v[i] * v[i]) + U_GUST * U_GUST);
+                double kExch = RHO_CP * (water[i] ? CH_SEA : CH_LAND) * spd;
                 double lapseGap = T[i] - Ta[i] - LAPSE_OFFSET;
-                double sens = (lapseGap > 0 ? K_SURF_AIR : K_STABLE) * lapseGap;
+                double stab = lapseGap > 0 ? 1.0 : 1.0 / (1.0 + STAB_B * (-lapseGap));
+                double sens = kExch * stab * lapseGap;
                 // Evaporation, priced: what the air can still hold, what the
                 // ground has to give, and what the sun can pay for.
-                double cap = capOf(T[i]) * (1.0 + SUBSIDE_DRY * std::max(-div[i], 0.0));
+                // Two different capacities, and confusing them was the bug.
+                // What the air can HOLD is set by the air's own temperature;
+                // what the surface OFFERS is the saturation humidity of the
+                // skin, which is why a warm sea steams into cool air.
+                double cap = capAirOf(Ta[i]);
+                double capSkin = capOf(T[i]);
                 double supply = water[i] ? 1.0 : std::clamp(soil[i] / SOIL_REF_MM, 0.0, 1.0);
-                double evap = (water[i] ? EVAP_WATER : EVAP_LAND) * supply *
-                              std::max(1.0 - Wv[i] / std::max(cap, 1.0), 0.0) *
-                              std::clamp(0.3 + T[i] / 25.0, 0.0, 1.5);
+                // Same turbulence, same coefficient, humidity deficit in
+                // place of temperature difference. The deficit is read off
+                // the column through the depth Earth actually has.
+                double dq = std::max(capSkin - Wv[i], 0.0) / Q_SCALE;
+                double evap = RHO * (water[i] ? CH_SEA : CH_LAND) * spd * dq * supply * DT;
                 // What the sun pays over a whole day, not what it pays at noon:
                 // capping against the instantaneous figure lets the daylight
                 // hours evaporate three or four times a day's worth of water.
@@ -636,7 +944,7 @@ struct Model {
                 double swDay = SOLAR / 3.14159265 *
                                (h0 * std::sin(lat) * std::sin(dec) +
                                 std::cos(lat) * std::cos(dec) * std::sin(h0)) *
-                               (1.0 - alb) * (1.0 - CLOUD_ALBEDO);
+                               (1.0 - alb) * (1.0 - CLOUD_ALB * cf);
                 double afford = std::max(swDay, 0.0) +
                                 (water[i] ? STORED_FLUX_WATER : STORED_FLUX_LAND);
                 double lFlux = evap * LATENT_J_PER_KG / DT;
@@ -649,20 +957,62 @@ struct Model {
                 // above it.
                 double uMax = 0.8 * dx / DT, vMax = 0.8 * dy / DT;
                 double ua = std::clamp(u[i], -uMax, uMax), va = std::clamp(v[i], -vMax, vMax);
-                double difT = ktx * (Tasl[xe] + Tasl[xw] - 2 * Tasl[i]) +
-                              kty * (fN * (Tasl[yn] - Tasl[i]) + fS * (Tasl[ys] - Tasl[i]));
-                double dT = (sw - lwUp + lwDown - sens - lFlux) / heatC[i] * DT;
+                // An explicit step cannot move more than a cell's worth of
+                // anything per step, and diffusion and advection spend from
+                // the SAME budget. The two diffusion caps below were set when
+                // there was no advection to share with; adding the wind put
+                // the pair of them over the line exactly where the meridians
+                // crowd. At 72 degrees the zonal cap binds at 0.22, its twin
+                // costs another 0.25, and five metres a second across a
+                // 64 km cell is 0.28 more: the centre of the stencil is left
+                // weighing 0.03, and by 80 degrees it is negative. That is an
+                // oscillation, not a climate. It ran the air temperature to
+                // +42 in a band whose mean is -12.5, and since saturation
+                // capacity is exponential in temperature, the MEAN capacity
+                // came out at 2287 mm where still air holds 14.5. Nothing
+                // saturated, nothing rained, and the band froze.
+                //
+                // So: measure what the wind has already spent, and let the
+                // diffusion have what is left.
+                double kxa = ktx, kya = kty;
+                {
+                    double cour = std::fabs(ua) * DT / dx + std::fabs(va) * DT / dy;
+                    double want = 2 * kxa + kya * (fN + fS);
+                    double room = std::max(0.0, 0.8 - cour);
+                    if (want > room) {
+                        double sc = want > 0 ? room / want : 0.0;
+                        kxa *= sc;
+                        kya *= sc;
+                    }
+                }
+                double difT = kxa * (Tasl[xe] + Tasl[xw] - 2 * Tasl[i]) +
+                              kya * (fN * (Tasl[yn] - Tasl[i]) + fS * (Tasl[ys] - Tasl[i]));
+                // The wind carries the air's heat with it. It has always
+                // carried the air's WATER -- the moisture advection below is
+                // the whole reason the dynamics were built -- but the heat
+                // was left to diffuse, so the same wind that took a parcel's
+                // humidity north left its warmth behind. Diffusion is what an
+                // eddy does; a trade wind is not an eddy. Upwind form, which
+                // is monotone: no new extremes are invented at the grid
+                // scale, and a cell can only be given what is upstream of it.
+                double advT = -(ua > 0 ? ua * (Tasl[i] - Tasl[xw]) : ua * (Tasl[xe] - Tasl[i])) / dx -
+                              (va > 0 ? va * (Tasl[i] - Tasl[ys]) : va * (Tasl[yn] - Tasl[i])) / dy;
+                advT *= DT;
+                double dT = (sw - lwUp + lwDown - sens - lFlux) / heatHere * DT;
                 if (water[i] && T[i] > -2.0 && T[i] < 2.0 && dT > 0) dT *= MELT_DAMP;
                 nT[i] = std::clamp(T[i] + dT, -90.0, 65.0);
                 // The air keeps what the ground gave it and what the rain
                 // released, and radiates from both its faces.
                 double condense = rainStep[i] * LATENT_J_PER_KG / C_AIR;
-                nTa[i] = std::clamp(Ta[i] + (EMISS * lwUp - 2.0 * lwDown + sens) / C_AIR * DT +
-                                        condense + difT,
+                // The column keeps what it absorbs from below, less what it
+                // sends down and what it sends up. Up is at Ta; down is the
+                // warmer figure above.
+                nTa[i] = std::clamp(Ta[i] + (em * lwUp - lwDown - em * sTa4 + sens) / C_AIR * DT +
+                                        condense + difT + advT,
                                     -95.0, 70.0);
                 if (i == probe) { // one cell only: no write contention
-                    pSw += sw / heatC[i] * DT;
-                    pOlr -= (lwUp - lwDown) / heatC[i] * DT;
+                    pSw += sw / heatHere * DT;
+                    pOlr -= (lwUp - lwDown) / heatHere * DT;
                     pDif += difT;
                 }
                 // How fast the air here is rising, from every cause there is.
@@ -673,15 +1023,25 @@ struct Model {
                 double wConv = W_CONV * std::max(sens, 0.0);
                 // Large-scale ascent where the flow converges, and frontal
                 // lifting where warm air meets cold.
-                double wDiv = W_DIVERGE * std::max(div[i], 0.0);
+                // Signed: convergence lifts, divergence sinks, and the
+                // subtropical deserts are the sinking half of the Hadley
+                // cell. Taking only the positive part is what made the
+                // rectifier that had to be dealt with above.
+                double wDiv = W_DIVERGE * divSm[i];
                 double wFront = W_FRONT * std::sqrt(gtx * gtx + gty * gty);
-                double gsx = (T[xe] - T[xw]) / (2 * dx), gsy = (T[yn] - T[ys]) / (2 * dy);
-                double wCoast = W_COAST * std::sqrt(gsx * gsx + gsy * gsy);
-                double wUp = wConv + wDiv + wFront + wCoast;
+                double wUp = wConv + wDiv + wFront;
+                pConv[i] = wConv;
+                pDiv[i] = wDiv;
+                pFront[i] = wFront;
+                pOrog[i] = pOro[i];
                 // Ascent cools the air and takes its capacity down with it;
                 // descent warms it and gives capacity back. What is left over
                 // is what falls.
-                double capLift = cap * std::exp(-LIFT_COOL * wUp);
+                // How far the air is actually displaced, and how much
+                // colder that leaves it.
+                double dz = std::clamp(wUp * UPLIFT_TAU, -H_LIFT_MAX, H_LIFT_MAX);
+                double capLift = cap * std::exp(-LAPSE_MOIST * dz / CAP_SCALE);
+                capEff[i] = std::max(capLift, 0.05);
                 double rain = std::max(Wv[i] - RAIN_FRAC * capLift, 0.0) * RAIN_RATE;
                 double fe = fluxE[i], fw = fluxE[xw], fn = fluxN[i], fs = fluxN[ys];
                 // Flux form with per-face CFL limiting still lets four faces
@@ -724,6 +1084,23 @@ struct Model {
                     rain = std::max(0.0, rain + raw);
                     raw = 0.0;
                 }
+                // Air cannot hold more than it can hold. The rain term above
+                // is a sub-grid onset -- part of a cell saturates before the
+                // whole of it does -- and it takes a fraction of the excess
+                // per hour, which is right for the approach to saturation and
+                // wrong past it. Without a ceiling the model reported a mean
+                // relative humidity of 112%, which is not a calibration error
+                // but water sitting in air that physically cannot contain it,
+                // radiating like a greenhouse that is not there.
+                if (raw > capLift) {
+                    rain += raw - capLift;
+                    raw = capLift;
+                }
+                // Cloud is what condensed: the saturated share of the cell,
+                // reckoned against the capacity the ascent has left it. This
+                // is read back at the top of the next hour, and is now the
+                // only thing standing between the sun and the ground.
+                cloudF[i] = cloudOf(raw / std::max(capLift, 0.05));
                 evapAcc[i] += evap;
                 wvAcc[i] += Wv[i];
                 madeAcc[i] += 0; // (kept for the water probe)
@@ -733,7 +1110,7 @@ struct Model {
                 nW[i] = std::clamp(raw, 0.0, 90.0);
                 if (!water[i]) soil[i] = std::clamp(soil[i] + rain - evap, 0.0, SOIL_CAP_MM);
                 rainStep[i] = rain;
-                (void)ua; (void)va;
+
             }
         }
         // polar rows: copy neighbours
@@ -797,8 +1174,17 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                 // Cloud is not humidity: dry air has none, and cover comes on
                 // over the last third of the way to saturation.
                 {
-                    double rh = m.Wv[i] / std::max(capOf(m.T[i]), 0.05);
-                    c.cloud[si] += (float)std::clamp((rh - 0.62) / 0.33, 0.0, 1.0);
+                    double rh = m.Wv[i] / std::max(m.capEff[i], 0.05);
+                    c.cloud[si] += (float)cloudOf(rh);
+                    c.wv[si] += (float)m.Wv[i];
+                    c.rh[si] += (float)rh;
+                    c.press[si] += (float)m.hP[i];
+                    c.airT[si] += (float)m.Ta[i];
+                    c.upConv[si] += (float)m.pConv[i];
+                    c.upDiv[si] += (float)m.pDiv[i];
+                    c.upFront[si] += (float)m.pFront[i];
+                    c.upOrog[si] += (float)m.pOrog[i];
+                    c.capX[si] += (float)m.capEff[i];
                 }
             }
         }
@@ -835,7 +1221,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                 mk += m.madeAcc[i] * wgt;
                 wv += m.wvAcc[i] * wgt;
                 wnd += std::sqrt(m.u[i] * m.u[i] + m.v[i] * m.v[i]) * wgt;
-                rh += (m.Wv[i] / std::max(capOf(m.T[i]), 0.05)) * wgt;
+                rh += (m.Wv[i] / std::max(m.capEff[i], 0.05)) * wgt;
                 wsum += wgt;
             }
         }
@@ -859,6 +1245,15 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             c.windU[si] /= (float)hours;
             c.windV[si] /= (float)hours;
             c.cloud[si] /= (float)hours;
+            c.wv[si] /= (float)hours;
+            c.rh[si] /= (float)hours;
+            c.press[si] /= (float)hours;
+            c.airT[si] /= (float)hours;
+            c.upConv[si] /= (float)hours;
+            c.upDiv[si] /= (float)hours;
+            c.upFront[si] /= (float)hours;
+            c.upOrog[si] /= (float)hours;
+            c.capX[si] /= (float)hours;
             c.diurnal[si] /= (float)cnt[s];
         }
     }

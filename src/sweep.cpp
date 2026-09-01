@@ -30,10 +30,15 @@ static const Target TARGETS[] = {
 
 struct Score {
     double err = 0, mean = 0, rain = 0, polarRain = 0;
-    double desert = 0, landRain = 0; // share of land under 0.5 mm/day, and its mean
+    double desert = 0, landRain = 0, cloud = 0; // share of land under 0.5 mm/day, and its mean
     double coastRain = 0, innerRain = 0; // and where on the land it falls
     double spot[8] = {};
 };
+
+// what still air at this temperature could hold, for the ratio below
+static double capAirRef(double Ta) {
+    return atmosphere::capAirOf(Ta);
+}
 
 static Score judge(const atmosphere::Climatology& c) {
     const int AW = atmosphere::W, AH = atmosphere::H;
@@ -45,11 +50,13 @@ static Score judge(const atmosphere::Climatology& c) {
             for (int se = 0; se < atmosphere::SEASONS; se++) {
                 int i = se * AW * AH + y * AW + x;
                 gT += c.meanT[i] * w;
+                s.cloud += c.cloud[i] * w;
                 gR += c.rainMmDay[i] * w;
                 gw += w;
             }
     }
     s.mean = gT / gw;
+    s.cloud /= gw;
     s.rain = gR / gw;
     // How much of the land is desert. About a third of Earth's is arid or
     // semi-arid; a world where nearly all of it is has a rainfall problem
@@ -133,63 +140,67 @@ int main(int argc, char** argv) {
     hydrology::Result hy = hydrology::build(cp, seaLevel, rot, offset, 12000.0f, pf);
     fprintf(stderr, "sweeping...\n");
 
-    // Round two. The first grid showed the trade clearly: a thin air layer
-    // gives seasons and hands the poles to the latent pump, a thick one is
-    // stable and freezes the summers. The suspect is the coupling itself --
-    // land is welded to an air layer that diffusion has smeared into a
-    // hemispheric mean, so a continent cannot have its own summer.
-    // Round three, at the corner neither of the first two visited: weak
-    // surface-air coupling (which gives continents their summer) together
-    // with weak frontal lifting (which is what feeds the polar pump).
-    // Round four. Everything but the poles is on target; what is left is that
-    // moisture DIFFUSES to the pole rather than travelling by wind and raining
-    // its way there, so it arrives with its whole load. K_DIFF is that pipe.
-    // With transport conservative at last, the pump is bounded and the world
-    // can be warmed and watered without it running away.
-    const double cAir[] = {0.18};                 // EVAP_WATER
-    const double kdiff2[] = {1.5e6};               // KT_DIFF
-    const double ktDiff[] = {0.17};               // CLOUD_ALBEDO
-    const double kSurf[] = {5.0};
-    const double emiss[] = {0.975, 0.99};
-
-    double best = 1e30;
-    std::string bestName;
-    for (double ca2 : cAir)
-      for (double kd : kdiff2)
-        for (double kt : ktDiff)
-            for (double wf : kSurf)
-                for (double em : emiss) {
-                    atmosphere::KT_DIFF = kd;
-                    atmosphere::C_AIR = 1.0e7;
-                    atmosphere::K_DIFF = 2.0e5;
-                    atmosphere::EVAP_WATER = ca2;
-                    atmosphere::EVAP_LAND = ca2 * 0.28;
-                    atmosphere::CLOUD_ALBEDO = kt;
-                    atmosphere::K_STABLE = 0.8;
-
-                    atmosphere::K_SURF_AIR = wf;
-                    atmosphere::W_FRONT = 200.0;
-                    atmosphere::EMISS = em;
-                    atmosphere::Climatology c =
-                        atmosphere::build(cp, seaLevel, rot, offset, pf, hy, false);
-                    Score s = judge(c);
-                    char line[512];
-                    snprintf(line, sizeof line,
-                             "EV %.2f KT %.1e CA %.2f KS %4.1f EM %.3f | err %6.1f | mean %5.1f rain "
-                             "%4.2f pRain %4.1f dry %3.0f%% | eq %5.1f sub %5.1f mls %5.1f mlw %5.1f 60s "
-                             "%5.1f 60w %5.1f ps %5.1f pw %5.1f",
-                             ca2, kd, kt, wf, em, s.err, s.mean, s.rain, s.polarRain, s.desert * 100, s.spot[0],
-                             s.spot[1], s.spot[2], s.spot[3], s.spot[4], s.spot[5], s.spot[6],
-                             s.spot[7]);
-                    fprintf(stderr, "%s | Wv %5.2f mm, %4.1f d, wind %4.1f m/s, RH %3.0f%%, coast %4.2f inland %4.2f\n", line, c.dbgWv,
-                            c.dbgWv / std::max(c.dbgRain, 1e-6), c.dbgWind, c.dbgRH * 100, s.coastRain,
-                            s.innerRain);
-                    fflush(stderr);
-                    if (s.err < best) {
-                        best = s.err;
-                        bestName = line;
-                    }
-                }
-    fprintf(stderr, "\nBEST\n%s\n", bestName.c_str());
+    // The sweep is no longer a sweep. Everything it used to vary --
+    // surface-air exchange, evaporation, cloud albedo, emissivity -- has a
+    // measured value or a measured formula, and is now set from that rather
+    // than fitted to the score. What is left is a single evaluation, and its
+    // job is not to find a good setting but to report the RESIDUAL: the part
+    // of the error that no correct value explains, which is the part that
+    // names the mechanism still missing.
+    {
+        atmosphere::Climatology c = atmosphere::build(cp, seaLevel, rot, offset, pf, hy, false);
+        Score s = judge(c);
+        const int AW = atmosphere::W, AH = atmosphere::H;
+        fprintf(stderr,
+                "PHYSICAL | err %6.1f | mean %5.1f rain %4.2f pRain %4.1f dry %3.0f%% cloud %3.0f%%\n"
+                "  eq %5.1f sub %5.1f mls %5.1f mlw %5.1f 60s %5.1f 60w %5.1f ps %5.1f pw %5.1f\n"
+                "  want   27      30       20      -5      15     -25       0     -45\n"
+                "  Wv %5.2f mm, residence %4.1f d, wind %4.1f m/s, RH %3.0f%%, coast %4.2f inland %4.2f\n",
+                s.err, s.mean, s.rain, s.polarRain, s.desert * 100, s.cloud * 100, s.spot[0], s.spot[1],
+                s.spot[2], s.spot[3], s.spot[4], s.spot[5], s.spot[6], s.spot[7], c.dbgWv,
+                c.dbgWv / std::max(c.dbgRain, 1e-6), c.dbgWind, c.dbgRH * 100, s.coastRain,
+                s.innerRain);
+        // The zonal profile, every four degrees. Spot latitudes hide
+        // inversions: a reading of -32 at 62 degrees next to -4 at 82 is not
+        // a calibration error, it is something structurally wrong in between,
+        // and only the whole curve says where.
+        fprintf(stderr, "\n%6s %7s %7s %7s %7s %7s %7s %7s %7s %7s %7s %7s\n", "lat", "DJF", "JJA", "rain", "Wv",
+                "cap", "wConv", "wDiv", "wFrnt", "wOro", "wSum", "capR");
+        for (int y = AH - 2; y >= 1; y -= 2) {
+            double la = ((y + 0.5) / (double)AH - 0.5) * 180.0;
+            double w = 0, sm = 0, ai = 0, rn = 0, cl = 0, ld = 0, ev = 0, wv = 0;
+            double uc = 0, ud = 0, uf = 0, uo = 0, uu = 0, vv = 0, umx = 0, dmx = 0;
+            for (int x = 0; x < AW; x++) {
+                w += c.meanT[0 * AW * AH + y * AW + x];
+                sm += c.meanT[2 * AW * AH + y * AW + x];
+                ai += c.airT[2 * AW * AH + y * AW + x];
+                for (int se = 0; se < atmosphere::SEASONS; se++)
+                    rn += c.rainMmDay[se * AW * AH + y * AW + x] / atmosphere::SEASONS;
+                cl += c.cloud[2 * AW * AH + y * AW + x];
+                ld += c.elev[y * AW + x] > 0 ? 1 : 0;
+                ev += std::max(c.elev[y * AW + x], 0.0f);
+                wv += c.wv[2 * AW * AH + y * AW + x];
+                uc += c.upConv[2 * AW * AH + y * AW + x];
+                ud += c.upDiv[2 * AW * AH + y * AW + x];
+                uf += c.upFront[2 * AW * AH + y * AW + x];
+                uo += c.upOrog[2 * AW * AH + y * AW + x];
+                double uh = c.windU[2 * AW * AH + y * AW + x];
+                double vh = c.windV[2 * AW * AH + y * AW + x];
+                uu += uh;
+                vv += vh;
+                umx = std::max(umx, std::sqrt(uh * uh + vh * vh));
+                dmx += c.capX[2 * AW * AH + y * AW + x];
+            }
+            double wsum = (uc + ud + uf + uo) / AW;
+            fprintf(stderr,
+                    "%6.0f %7.1f %7.1f %7.2f %7.2f %7.2f %7.4f %7.4f %7.4f %7.4f %7.4f %7.2f\n",
+                    la, w / AW, sm / AW, rn / AW, wv / AW, dmx / AW, uc / AW, ud / AW, uf / AW,
+                    uo / AW, wsum, (dmx / AW) / std::max(0.05, (double)0.0 + capAirRef(ai / AW)));
+            (void)ev; (void)uc; (void)uf; (void)uo; (void)ld;
+            (void)ev;
+            (void)ev;
+        }
+        return 0;
+    }
     return 0;
 }
