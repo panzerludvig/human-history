@@ -19,7 +19,7 @@ constexpr int W = 192, H = 96;   // ~208 km cells at the equator
 constexpr int SEASONS = 4;       // DJF, MAM, JJA, SON
 
 constexpr double DT = 3600.0;            // s, one step per sim hour
-constexpr int SPINUP_DAYS = 365;         // discarded first year
+inline int SPINUP_DAYS = 365;         // discarded first year
 constexpr int STAT_YEARS = 2;            // averaged years after spin-up
 constexpr double R_EARTH = 6371000.0;    // m
 constexpr double OMEGA = 7.292e-5;       // rad/s

@@ -148,6 +148,8 @@ int main(int argc, char** argv) {
     // of the error that no correct value explains, which is the part that
     // names the mechanism still missing.
     {
+        if (argc >= 3) atmosphere::SPINUP_DAYS = atoi(argv[2]) * 365;
+        fprintf(stderr, "spin-up %d days\n", atmosphere::SPINUP_DAYS);
         atmosphere::Climatology c = atmosphere::build(cp, seaLevel, rot, offset, pf, hy, false);
         Score s = judge(c);
         const int AW = atmosphere::W, AH = atmosphere::H;
@@ -164,6 +166,26 @@ int main(int argc, char** argv) {
         // inversions: a reading of -32 at 62 degrees next to -4 at 82 is not
         // a calibration error, it is something structurally wrong in between,
         // and only the whole curve says where.
+        // The height field itself, against what the thermal target is asking
+        // of it. If hP is not tracking hWant the pressure gradient is not the
+        // hypsometric one whatever the coefficient says, and the wind cannot
+        // be either.
+        fprintf(stderr, "\n%6s %7s %8s %8s %7s %7s\n", "lat", "Tair", "hP", "hWant",
+                "u", "v");
+        for (int y = AH - 2; y >= 1; y -= 4) {
+            double la = ((y + 0.5) / (double)AH - 0.5) * 180.0;
+            double ta = 0, hp = 0, uu = 0, vv = 0;
+            for (int x = 0; x < AW; x++) {
+                int j = 2 * AW * AH + y * AW + x;
+                ta += c.airT[j];
+                hp += c.press[j];
+                uu += c.windU[j];
+                vv += c.windV[j];
+            }
+            ta /= AW; hp /= AW; uu /= AW; vv /= AW;
+            fprintf(stderr, "%6.0f %7.1f %8.1f %8.1f %7.1f %7.1f\n", la, ta, hp,
+                    atmosphere::THERM_H_PER_K * (ta + 25.0), uu, vv);
+        }
         // Cloud, against what is actually up there. The global mean is the
         // easy half and it already matches; the pattern is the half that
         // decides whether a planet LOOKS right, because Earth's cloud is
