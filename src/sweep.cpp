@@ -213,8 +213,17 @@ int main(int argc, char** argv) {
                     "60-80:%4.0f%%  >80%%:%4.0f%%\n",
                     100 * bins[0] / tot, 100 * bins[1] / tot, 100 * bins[2] / tot,
                     100 * bins[3] / tot, 100 * bins[4] / tot);
-            fprintf(stderr, "life           <20%%:  18%%  20-40:  13%%  40-60:  16%%  "
-                            "60-80:  21%%  >80%%:  32%%\n");
+            // No observed row here, deliberately. The SHAPE is established --
+            // cloud fraction over a grid box is bimodal, clear and overcast, which
+            // is why current schemes diagnose it from two Gaussian modes rather
+            // than one (Van Weverberg et al. 2021) -- but exact bin fractions
+            // depend on the sensor, the cloud threshold and the box size. An
+            // earlier version of this line carried numbers that were an estimate
+            // dressed as data, which is worse than no row at all.
+            //
+            // The diagnosis does not need them: 84% of this model in ONE bin,
+            // with nothing clear and nothing overcast, is unimodal where life is
+            // not, and that is the whole finding.
         }
         return 0;
     }
