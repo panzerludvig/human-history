@@ -94,7 +94,7 @@ constexpr double SNOW_FULL_C = -8.0, SNOW_NONE_C = 2.0;
 // Clouds reflect about a fifth of the sunlight. With only ground albedo the
 // model absorbs some 300 W/m2 against Earth's 240, and no greenhouse setting
 // can balance that.
-inline double CLOUD_ALBEDO = 0.20;
+inline double CLOUD_ALBEDO = 0.17;
 constexpr double C_WATER = 1.0e8;               // ~25 m slab ocean
 constexpr double C_LAND = 3.0e6;                // thin soil; scaled by inertia
 // Winds: diagnostic Ekman-style balance r*u - f x u = -grad(P)/rho, solved
@@ -156,14 +156,31 @@ inline double W_CONV = 5.0e-5;     // m/s per W/m2 of sensible heat into the air
 // column rained itself dry the moment anything evaporated into it.
 inline double W_DIVERGE = 1.0;     // it is already the velocity
 inline double W_FRONT = 200.0;    // m/s per (K/m) of temperature gradient
+// The sea breeze, and every other convergence a sharp change in surface
+// heating drives. The balanced wind is computed from a height field smoothed
+// over a thousand kilometres, which is right for the large-scale flow and
+// erases the very thing that wets a coastline: land and sea heat differently,
+// air converges at the join, and it rains there. Without it the model rained
+// 33% MORE on continental interiors than on their coasts -- life is the other
+// way about, and emphatically so.
+inline double W_COAST = 900.0;    // m/s per (K/m) of SURFACE temperature gradient
 // Air that is sinking is warming, and warming air is further from
 // saturation: that is why the subtropical oceans are deserts under the
 // descending branch of the Hadley cell, and why their moisture survives to
 // blow somewhere else. Removed as a "shortcut" when rain was rebuilt around
 // uplift -- and without it the sea rained out everything it evaporated, so
 // nothing reached a continental interior and 70% of land was desert.
-inline double SUBSIDE_DRY = 900.0;  // extra capacity per (m/s) of descent
-inline double RAIN_FRAC = 0.80;    // sub-grid: part of a cell saturates first
+// Neutered to nothing when div[] turned out to be a velocity: with the
+// 0.001 that came in alongside, a centimetre a second of descent raised the
+// capacity by under one per cent. Subsidence is what makes the subtropical
+// highs deserts and what keeps the air over a cool coastal sea from raining
+// its load before it reaches the shore.
+inline double SUBSIDE_DRY = 50.0;   // extra capacity per (m/s) of descent
+// Rain begins here, so the air settles just above it: at 0.80 the whole
+// world sat at 85% humidity, which -- since cloudiness was humidity, one for
+// one -- covered the globe in cloud. A column is about half saturated in
+// life.
+inline double RAIN_FRAC = 0.55;    // sub-grid: part of a cell saturates first
 inline double RAIN_RATE = 0.15;    // fraction of that excess per hour
 constexpr double DIV_CAP_SCALE = 0.05;          // m/s of uplift for a ~46% capacity swing
 // Over land, moisture rains out progressively along its path (precipitation
@@ -607,7 +624,7 @@ struct Model {
                 double sens = (lapseGap > 0 ? K_SURF_AIR : K_STABLE) * lapseGap;
                 // Evaporation, priced: what the air can still hold, what the
                 // ground has to give, and what the sun can pay for.
-                double cap = capOf(T[i]) * (1.0 + SUBSIDE_DRY * std::max(-div[i], 0.0) * 0.001);
+                double cap = capOf(T[i]) * (1.0 + SUBSIDE_DRY * std::max(-div[i], 0.0));
                 double supply = water[i] ? 1.0 : std::clamp(soil[i] / SOIL_REF_MM, 0.0, 1.0);
                 double evap = (water[i] ? EVAP_WATER : EVAP_LAND) * supply *
                               std::max(1.0 - Wv[i] / std::max(cap, 1.0), 0.0) *
@@ -658,7 +675,9 @@ struct Model {
                 // lifting where warm air meets cold.
                 double wDiv = W_DIVERGE * std::max(div[i], 0.0);
                 double wFront = W_FRONT * std::sqrt(gtx * gtx + gty * gty);
-                double wUp = wConv + wDiv + wFront;
+                double gsx = (T[xe] - T[xw]) / (2 * dx), gsy = (T[yn] - T[ys]) / (2 * dy);
+                double wCoast = W_COAST * std::sqrt(gsx * gsx + gsy * gsy);
+                double wUp = wConv + wDiv + wFront + wCoast;
                 // Ascent cools the air and takes its capacity down with it;
                 // descent warms it and gives capacity back. What is left over
                 // is what falls.
@@ -775,7 +794,12 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                 c.rainProb[si] += m.rainStep[i] > 0.05 ? 1.0f : 0.0f;
                 c.windU[si] += (float)m.u[i];
                 c.windV[si] += (float)m.v[i];
-                c.cloud[si] += (float)std::clamp(m.Wv[i] / capOf(m.T[i]), 0.0, 1.0);
+                // Cloud is not humidity: dry air has none, and cover comes on
+                // over the last third of the way to saturation.
+                {
+                    double rh = m.Wv[i] / std::max(capOf(m.T[i]), 0.05);
+                    c.cloud[si] += (float)std::clamp((rh - 0.62) / 0.33, 0.0, 1.0);
+                }
             }
         }
         if (stat) {

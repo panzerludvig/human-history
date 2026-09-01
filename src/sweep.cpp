@@ -31,6 +31,7 @@ static const Target TARGETS[] = {
 struct Score {
     double err = 0, mean = 0, rain = 0, polarRain = 0;
     double desert = 0, landRain = 0; // share of land under 0.5 mm/day, and its mean
+    double coastRain = 0, innerRain = 0; // and where on the land it falls
     double spot[8] = {};
 };
 
@@ -54,7 +55,7 @@ static Score judge(const atmosphere::Climatology& c) {
     // semi-arid; a world where nearly all of it is has a rainfall problem
     // that a global mean can hide.
     {
-        double dry = 0, land = 0, lr = 0;
+        double dry = 0, land = 0, lr = 0, cr = 0, cn = 0, ir = 0, in_ = 0;
         for (int i = 0; i < AW * AH; i++) {
             if (c.elev[i] <= 0.0f) continue;
             double r = 0;
@@ -63,7 +64,20 @@ static Score judge(const atmosphere::Climatology& c) {
             land += 1;
             lr += r;
             if (r < 0.5) dry += 1;
+            // Coast or interior: is there sea within two cells?
+            int x = i % AW, y = i / AW;
+            bool coastal = false;
+            for (int dy = -2; dy <= 2 && !coastal; dy++)
+                for (int dx = -2; dx <= 2 && !coastal; dx++) {
+                    int yy = y + dy;
+                    if (yy < 0 || yy >= AH) continue;
+                    int xx = ((x + dx) % AW + AW) % AW;
+                    if (c.elev[yy * AW + xx] <= 0.0f) coastal = true;
+                }
+            if (coastal) { cr += r; cn += 1; } else { ir += r; in_ += 1; }
         }
+        s.coastRain = cn > 0 ? cr / cn : 0;
+        s.innerRain = in_ > 0 ? ir / in_ : 0;
         s.desert = land > 0 ? dry / land : 0;
         s.landRain = land > 0 ? lr / land : 0;
     }
@@ -134,9 +148,9 @@ int main(int argc, char** argv) {
     // can be warmed and watered without it running away.
     const double cAir[] = {0.18};                 // EVAP_WATER
     const double kdiff2[] = {1.5e6};               // KT_DIFF
-    const double ktDiff[] = {0.20, 0.27};         // CLOUD_ALBEDO
+    const double ktDiff[] = {0.17};               // CLOUD_ALBEDO
     const double kSurf[] = {5.0};
-    const double emiss[] = {0.955, 0.975};
+    const double emiss[] = {0.975, 0.99};
 
     double best = 1e30;
     std::string bestName;
@@ -167,8 +181,9 @@ int main(int argc, char** argv) {
                              ca2, kd, kt, wf, em, s.err, s.mean, s.rain, s.polarRain, s.desert * 100, s.spot[0],
                              s.spot[1], s.spot[2], s.spot[3], s.spot[4], s.spot[5], s.spot[6],
                              s.spot[7]);
-                    fprintf(stderr, "%s | Wv %5.2f mm, airborne %4.1f days, wind %4.1f m/s, RH %3.0f%%\n", line, c.dbgWv,
-                            c.dbgWv / std::max(c.dbgRain, 1e-6), c.dbgWind, c.dbgRH * 100);
+                    fprintf(stderr, "%s | Wv %5.2f mm, %4.1f d, wind %4.1f m/s, RH %3.0f%%, coast %4.2f inland %4.2f\n", line, c.dbgWv,
+                            c.dbgWv / std::max(c.dbgRain, 1e-6), c.dbgWind, c.dbgRH * 100, s.coastRain,
+                            s.innerRain);
                     fflush(stderr);
                     if (s.err < best) {
                         best = s.err;
