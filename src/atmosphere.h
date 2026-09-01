@@ -128,6 +128,18 @@ constexpr double SOIL_CAP_MM = 120.0, SOIL_REF_MM = 40.0;
 // Melting holds a surface at freezing: ice takes 334 kJ/kg without changing
 // temperature, which is why a polar summer sits near zero however long the
 // sun is up.
+// Melting holds a surface at freezing: ice takes 334 kJ/kg without changing
+// temperature, which is why a polar summer sits near zero however long the
+// sun is up.
+//
+// It works in BOTH directions and this only damped warming. Freezing water
+// releases exactly the same latent heat and resists cooling by exactly as
+// much, so a one-sided version is a ratchet: a cell crossed the freezing
+// point downward at full speed and had to climb back at an eighth of it. Add
+// the hard fifty-fold drop in heat capacity at -1 degC, where the ocean slab
+// becomes a skin of sea ice, and a cell that dipped below freezing cooled
+// fast and warmed slowly -- which is a trapdoor into the ice-albedo
+// feedback, built out of an asymmetry that has no physical counterpart.
 constexpr double MELT_DAMP = 0.12;
 // Sea ice insulates. Below freezing a skin of ice cuts the ocean's 25-metre
 // slab off from the air: the ice SURFACE radiates down towards -40 while the
@@ -184,6 +196,23 @@ constexpr double SNOW_FULL_C = -8.0, SNOW_NONE_C = 2.0;
 // albedo -- so this is anchored to the same measurement the flat number was.
 // It now goes where the cloud actually is.
 constexpr double CLOUD_ALB = 0.31;
+// The atmosphere is not transparent to sunlight, and this model had it so.
+// Every watt that was not reflected went straight to the ground: the air's
+// energy budget contained absorbed longwave, sensible heat and condensation,
+// and no shortwave term of any kind.
+//
+// Life absorbs about 77 W/m2 of the 340 arriving -- water vapour across the
+// near infrared, ozone in the ultraviolet, and the cloud drops themselves --
+// which is 23% of the total and about a quarter of the beam that gets past
+// the cloud tops. The surface then receives 163, not 240.
+//
+// Getting this wrong does not just misplace heat, it misplaces it in the one
+// direction that matters here: the surface was being given half again too
+// much and the air none, so every watt the air needed had to arrive as
+// sensible heat or condensation, and the air ran cold while the ground ran
+// hot. A cold air layer holds less water (capacity is set by Ta), and less
+// water is a thinner greenhouse.
+constexpr double SW_ATM = 0.25;   // share of the sub-cloud beam absorbed aloft
 // And clouds work the other way too, which a flat shortwave factor cannot
 // express at all: a deck is nearly black in the longwave and shuts whatever
 // window the vapour left open. It is why a cloudy night does not frost.
@@ -1007,7 +1036,12 @@ struct Model {
                 // What the cloud overhead is doing, both ways. It was
                 // drawn on the map and nowhere else until now.
                 double cf = cloudF[i];
-                double sw = SOLAR * std::max(cosz, 0.0) * (1.0 - alb) * (1.0 - CLOUD_ALB * cf);
+                // Sunlight, in the order it actually meets things: cloud
+                // tops reflect, the column absorbs its share of what gets
+                // through, and the ground takes what is left.
+                double inc = SOLAR * std::max(cosz, 0.0) * (1.0 - CLOUD_ALB * cf);
+                double swAir = inc * SW_ATM;
+                double sw = (inc - swAir) * (1.0 - alb);
                 // Longwave, both ways. The air holds EMISS of what the ground
                 // sends up and radiates that much again from each of its two
                 // faces: half to space, half back down. The half coming down
@@ -1070,7 +1104,7 @@ struct Model {
                 double swDay = SOLAR / 3.14159265 *
                                (h0 * std::sin(lat) * std::sin(dec) +
                                 std::cos(lat) * std::cos(dec) * std::sin(h0)) *
-                               (1.0 - alb) * (1.0 - CLOUD_ALB * cf);
+                               (1.0 - alb) * (1.0 - CLOUD_ALB * cf) * (1.0 - SW_ATM);
                 double afford = std::max(swDay, 0.0) +
                                 (water[i] ? STORED_FLUX_WATER : STORED_FLUX_LAND);
                 double lFlux = evap * LATENT_J_PER_KG / DT;
@@ -1130,7 +1164,7 @@ struct Model {
                                   ? K_ICE_COND * (SEA_FREEZE - T[i])
                                   : 0.0;
                 double dT = (sw - lwUp + lwDown - sens - lFlux + cond) / heatHere * DT;
-                if (water[i] && T[i] > -2.0 && T[i] < 2.0 && dT > 0) dT *= MELT_DAMP;
+                if (water[i] && T[i] > -2.0 && T[i] < 2.0) dT *= MELT_DAMP;
                 nT[i] = std::clamp(T[i] + dT, -90.0, 65.0);
                 // The air keeps what the ground gave it and what the rain
                 // released, and radiates from both its faces.
@@ -1138,7 +1172,8 @@ struct Model {
                 // The column keeps what it absorbs from below, less what it
                 // sends down and what it sends up. Up is at Ta; down is the
                 // warmer figure above.
-                nTa[i] = std::clamp(Ta[i] + (em * lwUp - lwDown - em * sTa4 + sens) / C_AIR * DT +
+                nTa[i] = std::clamp(Ta[i] +
+                                        (swAir + em * lwUp - lwDown - em * sTa4 + sens) / C_AIR * DT +
                                         condense + difT + advT,
                                     -95.0, 70.0);
                 if (i == probe) { // one cell only: no write contention
@@ -1170,8 +1205,30 @@ struct Model {
                 // is what falls.
                 // How far the air is actually displaced, and how much
                 // colder that leaves it.
+                //
+                // Ascent lowers the ceiling and what is above it condenses:
+                // that is real, and it is where rain comes from. Descent is
+                // NOT the mirror image, and treating it as one was a faulty
+                // assumption with a large consequence. A subsiding column was
+                // granted up to three and a half times the water its own
+                // temperature can hold, and it used the room: the global
+                // column climbed to 71 mm against life's 25, with a residence
+                // time of 47 days against 9, because water arriving in a
+                // descent zone had no ceiling to rain against.
+                //
+                // Real subsiding air is dry, and it is dry for a reason this
+                // model states backwards. It is not that the air has room to
+                // spare -- it is that the air CAME FROM somewhere cold and
+                // high, having already rained its water out on the way up.
+                // The dryness belongs in the moisture budget, as an absence
+                // of water; it does not belong in the ceiling, as permission
+                // to hold more.
+                //
+                // So the ceiling is saturation at the air's own temperature,
+                // and only ascent may lower it.
                 double dz = std::clamp(wUp * UPLIFT_TAU, -H_LIFT_MAX, H_LIFT_MAX);
-                double capLift = cap * std::exp(-LAPSE_MOIST * dz / CAP_SCALE);
+                double capLift =
+                    std::min(cap, cap * std::exp(-LAPSE_MOIST * dz / CAP_SCALE));
                 capEff[i] = std::max(capLift, 0.05);
                 double rain = std::max(Wv[i] - RAIN_FRAC * capLift, 0.0) * RAIN_RATE;
                 double fe = fluxE[i], fw = fluxE[xw], fn = fluxN[i], fs = fluxN[ys];
@@ -1384,10 +1441,16 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         }
         double hours = 0;
         for (int s2 = 0; s2 < SEASONS; s2++) hours += cnt[s2] * 24.0;
-        c.dbgEvap = e / wsum / std::max(hours, 1.0) * 24.0;
-        c.dbgRain = r / wsum / std::max(hours, 1.0) * 24.0;
-        c.dbgClamp = mk / wsum / std::max(hours, 1.0) * 24.0;
-        c.dbgWv = wv / wsum / std::max(hours, 1.0);
+        // These accumulate over EVERY hour of the run, spin-up included,
+        // and were being divided by the sampled hours alone -- so they read
+        // four times high at a six-year spin-up and 1.5 times at one year,
+        // which is a diagnostic that changes its answer with the length of
+        // the run.
+        double allHours = (double)(SPINUP_DAYS + STAT_YEARS * 365) * 24.0;
+        c.dbgEvap = e / wsum / allHours * 24.0;
+        c.dbgRain = r / wsum / allHours * 24.0;
+        c.dbgClamp = mk / wsum / allHours * 24.0;
+        c.dbgWv = wv / wsum / allHours;
         c.dbgWind = wnd / wsum;   // instantaneous, at the end of the run
         c.dbgRH = rh / wsum;
     }

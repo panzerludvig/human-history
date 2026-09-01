@@ -157,11 +157,12 @@ int main(int argc, char** argv) {
                 "PHYSICAL | err %6.1f | mean %5.1f rain %4.2f pRain %4.1f dry %3.0f%% cloud %3.0f%%\n"
                 "  eq %5.1f sub %5.1f mls %5.1f mlw %5.1f 60s %5.1f 60w %5.1f ps %5.1f pw %5.1f\n"
                 "  want   27      30       20      -5      15     -25       0     -45\n"
-                "  Wv %5.2f mm, residence %4.1f d, wind %4.1f m/s, RH %3.0f%%, coast %4.2f inland %4.2f\n",
+                "  Wv %5.2f mm, residence %4.1f d, wind %4.1f m/s, RH %3.0f%%, coast %4.2f inland %4.2f\n"
+                "  water: evap %5.2f rain %5.2f clamped %+6.3f mm/day\n",
                 s.err, s.mean, s.rain, s.polarRain, s.desert * 100, s.cloud * 100, s.spot[0], s.spot[1],
                 s.spot[2], s.spot[3], s.spot[4], s.spot[5], s.spot[6], s.spot[7], c.dbgWv,
                 c.dbgWv / std::max(c.dbgRain, 1e-6), c.dbgWind, c.dbgRH * 100, s.coastRain,
-                s.innerRain);
+                s.innerRain, c.dbgEvap, c.dbgRain, c.dbgClamp);
         // The zonal profile, every four degrees. Spot latitudes hide
         // inversions: a reading of -32 at 62 degrees next to -4 at 82 is not
         // a calibration error, it is something structurally wrong in between,
