@@ -450,6 +450,7 @@ struct Climatology {
     std::vector<float> wv, rh, press, airT;
     std::vector<float> upConv, upDiv, upFront, upOrog, capX; // PROBE: what lifts the air
     std::vector<float> evapF, advF, difF, latF, advZF, advMF; // PROBE: the water budget
+    std::vector<float> spdF, capSkinF, supplyF, affordF;     // PROBE: and the evaporation
     std::vector<float> elev; // [cell], the model's smoothed elevation (for lapse correction)
     // elev has one band; bilinearAt/annualAt want [season][cell]. A repeated
     // view is built eagerly at the end of build() -- the lazy path races when
@@ -466,7 +467,8 @@ struct Climatology {
     Climatology() {
         for (auto* v : {&meanT, &rainMmDay, &snowMmDay, &rainProb, &windU, &windV, &cloud,
                         &diurnal, &wv, &rh, &press, &airT, &upConv, &upDiv, &upFront,
-                        &upOrog, &capX, &evapF, &advF, &difF, &latF, &advZF, &advMF})
+                        &upOrog, &capX, &evapF, &advF, &difF, &latF, &advZF, &advMF, &spdF,
+                        &capSkinF, &supplyF, &affordF})
             v->assign(SEASONS * W * H, 0.0f);
     }
     static int seasonOfDay(int doy) { // DJF=0 starting Dec 1 (day 334)
@@ -509,6 +511,7 @@ struct Model {
     std::vector<double> soil;          // land water store, mm: what there is to evaporate
     std::vector<double> evapAcc, rainAcc, madeAcc; // PROBE, one cell per thread: no atomics
     std::vector<double> advAcc, difAcc, advZ, advM; // PROBE: and what the wind and eddies bring
+    std::vector<double> pSpd, pCapSkin, pSupply, pAfford; // PROBE: the evaporation, term by term
     std::vector<double> capArr;                    // how much each cell's air can hold
     std::vector<double> cloudF;                    // and how much of it has condensed out
     std::vector<double> pConv, pDiv, pFront, pOrog, pOro; // PROBE: uplift, by cause
@@ -613,6 +616,10 @@ struct Model {
         difAcc.assign(W * H, 0.0);
         advZ.assign(W * H, 0.0);
         advM.assign(W * H, 0.0);
+        pSpd.assign(W * H, 0.0);
+        pCapSkin.assign(W * H, 0.0);
+        pSupply.assign(W * H, 0.0);
+        pAfford.assign(W * H, 0.0);
         fluxE.assign(W * H, 0.0);
         fluxN.assign(W * H, 0.0);
         wvAcc.assign(W * H, 0.0);
@@ -621,12 +628,67 @@ struct Model {
     // Zonal smoothing towards the poles, where the meridians crowd together
     // and a stable timestep would otherwise be seconds. The classic polar
     // filter: the closer to the pole, the more passes.
-    void polarFilter(std::vector<double>& f) {
+    // Two different jobs wear this one name, and running them at the same
+    // rate is what made a mess of the mid-latitudes.
+    //
+    // STABILITY. Where the meridians have crowded the cells narrower than a
+    // gravity wave crosses in one substep -- dx < c*dt, which is 21.6 km at
+    // 108 m/s and 200 s, so poleward of about 84 degrees -- the scheme cannot
+    // integrate at all and has to be smoothed every substep or it diverges.
+    //
+    // RESOLUTION. Everywhere else the grid is merely ANISOTROPIC: a cell at
+    // 60 degrees is 104 km by 208, so the zonal direction carries structure
+    // the meridional cannot, and that structure is not weather. Removing it
+    // is a once-an-hour tidy, not a per-substep necessity.
+    //
+    // Running the second at the rate of the first is a zonal diffusion of
+    // 1.4e7 m2/s -- twenty times the model's own viscosity -- and it took the
+    // global mean wind from 3.8 m/s to 2.0 and flattened the westerlies from
+    // 9 to 2.8. One 1-2-1 pass looks harmless until it is applied eighteen
+    // times an hour, a hundred and sixty thousand times a year.
+    void polarFilter(std::vector<double>& f, bool stabilityOnly) {
         static std::vector<double> tmp;
         tmp.resize(W * H);
         for (int y = 1; y < H - 1; y++) {
             double cosl = std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265);
-            int passes = (int)std::clamp(0.35 / std::max(cosl, 0.02) - 0.8, 0.0, 6.0);
+            // How much to smooth is not a taste. A cell here is dx wide and
+            // dy tall, and dy does not change with latitude while dx goes as
+            // the cosine: at 76 degrees the cell is 50 km by 208, an aspect
+            // ratio of four. Zonal derivatives are therefore four times
+            // sharper than meridional ones at the same physical scale, and a
+            // height field carrying structure at the zonal grid scale gives
+            // -g*grad(h) of about 1e-2 m/s2, which against the drag is a wind
+            // of some seventy metres a second.
+            //
+            // That is what the band from 71 to 79 degrees was doing: a mean
+            // SPEED of 33.7 m/s on a mean VELOCITY of 6, which is to say a
+            // wind that reverses rather than blows. Every quantity that is
+            // linear in the wind averaged out and looked reasonable; the ones
+            // that are not did not, and the bulk formula -- which is linear in
+            // speed, not in velocity -- evaporated 5 mm/day off a surface at
+            // -8 degC where it should manage one.
+            //
+            // The old threshold, 0.35/cos - 0.8, gave its first pass at 79
+            // degrees and NOTHING to the band below it, which is exactly the
+            // band that blew up. The criterion is the anisotropy itself:
+            // smooth zonally until the zonal resolution matches the
+            // meridional one, so passes go as dy/dx - 1 = 1/cos - 1. It comes
+            // on gradually from about 50 degrees, where one pass removes only
+            // the two-cell mode -- structure finer than the grid resolves in
+            // the other direction, and so not structure at all.
+            int passes;
+            if (stabilityOnly) {
+                // Only where a wave outruns the cell in one substep.
+                double dxHere = (2 * 3.14159265 * R_EARTH / W) * std::max(cosl, 0.02);
+                double need = std::sqrt(GPRIME * H_LAYER) * (DT / DYN_SUBSTEPS);
+                passes = dxHere < need ? (int)std::clamp(std::lround(need / dxHere), (long)1,
+                                                         (long)8)
+                                       : 0;
+            } else {
+                // Zonal resolution brought level with meridional.
+                passes = (int)std::clamp(std::lround(1.0 / std::max(cosl, 0.02) - 1.0), (long)0,
+                                         (long)8);
+            }
             for (int k = 0; k < passes; k++) {
                 for (int x = 0; x < W; x++)
                     tmp[idx(x, y)] = 0.25 * f[idx(wrapX(x - 1), y)] + 0.5 * f[idx(x, y)] +
@@ -716,9 +778,9 @@ struct Model {
         std::swap(u, nu2);
         std::swap(v, nv2);
         std::swap(hP, nhP);
-        polarFilter(u);
-        polarFilter(v);
-        polarFilter(hP);
+        polarFilter(u, true);
+        polarFilter(v, true);
+        polarFilter(hP, true);
     }
 
     // One hour. doy in [0,365), hourOfDay in [0,24).
@@ -752,6 +814,10 @@ struct Model {
         // inside this hour of radiation and water.
         thermalTarget();
         for (int k = 0; k < DYN_SUBSTEPS; k++) stepDynamics(DT / DYN_SUBSTEPS);
+        // and once, now the hour is done, the anisotropy.
+        polarFilter(u, false);
+        polarFilter(v, false);
+        polarFilter(hP, false);
 
         // Divergence -> uplift; orographic uplift from wind into slope.
 #pragma omp parallel for
@@ -800,7 +866,7 @@ struct Model {
                 sm[idx(x, H - 1)] = div[idx(x, H - 1)];
             }
             div.swap(sm);
-            polarFilter(div);
+            polarFilter(div, false);
             // And smoothing in space is only half of it, because the error
             // that mattered was in TIME. Uplift enters the rain through
             // max(div, 0) and dryness through max(-div, 0), and a rectifier
@@ -994,6 +1060,9 @@ struct Model {
                 // the column through the depth Earth actually has.
                 double dq = std::max(capSkin - Wv[i], 0.0) / Q_SCALE;
                 double evap = RHO * (water[i] ? CH_SEA : CH_LAND) * spd * dq * supply * DT;
+                pSpd[i] = spd;
+                pCapSkin[i] = capSkin;
+                pSupply[i] = supply;
                 // What the sun pays over a whole day, not what it pays at noon:
                 // capping against the instantaneous figure lets the daylight
                 // hours evaporate three or four times a day's worth of water.
@@ -1005,6 +1074,7 @@ struct Model {
                 double afford = std::max(swDay, 0.0) +
                                 (water[i] ? STORED_FLUX_WATER : STORED_FLUX_LAND);
                 double lFlux = evap * LATENT_J_PER_KG / DT;
+                pAfford[i] = lFlux > afford ? 1.0 : 0.0;
                 if (lFlux > afford) {
                     evap *= afford / lFlux;
                     lFlux = afford;
@@ -1263,6 +1333,10 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                     c.latF[si] += (float)(m.rainStep[i] * LATENT_J_PER_KG / DT);
                     c.advZF[si] += (float)(m.advZ[i] - lastZ[i]);
                     c.advMF[si] += (float)(m.advM[i] - lastM[i]);
+                    c.spdF[si] += (float)m.pSpd[i];
+                    c.capSkinF[si] += (float)m.pCapSkin[i];
+                    c.supplyF[si] += (float)m.pSupply[i];
+                    c.affordF[si] += (float)m.pAfford[i];
                     lastZ[i] = m.advZ[i];
                     lastM[i] = m.advM[i];
                     lastE[i] = m.evapAcc[i];
@@ -1342,6 +1416,10 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             c.difF[si] *= (float)(24.0 / hours);
             c.advZF[si] *= (float)(24.0 / hours);
             c.advMF[si] *= (float)(24.0 / hours);
+            c.spdF[si] /= (float)hours;
+            c.capSkinF[si] /= (float)hours;
+            c.supplyF[si] /= (float)hours;
+            c.affordF[si] /= (float)hours;
             c.latF[si] /= (float)hours;
             c.diurnal[si] /= (float)cnt[s];
         }

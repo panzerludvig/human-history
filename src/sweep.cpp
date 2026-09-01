@@ -171,26 +171,28 @@ int main(int argc, char** argv) {
         // is mm/day, so they have to add up.
         fprintf(stderr,
                 "\n%6s %6s %6s %7s %7s %7s %7s %7s %7s %7s %6s\n",
-                "lat", "Tsfc", "Tair", "Wv", "cap", "evap", "advZ", "advM", "rain", "lat W", "cos");
+                "lat", "Tsfc", "spd", "Wv", "|vel|", "evap", "supply", "capped", "rain", "lat W", "land");
         for (int y = AH - 1; y >= AH / 2 - 14; y--) {
             double la = ((y + 0.5) / (double)AH - 0.5) * 180.0;
             double ts = 0, ta = 0, wv = 0, cp = 0, ev = 0, ad = 0, df = 0, rn = 0, lt = 0;
+            double ldf = 0;
             for (int x = 0; x < AW; x++) {
                 int i = y * AW + x, j = 2 * AW * AH + i;
                 ts += c.meanT[j];
-                ta += c.airT[j];
+                ta += c.spdF[j];
                 wv += c.wv[j];
-                cp += c.capX[j];
+                cp += std::sqrt(c.windU[j] * c.windU[j] + c.windV[j] * c.windV[j]);
                 ev += c.evapF[j];
-                ad += c.advZF[j];
-                df += c.advMF[j];
+                ad += c.supplyF[j];
+                df += c.affordF[j];
                 rn += c.rainMmDay[j];
                 lt += c.latF[j];
+                ldf += c.elev[i] > 0.0f ? 1.0 : 0.0;
             }
             fprintf(stderr,
                     "%6.1f %6.1f %6.1f %7.2f %7.2f %7.3f %7.3f %7.3f %7.3f %7.1f %6.3f\n",
                     la, ts / AW, ta / AW, wv / AW, cp / AW, ev / AW, ad / AW, df / AW, rn / AW,
-                    lt / AW, std::cos(((y + 0.5) / (double)AH - 0.5) * 3.14159265));
+                    lt / AW, ldf / AW);
         }
         return 0;
     }
