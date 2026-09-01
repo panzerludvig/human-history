@@ -136,6 +136,32 @@ constexpr double MELT_DAMP = 0.12;
 // is what left them twenty-five degrees too warm, with a radiation budget
 // that was otherwise correct.
 constexpr double C_SEAICE = 2.0e6; // J/m2/K: a thin skin, not an ocean
+// And a skin has water under it. Sea ice does not sit on nothing: the ocean
+// beneath is held at the freezing point of salt water, and heat conducts up
+// through the ice to whatever the surface has cooled to. That flux is why an
+// Arctic winter stops at about -35 and not at the -75 an ice surface radiating
+// into a clear polar sky would otherwise reach -- which is exactly where this
+// model went the moment a boundary condition stopped manufacturing heat for
+// it.
+//
+//   F = k_ice * (T_freeze - T_surface) / h
+//
+// k for ice is 2.2 W/m/K. The thickness is not the ice alone: snow on top
+// conducts about a seventh as well, so a metre of it counts for seven, and
+// the figure that matters is the ice-equivalent depth of the whole cover.
+// Two and a half metres is the Arctic's, and 2.2/2.5 gives 0.88 W/m2/K --
+// some 26 W/m2 under a surface at -30, against the 10 to 40 that is
+// measured.
+//
+// Be clear about what this is: the water below is treated as a reservoir at
+// a fixed temperature, and a reservoir that never runs down is an implicit
+// ocean heat transport. That is honest for the polar ocean -- the real one
+// IS kept near freezing by water arriving from further south, and this model
+// has no ocean circulation to do it -- but it is standing in for a mechanism
+// rather than being one, and the day the ocean moves heat for itself this
+// should come out.
+constexpr double SEA_FREEZE = -1.8;    // degC, salt water
+constexpr double K_ICE_COND = 0.88;    // W/m2/K through ice and its snow
 // Snow and ice reflect most of what falls on them, and the albedo field was
 // static -- painted once from an analytic first guess, so nothing got
 // brighter when it froze. That is a real feedback and a strong one: it is
@@ -423,6 +449,7 @@ struct Climatology {
     // pressure map, and the air's own temperature.
     std::vector<float> wv, rh, press, airT;
     std::vector<float> upConv, upDiv, upFront, upOrog, capX; // PROBE: what lifts the air
+    std::vector<float> evapF, advF, difF, latF, advZF, advMF; // PROBE: the water budget
     std::vector<float> elev; // [cell], the model's smoothed elevation (for lapse correction)
     // elev has one band; bilinearAt/annualAt want [season][cell]. A repeated
     // view is built eagerly at the end of build() -- the lazy path races when
@@ -439,7 +466,7 @@ struct Climatology {
     Climatology() {
         for (auto* v : {&meanT, &rainMmDay, &snowMmDay, &rainProb, &windU, &windV, &cloud,
                         &diurnal, &wv, &rh, &press, &airT, &upConv, &upDiv, &upFront,
-                        &upOrog, &capX})
+                        &upOrog, &capX, &evapF, &advF, &difF, &latF, &advZF, &advMF})
             v->assign(SEASONS * W * H, 0.0f);
     }
     static int seasonOfDay(int doy) { // DJF=0 starting Dec 1 (day 334)
@@ -481,6 +508,7 @@ struct Model {
     std::vector<double> hWant, hTmp;       // what the warmth asks of the height, smoothed
     std::vector<double> soil;          // land water store, mm: what there is to evaporate
     std::vector<double> evapAcc, rainAcc, madeAcc; // PROBE, one cell per thread: no atomics
+    std::vector<double> advAcc, difAcc, advZ, advM; // PROBE: and what the wind and eddies bring
     std::vector<double> capArr;                    // how much each cell's air can hold
     std::vector<double> cloudF;                    // and how much of it has condensed out
     std::vector<double> pConv, pDiv, pFront, pOrog, pOro; // PROBE: uplift, by cause
@@ -581,6 +609,10 @@ struct Model {
         pOro.assign(W * H, 0.0);
         divSm.assign(W * H, 0.0);
         capEff.assign(W * H, 0.0);
+        advAcc.assign(W * H, 0.0);
+        difAcc.assign(W * H, 0.0);
+        advZ.assign(W * H, 0.0);
+        advM.assign(W * H, 0.0);
         fluxE.assign(W * H, 0.0);
         fluxN.assign(W * H, 0.0);
         wvAcc.assign(W * H, 0.0);
@@ -819,7 +851,25 @@ struct Model {
                     // side's capacity left 70% of all land desert -- nothing
                     // could reach an interior.
                     fluxE[i] = ue * (ue > 0 ? Wv[i] : Wv[xe]) / dx;
-                    fluxN[i] = (y >= H - 1) ? 0.0 : vn * (vn > 0 ? Wv[i] : Wv[yn]) / dy;
+                    // A pole is a point, not a row. Rows 0 and H-1 are caps
+                    // that exist so the interior has something to reference,
+                    // and they are filled by copying their neighbour -- which
+                    // makes them an INFINITE RESERVOIR if anything is allowed
+                    // to draw on them: whatever the last real row takes is
+                    // replenished from that same row's own value on the next
+                    // line of code. Measured at the north cap: 45.3 mm/day of
+                    // moisture flowing in through a face whose neighbour to
+                    // the south was losing 0.577, so nobody was paying for
+                    // it. It rained 22.7 mm/day, released 1267 W/m2 of latent
+                    // heat, and held the polar air at -6 degC while 76
+                    // degrees sat at -25 -- warm air, high capacity, and so
+                    // more inflow still.
+                    //
+                    // The boundary condition a pole actually has is no flux
+                    // through it, and that means the face BESIDE the cap, not
+                    // just the one past it.
+                    fluxN[i] = (y == 0 || y >= H - 2) ? 0.0
+                                                      : vn * (vn > 0 ? Wv[i] : Wv[yn]) / dy;
                 }
             }
 #pragma omp parallel for
@@ -872,7 +922,14 @@ struct Model {
             for (int x = 0; x < W; x++) {
                 int i = idx(x, y);
                 int xe = idx(wrapX(x + 1), y), xw = idx(wrapX(x - 1), y);
-                int yn = idx(x, y + 1), ys = idx(x, y - 1);
+                // The cap rows are a copy of this one, and their air
+                // temperature is never integrated at all -- it sits wherever
+                // the allocator left it, near zero, which the row below then
+                // diffuses towards. Referring to the cell itself instead
+                // gives a zero gradient, which is what no flux through the
+                // pole means for everything, not only the water.
+                int yn = (y + 1 >= H - 1) ? i : idx(x, y + 1);
+                int ys = (y - 1 <= 0) ? i : idx(x, y - 1);
                 // solar
                 double lat = latRad[i];
                 double ha = 2 * 3.14159265 * (hour / 24.0 + (x + 0.5) / (double)W) + 3.14159265;
@@ -998,7 +1055,11 @@ struct Model {
                 double advT = -(ua > 0 ? ua * (Tasl[i] - Tasl[xw]) : ua * (Tasl[xe] - Tasl[i])) / dx -
                               (va > 0 ? va * (Tasl[i] - Tasl[ys]) : va * (Tasl[yn] - Tasl[i])) / dy;
                 advT *= DT;
-                double dT = (sw - lwUp + lwDown - sens - lFlux) / heatHere * DT;
+                // Under ice, the sea below conducts heat up to the surface.
+                double cond = (water[i] && T[i] < SEA_FREEZE)
+                                  ? K_ICE_COND * (SEA_FREEZE - T[i])
+                                  : 0.0;
+                double dT = (sw - lwUp + lwDown - sens - lFlux + cond) / heatHere * DT;
                 if (water[i] && T[i] > -2.0 && T[i] < 2.0 && dT > 0) dT *= MELT_DAMP;
                 nT[i] = std::clamp(T[i] + dT, -90.0, 65.0);
                 // The air keeps what the ground gave it and what the rain
@@ -1051,6 +1112,8 @@ struct Model {
                 // that clamp -- water conjured, rained out, and (once latent
                 // heat was coupled) used to cook the poles to +50 degC.
                 double advW = ADV_EFF * (fe - fw + fN * fn - fS * fs);
+                advZ[i] += -ADV_EFF * (fe - fw) * DT;
+                advM[i] += -ADV_EFF * (fN * fn - fS * fs) * DT;
                 // (An export limiter here was a water source: capping what a
                 // cell gives up does not stop its neighbours taking the full
                 // flux, so every capped cell minted the difference. Measured at
@@ -1102,6 +1165,8 @@ struct Model {
                 // only thing standing between the sun and the ground.
                 cloudF[i] = cloudOf(raw / std::max(capLift, 0.05));
                 evapAcc[i] += evap;
+                advAcc[i] += -advW * DT;
+                difAcc[i] += difW;
                 wvAcc[i] += Wv[i];
                 madeAcc[i] += 0; // (kept for the water probe)
                 rainAcc[i] += 0;
@@ -1119,6 +1184,10 @@ struct Model {
             nT[idx(x, H - 1)] = nT[idx(x, H - 2)];
             nW[idx(x, 0)] = nW[idx(x, 1)];
             nW[idx(x, H - 1)] = nW[idx(x, H - 2)];
+            // The air too: these were never written by the loop above, so the
+            // caps carried a stale temperature for the whole run.
+            nTa[idx(x, 0)] = nTa[idx(x, 1)];
+            nTa[idx(x, H - 1)] = nTa[idx(x, H - 2)];
         }
         // Polar filter: the shrinking cells near the poles go unstable
         // otherwise (moisture spikes, temperature pinned at the clamp).
@@ -1150,6 +1219,9 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
     Climatology c;
     c.elev.assign(m.elev.begin(), m.elev.end());
     std::vector<double> dayMin(W * H), dayMax(W * H);
+    // running totals, so each sample sees the interval and not the epoch
+    std::vector<double> lastE(W * H, 0.0), lastA(W * H, 0.0), lastD(W * H, 0.0);
+    std::vector<double> lastZ(W * H, 0.0), lastM(W * H, 0.0);
     std::vector<double> cnt(SEASONS, 0.0);
     int totalDays = SPINUP_DAYS + STAT_YEARS * 365;
     for (int day = 0; day < totalDays; day++) {
@@ -1185,6 +1257,17 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                     c.upFront[si] += (float)m.pFront[i];
                     c.upOrog[si] += (float)m.pOrog[i];
                     c.capX[si] += (float)m.capEff[i];
+                    c.evapF[si] += (float)(m.evapAcc[i] - lastE[i]);
+                    c.advF[si] += (float)(m.advAcc[i] - lastA[i]);
+                    c.difF[si] += (float)(m.difAcc[i] - lastD[i]);
+                    c.latF[si] += (float)(m.rainStep[i] * LATENT_J_PER_KG / DT);
+                    c.advZF[si] += (float)(m.advZ[i] - lastZ[i]);
+                    c.advMF[si] += (float)(m.advM[i] - lastM[i]);
+                    lastZ[i] = m.advZ[i];
+                    lastM[i] = m.advM[i];
+                    lastE[i] = m.evapAcc[i];
+                    lastA[i] = m.advAcc[i];
+                    lastD[i] = m.difAcc[i];
                 }
             }
         }
@@ -1254,6 +1337,12 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             c.upFront[si] /= (float)hours;
             c.upOrog[si] /= (float)hours;
             c.capX[si] /= (float)hours;
+            c.evapF[si] *= (float)(24.0 / hours);
+            c.advF[si] *= (float)(24.0 / hours);
+            c.difF[si] *= (float)(24.0 / hours);
+            c.advZF[si] *= (float)(24.0 / hours);
+            c.advMF[si] *= (float)(24.0 / hours);
+            c.latF[si] /= (float)hours;
             c.diurnal[si] /= (float)cnt[s];
         }
     }

@@ -164,41 +164,33 @@ int main(int argc, char** argv) {
         // inversions: a reading of -32 at 62 degrees next to -4 at 82 is not
         // a calibration error, it is something structurally wrong in between,
         // and only the whole curve says where.
-        fprintf(stderr, "\n%6s %7s %7s %7s %7s %7s %7s %7s %7s %7s %7s %7s\n", "lat", "DJF", "JJA", "rain", "Wv",
-                "cap", "wConv", "wDiv", "wFrnt", "wOro", "wSum", "capR");
-        for (int y = AH - 2; y >= 1; y -= 2) {
+        // The polar rows, and where each one's water comes from. Wv is what
+        // the column holds, cap what it could; evap is what the surface gave
+        // it, adv what the wind brought, dif what the eddies mixed in, rain
+        // what fell, and lat the heat that fell out with it. Every water term
+        // is mm/day, so they have to add up.
+        fprintf(stderr,
+                "\n%6s %6s %6s %7s %7s %7s %7s %7s %7s %7s %6s\n",
+                "lat", "Tsfc", "Tair", "Wv", "cap", "evap", "advZ", "advM", "rain", "lat W", "cos");
+        for (int y = AH - 1; y >= AH / 2 - 14; y--) {
             double la = ((y + 0.5) / (double)AH - 0.5) * 180.0;
-            double w = 0, sm = 0, ai = 0, rn = 0, cl = 0, ld = 0, ev = 0, wv = 0;
-            double uc = 0, ud = 0, uf = 0, uo = 0, uu = 0, vv = 0, umx = 0, dmx = 0;
+            double ts = 0, ta = 0, wv = 0, cp = 0, ev = 0, ad = 0, df = 0, rn = 0, lt = 0;
             for (int x = 0; x < AW; x++) {
-                w += c.meanT[0 * AW * AH + y * AW + x];
-                sm += c.meanT[2 * AW * AH + y * AW + x];
-                ai += c.airT[2 * AW * AH + y * AW + x];
-                for (int se = 0; se < atmosphere::SEASONS; se++)
-                    rn += c.rainMmDay[se * AW * AH + y * AW + x] / atmosphere::SEASONS;
-                cl += c.cloud[2 * AW * AH + y * AW + x];
-                ld += c.elev[y * AW + x] > 0 ? 1 : 0;
-                ev += std::max(c.elev[y * AW + x], 0.0f);
-                wv += c.wv[2 * AW * AH + y * AW + x];
-                uc += c.upConv[2 * AW * AH + y * AW + x];
-                ud += c.upDiv[2 * AW * AH + y * AW + x];
-                uf += c.upFront[2 * AW * AH + y * AW + x];
-                uo += c.upOrog[2 * AW * AH + y * AW + x];
-                double uh = c.windU[2 * AW * AH + y * AW + x];
-                double vh = c.windV[2 * AW * AH + y * AW + x];
-                uu += uh;
-                vv += vh;
-                umx = std::max(umx, std::sqrt(uh * uh + vh * vh));
-                dmx += c.capX[2 * AW * AH + y * AW + x];
+                int i = y * AW + x, j = 2 * AW * AH + i;
+                ts += c.meanT[j];
+                ta += c.airT[j];
+                wv += c.wv[j];
+                cp += c.capX[j];
+                ev += c.evapF[j];
+                ad += c.advZF[j];
+                df += c.advMF[j];
+                rn += c.rainMmDay[j];
+                lt += c.latF[j];
             }
-            double wsum = (uc + ud + uf + uo) / AW;
             fprintf(stderr,
-                    "%6.0f %7.1f %7.1f %7.2f %7.2f %7.2f %7.4f %7.4f %7.4f %7.4f %7.4f %7.2f\n",
-                    la, w / AW, sm / AW, rn / AW, wv / AW, dmx / AW, uc / AW, ud / AW, uf / AW,
-                    uo / AW, wsum, (dmx / AW) / std::max(0.05, (double)0.0 + capAirRef(ai / AW)));
-            (void)ev; (void)uc; (void)uf; (void)uo; (void)ld;
-            (void)ev;
-            (void)ev;
+                    "%6.1f %6.1f %6.1f %7.2f %7.2f %7.3f %7.3f %7.3f %7.3f %7.1f %6.3f\n",
+                    la, ts / AW, ta / AW, wv / AW, cp / AW, ev / AW, ad / AW, df / AW, rn / AW,
+                    lt / AW, std::cos(((y + 0.5) / (double)AH - 0.5) * 3.14159265));
         }
         return 0;
     }
