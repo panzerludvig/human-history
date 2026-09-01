@@ -240,7 +240,7 @@ constexpr double ADV_EFF = 1.0;                 // surface-wind moisture-advecti
 // were not, by nearly a factor of two, and the column was carrying 10 mm of
 // water where life carries 25 -- which is a weaker greenhouse, a colder
 // world, and less rain, all from a disagreement between two lines.
-constexpr double CAP0 = 22.0, CAP_T0 = 15.0, CAP_SCALE = 14.4;
+constexpr double CAP0 = 31.0, CAP_T0 = 15.0, CAP_SCALE = 14.4;
 // Evaporation is that same bulk formula with humidity in place of
 // temperature -- it is the same turbulence doing the carrying:
 //
@@ -256,7 +256,7 @@ constexpr double CAP0 = 22.0, CAP_T0 = 15.0, CAP_SCALE = 14.4;
 // The old pair were free constants swept between 0.10 and 0.20, with a
 // linear temperature factor bolted on top that double-counted what the
 // saturation capacity already says.
-constexpr double Q_SCALE = 2100.0;  // kg/m2 of column per unit specific humidity
+constexpr double Q_SCALE = 2940.0;  // kg/m2 of column per unit specific humidity
 constexpr double H_FLOW = 1500.0;               // m, depth of the inflow layer
 // Rain falls when moisture exceeds a fraction of the effective capacity.
 // Vertical motion modulates that capacity: uplift (convergence, windward
