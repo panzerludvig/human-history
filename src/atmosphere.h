@@ -43,7 +43,7 @@ constexpr double SOLAR = 1361.0;
 // 5 W/m2/K of radiation plus 15 of convection, twenty times the old figure,
 // and it stiffens as things warm, which is what stops a runaway.
 constexpr double SIGMA = 5.670374e-8;
-inline double EMISS = 0.992;        // how much of the surface's longwave the air holds
+inline double EMISS = 0.975;        // how much of the surface's longwave the air holds
 // The whole column. A thinner, more responsive layer (3e6, the lowest
 // kilometre or two) gives a far better seasonal swing and much better
 // mid-latitudes -- and hands the poles back to the latent pump, +22 degC in
@@ -62,7 +62,7 @@ inline double LAPSE_OFFSET = 27.0;  // K, surface warmer than the emitting level
 // exchanges at all -- which is exactly what a polar winter night is, and why
 // it gets so cold. Treating both directions alike held polar winters at
 // -7 degC by pouring heat back down out of the air.
-inline double K_STABLE = 1.5;       // W/m2/K under an inversion
+inline double K_STABLE = 0.8;       // W/m2/K under an inversion
 // Evaporation carries heat as well as water: it leaves the surface with the
 // vapour and the air gets it back where that vapour condenses. This is the
 // second-largest heat transport on the planet, and the reason a wet surface
@@ -94,7 +94,7 @@ constexpr double SNOW_FULL_C = -8.0, SNOW_NONE_C = 2.0;
 // Clouds reflect about a fifth of the sunlight. With only ground albedo the
 // model absorbs some 300 W/m2 against Earth's 240, and no greenhouse setting
 // can balance that.
-inline double CLOUD_ALBEDO = 0.16;
+inline double CLOUD_ALBEDO = 0.20;
 constexpr double C_WATER = 1.0e8;               // ~25 m slab ocean
 constexpr double C_LAND = 3.0e6;                // thin soil; scaled by inertia
 // Winds: diagnostic Ekman-style balance r*u - f x u = -grad(P)/rho, solved
@@ -112,7 +112,7 @@ constexpr double CAP0 = 15.0, CAP_T0 = 15.0, CAP_SCALE = 14.4; // doubles per 10
 // oceans. At 0.20 this model asked for 7 once the heat was allowed to follow
 // the water, and the heat released where that rain fell cooked the poles to
 // +50 degC.
-inline double EVAP_WATER = 0.12, EVAP_LAND = 0.034;         // kg/m^2 per h at full deficit
+inline double EVAP_WATER = 0.18, EVAP_LAND = 0.050;         // kg/m^2 per h at full deficit
 constexpr double H_FLOW = 1500.0;               // m, depth of the inflow layer
 // Rain falls when moisture exceeds a fraction of the effective capacity.
 // Vertical motion modulates that capacity: uplift (convergence, windward
@@ -125,7 +125,15 @@ constexpr double H_FLOW = 1500.0;               // m, depth of the inflow layer
 // shortcuts, and they behaved like shortcuts: each switched itself off in the
 // regime where it was needed, because each was keyed to the temperature it
 // was supposed to be controlling.
-inline double H_MOIST = 2500.0;    // m, depth the vapour is carried through
+// Rising air cools, and cooling air holds less: that is the whole of it.
+// Uplift does not rain the column out, it lowers what the column may keep,
+// and only the excess falls. Written the other way -- a share of the column
+// rained out per unit of ascent, whatever its humidity -- lifting DRY air
+// made rain, and the atmosphere was drained as fast as it evaporated: 0.66 mm
+// of water in the air against life's 25, and a residence time of 0.2 days
+// against nine. Nothing could survive the trip from sea to land, so 70% of
+// land was desert no matter what was done to the rain over it.
+inline double LIFT_COOL = 14.0;    // capacity halves at about 5 cm/s of ascent
 // Large-scale ascent is centimetres a second, not metres: a whole grid cell
 // does not rise like a thunderhead. First pass had fronts lifting at 22 cm/s
 // and the world raining 18 mm a day.
@@ -136,8 +144,17 @@ inline double W_OROG = 0.35;       // only the windward slope of a cell rises
 // term wakes up -- and continental rain went with it: 70% of land came out
 // desert against life's third. The sensible heat flux IS the vigour of
 // convection, and it is already computed.
-inline double W_CONV = 0.002;      // m/s per W/m2 of sensible heat into the air
-inline double W_DIVERGE = 600.0;   // m/s per (1/s) of low-level convergence
+// Large-scale mean ascent is a centimetre a second even in the ITCZ; a grid
+// cell two hundred kilometres wide does not rise like a thunderhead. At the
+// first scaling this alone put a tenth of a metre a second over every warm
+// surface, which collapsed the capacity and rained the column dry.
+inline double W_CONV = 5.0e-5;     // m/s per W/m2 of sensible heat into the air
+// div[] is ALREADY a vertical velocity in m/s -- convergence and orography
+// both, computed in the block above. Multiplying it by 600 as though it were
+// a divergence in 1/s, and adding a second orographic term on top, gave
+// updraughts of metres a second: capacity collapsed everywhere, and the
+// column rained itself dry the moment anything evaporated into it.
+inline double W_DIVERGE = 1.0;     // it is already the velocity
 inline double W_FRONT = 200.0;    // m/s per (K/m) of temperature gradient
 // Air that is sinking is warming, and warming air is further from
 // saturation: that is why the subtropical oceans are deserts under the
@@ -166,7 +183,7 @@ constexpr double SNOW_T = 0.5;                  // degC: colder precipitation is
 // lows (the upper return flow that closes the loop is not modelled). A large
 // eddy diffusivity stands in for the whole poleward heat transport, as in
 // Budyko-style energy-balance models.
-inline double KT_DIFF = 2.2e6;               // m^2/s eddy diffusion of heat
+inline double KT_DIFF = 1.5e6;               // m^2/s eddy diffusion of heat
 
 // ---------------------------------------------------------- the moving air
 //
@@ -194,7 +211,11 @@ inline double KT_DIFF = 2.2e6;               // m^2/s eddy diffusion of heat
 // winds of about one -- the air moved, but it carried nothing, and the
 // moisture distribution did not change at all when advection was fixed.
 inline double GPRIME = 9.81;        // m/s2: it is a height, so it is gravity
-inline double H_LAYER = 3000.0;     // m, mean thickness: c = sqrt(gH) ~ 171 m/s
+// The balanced wind is g*grad(h)/f and does not depend on H at all, so the
+// layer can be made thinner purely to slow the gravity waves and buy
+// stability: 1200 m gives 108 m/s, comfortably inside the step even where
+// the meridians crowd.
+inline double H_LAYER = 1200.0;     // m, mean thickness: c = sqrt(gH) ~ 108 m/s
 inline double THERM_H_PER_K = 10.0; // m of height per K of warmth
 inline double THERM_TAU = 2.0 * 86400.0; // s, how fast thickness follows warmth
 // Away from the Coriolis balance -- at the equator, where f goes to zero --
@@ -202,11 +223,17 @@ inline double THERM_TAU = 2.0 * 86400.0; // s, how fast thickness follows warmth
 // it limited it to 260 m/s. Eight hours is what the old balanced solve used,
 // and it is the honest boundary-layer figure.
 inline double WIND_DRAG = 1.0 / (8.0 * 3600.0); // s^-1
-inline double DYN_VISC = 2.0e5;     // m2/s, keeps the grid-scale quiet
-constexpr int DYN_SUBSTEPS = 6;     // ten minutes each
+inline double DYN_VISC = 6.0e5;     // m2/s, keeps the grid-scale quiet
+// Gravity waves run at sqrt(gH) = 171 m/s, and the meridians crowd: a cell
+// at 70 degrees is 71 km wide, so a stable step there is about 200 seconds.
+// At ten minutes the dynamics were unstable and simply saturated -- 73 m/s
+// of wind everywhere, sitting on the safety clamp, blowing every cell empty
+// (10% humidity) before any moisture could gather.
+constexpr int DYN_SUBSTEPS = 18;    // 200 seconds each
 
 struct Climatology {
     double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
+    double dbgWv = 0, dbgWind = 0, dbgRH = 0;     // PROBE: water, wind, saturation
     // [season][cell]
     std::vector<float> meanT, rainMmDay, snowMmDay, rainProb, windU, windV, cloud, diurnal;
     std::vector<float> elev; // [cell], the model's smoothed elevation (for lapse correction)
@@ -248,10 +275,12 @@ struct Model {
     std::vector<double> nT, nW, nu, nv, div, rainStep, Tsl;
     std::vector<double> Ta, nTa, Tasl; // the air: its own heat, and reduced to sea level
     std::vector<double> hP, nhP, nu2, nv2; // the moving air: thickness and momentum
+    std::vector<double> hWant, hTmp;       // what the warmth asks of the height, smoothed
     std::vector<double> soil;          // land water store, mm: what there is to evaporate
     std::vector<double> evapAcc, rainAcc, madeAcc; // PROBE, one cell per thread: no atomics
     std::vector<double> capArr;                    // how much each cell's air can hold
     std::vector<double> fluxE, fluxN;              // moisture across each cell's east/north face
+    std::vector<double> wvAcc;                     // PROBE: column water over time
     double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
     // probe diagnostics (an equatorial cell): daily sums of the T budget terms
     int probe = 4 * W + W / 2; // south-polar cell for the current investigation
@@ -317,6 +346,8 @@ struct Model {
         Tasl.assign(W * H, 0.0);
         hP.assign(W * H, 0.0);
         nhP.assign(W * H, 0.0);
+        hWant.assign(W * H, 0.0);
+        hTmp.assign(W * H, 0.0);
         nu2.assign(W * H, 0.0);
         nv2.assign(W * H, 0.0);
         soil.assign(W * H, SOIL_REF_MM); // half full; the spin-up settles it
@@ -326,6 +357,7 @@ struct Model {
         capArr.assign(W * H, 0.0);
         fluxE.assign(W * H, 0.0);
         fluxN.assign(W * H, 0.0);
+        wvAcc.assign(W * H, 0.0);
     }
 
     // Zonal smoothing towards the poles, where the meridians crowd together
@@ -343,6 +375,30 @@ struct Model {
                                      0.25 * f[idx(wrapX(x + 1), y)];
                 for (int x = 0; x < W; x++) f[idx(x, y)] = tmp[idx(x, y)];
             }
+        }
+    }
+
+    // What the warmth asks of the height field, smoothed. A height is the
+    // depth-averaged warmth of a column, so it varies over a thousand
+    // kilometres, not over one grid cell: taken raw, a coastline's 20 K
+    // land-sea contrast became a 200 m step in 200 km, which is a geostrophic
+    // wind of a hundred metres a second. Measured at 72 m/s -- pinned to the
+    // safety clamp -- with the air at 12% humidity, because a wind like that
+    // empties every cell it crosses before anything can gather in it. The old
+    // model smoothed its pressure field twice for exactly this reason.
+    void thermalTarget() {
+        for (int i = 0; i < W * H; i++)
+            hWant[i] = THERM_H_PER_K * std::clamp(Ta[i] - (-25.0), -60.0, 60.0);
+        for (int pass = 0; pass < 4; pass++) {
+            for (int y = 0; y < H; y++)
+                for (int x = 0; x < W; x++) {
+                    int i = idx(x, y);
+                    int yn = std::min(y + 1, H - 1), ys = std::max(y - 1, 0);
+                    hTmp[i] = 0.4 * hWant[i] +
+                              0.15 * (hWant[idx(wrapX(x + 1), y)] + hWant[idx(wrapX(x - 1), y)] +
+                                      hWant[idx(x, yn)] + hWant[idx(x, ys)]);
+                }
+            std::swap(hWant, hTmp);
         }
     }
 
@@ -389,8 +445,7 @@ struct Model {
                 // Warm air stands taller: thickness relaxes towards what the
                 // air temperature asks for, which is what raises highs over
                 // warm ground and digs lows over cold.
-                double want = THERM_H_PER_K * (Ta[i] - (-25.0));
-                want = std::clamp(want, -600.0, 600.0);
+                double want = hWant[i];
                 nhP[i] = hP[i] + dt * (conv + (want - hP[i]) / THERM_TAU);
                 nhP[i] = std::clamp(nhP[i], -0.5 * H_LAYER, 0.5 * H_LAYER);
             }
@@ -428,6 +483,7 @@ struct Model {
 
         // The air moves itself: six ten-minute steps of thickness and wind
         // inside this hour of radiation and water.
+        thermalTarget();
         for (int k = 0; k < DYN_SUBSTEPS; k++) stepDynamics(DT / DYN_SUBSTEPS);
 
         // Divergence -> uplift; orographic uplift from wind into slope.
@@ -551,7 +607,7 @@ struct Model {
                 double sens = (lapseGap > 0 ? K_SURF_AIR : K_STABLE) * lapseGap;
                 // Evaporation, priced: what the air can still hold, what the
                 // ground has to give, and what the sun can pay for.
-                double cap = capOf(T[i]) * (1.0 + SUBSIDE_DRY * std::max(-div[i], 0.0));
+                double cap = capOf(T[i]) * (1.0 + SUBSIDE_DRY * std::max(-div[i], 0.0) * 0.001);
                 double supply = water[i] ? 1.0 : std::clamp(soil[i] / SOIL_REF_MM, 0.0, 1.0);
                 double evap = (water[i] ? EVAP_WATER : EVAP_LAND) * supply *
                               std::max(1.0 - Wv[i] / std::max(cap, 1.0), 0.0) *
@@ -594,24 +650,20 @@ struct Model {
                 }
                 // How fast the air here is rising, from every cause there is.
                 double gtx = (Tsl[xe] - Tsl[xw]) / (2 * dx), gty = (Tsl[yn] - Tsl[ys]) / (2 * dy);
-                // Orographic: wind blowing up a slope. Absent until now, and it
-                // is most of why a coast is wet and the country behind a range
-                // is not.
-                double dhx = (elev[xe] - elev[xw]) / (2 * dx), dhy = (elev[yn] - elev[ys]) / (2 * dy);
-                double wOro = W_OROG * (ua * dhx + va * dhy);
+                // (Orography is already in div[], from the block above.)
                 // Convective: ground hotter than the air above it, which is
                 // exactly the instability the surface budget already computes.
                 double wConv = W_CONV * std::max(sens, 0.0);
                 // Large-scale ascent where the flow converges, and frontal
                 // lifting where warm air meets cold.
-                double wDiv = W_DIVERGE * std::max(-div[i], 0.0);
+                double wDiv = W_DIVERGE * std::max(div[i], 0.0);
                 double wFront = W_FRONT * std::sqrt(gtx * gtx + gty * gty);
-                double wUp = std::max(wOro, 0.0) + wConv + wDiv + wFront;
-                // What that lifting carries through the condensation level,
-                // plus what condenses simply because the air cooled below its
-                // dew point on the way here.
-                double lifted = Wv[i] * std::clamp(wUp * DT / H_MOIST, 0.0, 0.6);
-                double rain = lifted + std::max(Wv[i] - RAIN_FRAC * cap, 0.0) * RAIN_RATE;
+                double wUp = wConv + wDiv + wFront;
+                // Ascent cools the air and takes its capacity down with it;
+                // descent warms it and gives capacity back. What is left over
+                // is what falls.
+                double capLift = cap * std::exp(-LIFT_COOL * wUp);
+                double rain = std::max(Wv[i] - RAIN_FRAC * capLift, 0.0) * RAIN_RATE;
                 double fe = fluxE[i], fw = fluxE[xw], fn = fluxN[i], fs = fluxN[ys];
                 // Flux form with per-face CFL limiting still lets four faces
                 // between them export more than the cell contains, and the
@@ -654,6 +706,9 @@ struct Model {
                     raw = 0.0;
                 }
                 evapAcc[i] += evap;
+                wvAcc[i] += Wv[i];
+                madeAcc[i] += 0; // (kept for the water probe)
+                rainAcc[i] += 0;
                 rainAcc[i] += rain;
                 madeAcc[i] += std::clamp(raw, 0.0, 90.0) - raw;
                 nW[i] = std::clamp(raw, 0.0, 90.0);
@@ -746,7 +801,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         }
     }
     {
-        double e = 0, r = 0, mk = 0, wsum = 0;
+        double e = 0, r = 0, mk = 0, wsum = 0, wv = 0, wnd = 0, rh = 0;
         for (int y = 0; y < H; y++) {
             double wgt = std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265);
             for (int x = 0; x < W; x++) {
@@ -754,6 +809,9 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                 e += m.evapAcc[i] * wgt;
                 r += m.rainAcc[i] * wgt;
                 mk += m.madeAcc[i] * wgt;
+                wv += m.wvAcc[i] * wgt;
+                wnd += std::sqrt(m.u[i] * m.u[i] + m.v[i] * m.v[i]) * wgt;
+                rh += (m.Wv[i] / std::max(capOf(m.T[i]), 0.05)) * wgt;
                 wsum += wgt;
             }
         }
@@ -762,6 +820,9 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         c.dbgEvap = e / wsum / std::max(hours, 1.0) * 24.0;
         c.dbgRain = r / wsum / std::max(hours, 1.0) * 24.0;
         c.dbgClamp = mk / wsum / std::max(hours, 1.0) * 24.0;
+        c.dbgWv = wv / wsum / std::max(hours, 1.0);
+        c.dbgWind = wnd / wsum;   // instantaneous, at the end of the run
+        c.dbgRH = rh / wsum;
     }
     for (int s = 0; s < SEASONS; s++) {
         double hours = cnt[s] * 24.0;

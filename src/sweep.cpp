@@ -132,11 +132,11 @@ int main(int argc, char** argv) {
     // its way there, so it arrives with its whole load. K_DIFF is that pipe.
     // With transport conservative at last, the pump is bounded and the world
     // can be warmed and watered without it running away.
-    const double cAir[] = {0.12, 0.20};           // EVAP_WATER
-    const double kdiff2[] = {0.8e6, 2.2e6};        // KT_DIFF: heat to the poles
-    const double ktDiff[] = {0.0005, 0.002, 0.008}; // W_CONV: rain over warm land
+    const double cAir[] = {0.18};                 // EVAP_WATER
+    const double kdiff2[] = {1.5e6};               // KT_DIFF
+    const double ktDiff[] = {0.20, 0.27};         // CLOUD_ALBEDO
     const double kSurf[] = {5.0};
-    const double emiss[] = {0.992, 0.998};
+    const double emiss[] = {0.955, 0.975};
 
     double best = 1e30;
     std::string bestName;
@@ -150,9 +150,9 @@ int main(int argc, char** argv) {
                     atmosphere::K_DIFF = 2.0e5;
                     atmosphere::EVAP_WATER = ca2;
                     atmosphere::EVAP_LAND = ca2 * 0.28;
-                    atmosphere::W_CONV = kt;
+                    atmosphere::CLOUD_ALBEDO = kt;
                     atmosphere::K_STABLE = 0.8;
-                    atmosphere::CLOUD_ALBEDO = 0.16;
+
                     atmosphere::K_SURF_AIR = wf;
                     atmosphere::W_FRONT = 200.0;
                     atmosphere::EMISS = em;
@@ -161,13 +161,14 @@ int main(int argc, char** argv) {
                     Score s = judge(c);
                     char line[512];
                     snprintf(line, sizeof line,
-                             "EV %.2f KT %.1e WC %.4f KS %4.1f EM %.3f | err %6.1f | mean %5.1f rain "
+                             "EV %.2f KT %.1e CA %.2f KS %4.1f EM %.3f | err %6.1f | mean %5.1f rain "
                              "%4.2f pRain %4.1f dry %3.0f%% | eq %5.1f sub %5.1f mls %5.1f mlw %5.1f 60s "
                              "%5.1f 60w %5.1f ps %5.1f pw %5.1f",
                              ca2, kd, kt, wf, em, s.err, s.mean, s.rain, s.polarRain, s.desert * 100, s.spot[0],
                              s.spot[1], s.spot[2], s.spot[3], s.spot[4], s.spot[5], s.spot[6],
                              s.spot[7]);
-                    fprintf(stderr, "%s\n", line);
+                    fprintf(stderr, "%s | Wv %5.2f mm, airborne %4.1f days, wind %4.1f m/s, RH %3.0f%%\n", line, c.dbgWv,
+                            c.dbgWv / std::max(c.dbgRain, 1e-6), c.dbgWind, c.dbgRH * 100);
                     fflush(stderr);
                     if (s.err < best) {
                         best = s.err;
