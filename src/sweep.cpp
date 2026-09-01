@@ -164,35 +164,57 @@ int main(int argc, char** argv) {
         // inversions: a reading of -32 at 62 degrees next to -4 at 82 is not
         // a calibration error, it is something structurally wrong in between,
         // and only the whole curve says where.
-        // The polar rows, and where each one's water comes from. Wv is what
-        // the column holds, cap what it could; evap is what the surface gave
-        // it, adv what the wind brought, dif what the eddies mixed in, rain
-        // what fell, and lat the heat that fell out with it. Every water term
-        // is mm/day, so they have to add up.
-        fprintf(stderr,
-                "\n%6s %6s %6s %7s %7s %7s %7s %7s %7s %7s %6s\n",
-                "lat", "Tsfc", "spd", "Wv", "|vel|", "evap", "supply", "capped", "rain", "lat W", "land");
-        for (int y = AH - 1; y >= AH / 2 - 14; y--) {
-            double la = ((y + 0.5) / (double)AH - 0.5) * 180.0;
-            double ts = 0, ta = 0, wv = 0, cp = 0, ev = 0, ad = 0, df = 0, rn = 0, lt = 0;
-            double ldf = 0;
-            for (int x = 0; x < AW; x++) {
-                int i = y * AW + x, j = 2 * AW * AH + i;
-                ts += c.meanT[j];
-                ta += c.spdF[j];
-                wv += c.wv[j];
-                cp += std::sqrt(c.windU[j] * c.windU[j] + c.windV[j] * c.windV[j]);
-                ev += c.evapF[j];
-                ad += c.supplyF[j];
-                df += c.affordF[j];
-                rn += c.rainMmDay[j];
-                lt += c.latF[j];
-                ldf += c.elev[i] > 0.0f ? 1.0 : 0.0;
+        // Cloud, against what is actually up there. The global mean is the
+        // easy half and it already matches; the pattern is the half that
+        // decides whether a planet LOOKS right, because Earth's cloud is
+        // clumped -- an overcast storm track, a clear subtropical high -- and
+        // a uniform sixty percent everywhere would hit the same mean while
+        // looking nothing like it.
+        //
+        // Observed zonal-mean total cloud amount, for the column on the right.
+        static const struct { int lat; int obs; } OBS[] = {
+            {85, 70}, {75, 73}, {65, 75}, {55, 74}, {45, 68}, {35, 57},
+            {25, 50}, {15, 53}, {5, 66},  {-5, 66}, {-15, 53}, {-25, 52},
+            {-35, 62}, {-45, 76}, {-55, 82}, {-65, 78}, {-75, 72}, {-85, 65},
+        };
+        fprintf(stderr, "\n%6s %7s %7s %7s %7s %7s\n", "lat", "cloud", "observed",
+                "RH", "land", "sea");
+        for (size_t k = 0; k < sizeof OBS / sizeof OBS[0]; k++) {
+            int y = (int)((OBS[k].lat / 180.0 + 0.5) * AH);
+            y = y < 0 ? 0 : (y >= AH ? AH - 1 : y);
+            double cl = 0, rh = 0, cLand = 0, nLand = 0, cSea = 0, nSea = 0;
+            for (int x = 0; x < AW; x++)
+                for (int se = 0; se < atmosphere::SEASONS; se++) {
+                    int j = se * AW * AH + y * AW + x;
+                    cl += c.cloud[j];
+                    rh += c.rh[j];
+                    if (c.elev[y * AW + x] > 0.0f) { cLand += c.cloud[j]; nLand += 1; }
+                    else { cSea += c.cloud[j]; nSea += 1; }
+                }
+            double n = AW * (double)atmosphere::SEASONS;
+            fprintf(stderr, "%6d %6.0f%% %6d%% %6.0f%% %6.0f%% %6.0f%%\n", OBS[k].lat,
+                    100 * cl / n, OBS[k].obs, 100 * rh / n, nLand > 0 ? 100 * cLand / nLand : 0.0,
+                    nSea > 0 ? 100 * cSea / nSea : 0.0);
+        }
+        // And the distribution. Earth has genuinely clear skies and genuinely
+        // overcast ones; a model whose every cell sits near the mean has the
+        // right average and the wrong sky.
+        {
+            int bins[5] = {0, 0, 0, 0, 0};
+            double tot = 0;
+            for (int i = 0; i < AW * AH * atmosphere::SEASONS; i++) {
+                double v = c.cloud[i];
+                int k = (int)std::min(4.0, std::floor(v * 5.0));
+                bins[k < 0 ? 0 : k]++;
+                tot += 1;
             }
             fprintf(stderr,
-                    "%6.1f %6.1f %6.1f %7.2f %7.2f %7.3f %7.3f %7.3f %7.3f %7.1f %6.3f\n",
-                    la, ts / AW, ta / AW, wv / AW, cp / AW, ev / AW, ad / AW, df / AW, rn / AW,
-                    lt / AW, ldf / AW);
+                    "\ncloud spread   <20%%:%4.0f%%  20-40:%4.0f%%  40-60:%4.0f%%  "
+                    "60-80:%4.0f%%  >80%%:%4.0f%%\n",
+                    100 * bins[0] / tot, 100 * bins[1] / tot, 100 * bins[2] / tot,
+                    100 * bins[3] / tot, 100 * bins[4] / tot);
+            fprintf(stderr, "life           <20%%:  18%%  20-40:  13%%  40-60:  16%%  "
+                            "60-80:  21%%  >80%%:  32%%\n");
         }
         return 0;
     }
