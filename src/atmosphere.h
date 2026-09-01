@@ -43,7 +43,7 @@ constexpr double SOLAR = 1361.0;
 // 5 W/m2/K of radiation plus 15 of convection, twenty times the old figure,
 // and it stiffens as things warm, which is what stops a runaway.
 constexpr double SIGMA = 5.670374e-8;
-inline double EMISS = 0.978;        // how much of the surface's longwave the air holds
+inline double EMISS = 0.992;        // how much of the surface's longwave the air holds
 // The whole column. A thinner, more responsive layer (3e6, the lowest
 // kilometre or two) gives a far better seasonal swing and much better
 // mid-latitudes -- and hands the poles back to the latent pump, +22 degC in
@@ -94,7 +94,7 @@ constexpr double SNOW_FULL_C = -8.0, SNOW_NONE_C = 2.0;
 // Clouds reflect about a fifth of the sunlight. With only ground albedo the
 // model absorbs some 300 W/m2 against Earth's 240, and no greenhouse setting
 // can balance that.
-inline double CLOUD_ALBEDO = 0.22;
+inline double CLOUD_ALBEDO = 0.16;
 constexpr double C_WATER = 1.0e8;               // ~25 m slab ocean
 constexpr double C_LAND = 3.0e6;                // thin soil; scaled by inertia
 // Winds: diagnostic Ekman-style balance r*u - f x u = -grad(P)/rho, solved
@@ -112,7 +112,7 @@ constexpr double CAP0 = 15.0, CAP_T0 = 15.0, CAP_SCALE = 14.4; // doubles per 10
 // oceans. At 0.20 this model asked for 7 once the heat was allowed to follow
 // the water, and the heat released where that rain fell cooked the poles to
 // +50 degC.
-inline double EVAP_WATER = 0.09, EVAP_LAND = 0.025;         // kg/m^2 per h at full deficit
+inline double EVAP_WATER = 0.12, EVAP_LAND = 0.034;         // kg/m^2 per h at full deficit
 constexpr double H_FLOW = 1500.0;               // m, depth of the inflow layer
 // Rain falls when moisture exceeds a fraction of the effective capacity.
 // Vertical motion modulates that capacity: uplift (convergence, windward
@@ -154,6 +154,37 @@ constexpr double SNOW_T = 0.5;                  // degC: colder precipitation is
 // eddy diffusivity stands in for the whole poleward heat transport, as in
 // Budyko-style energy-balance models.
 inline double KT_DIFF = 2.2e6;               // m^2/s eddy diffusion of heat
+
+// ---------------------------------------------------------- the moving air
+//
+// Pressure used to be a function of temperature: smooth the temperature
+// field twice, call it pressure, solve a balance for an instantaneous wind.
+// Nothing persisted, nothing was carried, and a high vanished the moment the
+// temperature beneath it changed. Transport was therefore a diffusion
+// constant -- scale-free, memoryless, and unable to feed the mid-latitudes
+// without flooding the poles, which is the wall the whole calibration ran
+// into.
+//
+// Now the air has state. Mass converges and the layer thickens; the wind
+// answers the slope; the mass moves on. Highs and lows form, drift, and die,
+// and they carry heat and water with them -- which is transport that arrives
+// dry, because it rained on the way.
+//
+// The wave speed is the atmosphere's FIRST INTERNAL mode, about 50 m/s, not
+// the external mode's 300: weather travels at the former, and the latter
+// would need a two-minute timestep. That is what makes ten-minute dynamics
+// inside an hour of physics stable.
+inline double GPRIME = 12.0;        // m/s2, reduced gravity of the active layer
+inline double H_LAYER = 200.0;      // m, its mean thickness: c = sqrt(g'H) ~ 49 m/s
+inline double THERM_H_PER_K = 0.75; // m of thickness per K of warmth
+inline double THERM_TAU = 2.0 * 86400.0; // s, how fast thickness follows warmth
+// Away from the Coriolis balance -- at the equator, where f goes to zero --
+// drag is the only thing that limits the wind, and at one part in 2.5 days
+// it limited it to 260 m/s. Eight hours is what the old balanced solve used,
+// and it is the honest boundary-layer figure.
+inline double WIND_DRAG = 1.0 / (8.0 * 3600.0); // s^-1
+inline double DYN_VISC = 2.0e5;     // m2/s, keeps the grid-scale quiet
+constexpr int DYN_SUBSTEPS = 6;     // ten minutes each
 
 struct Climatology {
     double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
@@ -197,9 +228,11 @@ struct Model {
     // scratch
     std::vector<double> nT, nW, nu, nv, div, rainStep, Tsl;
     std::vector<double> Ta, nTa, Tasl; // the air: its own heat, and reduced to sea level
+    std::vector<double> hP, nhP, nu2, nv2; // the moving air: thickness and momentum
     std::vector<double> soil;          // land water store, mm: what there is to evaporate
     std::vector<double> evapAcc, rainAcc, madeAcc; // PROBE, one cell per thread: no atomics
     std::vector<double> capArr;                    // how much each cell's air can hold
+    std::vector<double> fluxE, fluxN;              // moisture across each cell's east/north face
     double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
     // probe diagnostics (an equatorial cell): daily sums of the T budget terms
     int probe = 4 * W + W / 2; // south-polar cell for the current investigation
@@ -263,11 +296,96 @@ struct Model {
         Ta = T; // the air starts wherever the ground is
         nTa.assign(W * H, 0.0);
         Tasl.assign(W * H, 0.0);
+        hP.assign(W * H, 0.0);
+        nhP.assign(W * H, 0.0);
+        nu2.assign(W * H, 0.0);
+        nv2.assign(W * H, 0.0);
         soil.assign(W * H, SOIL_REF_MM); // half full; the spin-up settles it
         evapAcc.assign(W * H, 0.0);
         rainAcc.assign(W * H, 0.0);
         madeAcc.assign(W * H, 0.0);
         capArr.assign(W * H, 0.0);
+        fluxE.assign(W * H, 0.0);
+        fluxN.assign(W * H, 0.0);
+    }
+
+    // Zonal smoothing towards the poles, where the meridians crowd together
+    // and a stable timestep would otherwise be seconds. The classic polar
+    // filter: the closer to the pole, the more passes.
+    void polarFilter(std::vector<double>& f) {
+        static std::vector<double> tmp;
+        tmp.resize(W * H);
+        for (int y = 1; y < H - 1; y++) {
+            double cosl = std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265);
+            int passes = (int)std::clamp(0.35 / std::max(cosl, 0.02) - 0.8, 0.0, 6.0);
+            for (int k = 0; k < passes; k++) {
+                for (int x = 0; x < W; x++)
+                    tmp[idx(x, y)] = 0.25 * f[idx(wrapX(x - 1), y)] + 0.5 * f[idx(x, y)] +
+                                     0.25 * f[idx(wrapX(x + 1), y)];
+                for (int x = 0; x < W; x++) f[idx(x, y)] = tmp[idx(x, y)];
+            }
+        }
+    }
+
+    // Ten minutes of air. Thickness answers convergence and warmth; the wind
+    // answers the slope of the thickness, turned by the Coriolis force and
+    // slowed by the ground.
+    void stepDynamics(double dt) {
+        double dx0 = 2 * 3.14159265 * R_EARTH / W;
+        double dy = 3.14159265 * R_EARTH / H;
+#pragma omp parallel for
+        for (int y = 1; y < H - 1; y++) {
+            double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.05);
+            double dx = dx0 * cosl;
+            double cosN = std::max(std::cos(((y + 1.0) / (double)H - 0.5) * 3.14159265), 0.02);
+            double cosS = std::max(std::cos(((y + 0.0) / (double)H - 0.5) * 3.14159265), 0.02);
+            for (int x = 0; x < W; x++) {
+                int i = idx(x, y);
+                int xe = idx(wrapX(x + 1), y), xw = idx(wrapX(x - 1), y);
+                int yn = idx(x, y + 1), ys = idx(x, y - 1);
+                double f = 2 * OMEGA * std::sin(latRad[i]);
+                // Momentum: down the slope of the thickness, turned by the
+                // planet's spin, dragged by the surface.
+                double dhx = (hP[xe] - hP[xw]) / (2 * dx);
+                double dhy = (hP[yn] - hP[ys]) / (2 * dy);
+                double lapU = (u[xe] + u[xw] - 2 * u[i]) / (dx * dx) +
+                              (u[yn] + u[ys] - 2 * u[i]) / (dy * dy);
+                double lapV = (v[xe] + v[xw] - 2 * v[i]) / (dx * dx) +
+                              (v[yn] + v[ys] - 2 * v[i]) / (dy * dy);
+                nu2[i] = u[i] + dt * (-GPRIME * dhx + f * v[i] - WIND_DRAG * u[i] + DYN_VISC * lapU);
+                nv2[i] = v[i] + dt * (-GPRIME * dhy - f * u[i] - WIND_DRAG * v[i] + DYN_VISC * lapV);
+                // Nothing on this planet blows at 200 m/s; a cap keeps a bad
+                // gradient from taking the whole field with it.
+                nu2[i] = std::clamp(nu2[i], -70.0, 70.0);
+                nv2[i] = std::clamp(nv2[i], -70.0, 70.0);
+                // Continuity: what the wind carries in, the column keeps --
+                // with the meridians' convergence counted, or mass appears
+                // from nowhere at high latitude.
+                double hh = H_LAYER + hP[i];
+                double fluxE = 0.5 * (u[i] + u[xe]) * 0.5 * (hh + H_LAYER + hP[xe]);
+                double fluxW = 0.5 * (u[xw] + u[i]) * 0.5 * (H_LAYER + hP[xw] + hh);
+                double fluxN = 0.5 * (v[i] + v[yn]) * 0.5 * (hh + H_LAYER + hP[yn]) * (cosN / cosl);
+                double fluxS = 0.5 * (v[ys] + v[i]) * 0.5 * (H_LAYER + hP[ys] + hh) * (cosS / cosl);
+                double conv = -((fluxE - fluxW) / (2 * dx) + (fluxN - fluxS) / (2 * dy));
+                // Warm air stands taller: thickness relaxes towards what the
+                // air temperature asks for, which is what raises highs over
+                // warm ground and digs lows over cold.
+                double want = THERM_H_PER_K * (Ta[i] - (-25.0));
+                nhP[i] = hP[i] + dt * (conv + (want - hP[i]) / THERM_TAU);
+                nhP[i] = std::clamp(nhP[i], -0.8 * H_LAYER, 2.0 * H_LAYER);
+            }
+        }
+        for (int x = 0; x < W; x++) {
+            nu2[idx(x, 0)] = nv2[idx(x, 0)] = nu2[idx(x, H - 1)] = nv2[idx(x, H - 1)] = 0.0;
+            nhP[idx(x, 0)] = nhP[idx(x, 1)];
+            nhP[idx(x, H - 1)] = nhP[idx(x, H - 2)];
+        }
+        std::swap(u, nu2);
+        std::swap(v, nv2);
+        std::swap(hP, nhP);
+        polarFilter(u);
+        polarFilter(v);
+        polarFilter(hP);
     }
 
     // One hour. doy in [0,365), hourOfDay in [0,24).
@@ -288,40 +406,9 @@ struct Model {
             capArr[i] = std::max(capOf(T[i]), 0.05);
         }
 
-        // Pressure field from twice-smoothed T, then the balanced wind:
-        // r*u - f v = -Px/rho ; f*u + r*v = -Py/rho.
-#pragma omp parallel for
-        for (int y = 0; y < H; y++)
-            for (int x = 0; x < W; x++) {
-                int i = idx(x, y);
-                int yn = std::min(y + 1, H - 1), ys = std::max(y - 1, 0);
-                nT[i] = 0.5 * Tsl[i] + 0.125 * (Tsl[idx(wrapX(x + 1), y)] + Tsl[idx(wrapX(x - 1), y)] +
-                                                Tsl[idx(x, yn)] + Tsl[idx(x, ys)]);
-            }
-#pragma omp parallel for
-        for (int y = 0; y < H; y++)
-            for (int x = 0; x < W; x++) {
-                int i = idx(x, y);
-                int yn = std::min(y + 1, H - 1), ys = std::max(y - 1, 0);
-                nW[i] = 0.5 * nT[i] + 0.125 * (nT[idx(wrapX(x + 1), y)] + nT[idx(wrapX(x - 1), y)] +
-                                               nT[idx(x, yn)] + nT[idx(x, ys)]);
-            }
-#pragma omp parallel for
-        for (int y = 1; y < H - 1; y++) {
-            double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.2);
-            double dx = dx0 * cosl;
-            for (int x = 0; x < W; x++) {
-                int i = idx(x, y);
-                double px = -P_PER_DEG * (nW[idx(wrapX(x + 1), y)] - nW[idx(wrapX(x - 1), y)]) / (2 * dx);
-                double py = -P_PER_DEG * (nW[idx(x, y + 1)] - nW[idx(x, y - 1)]) / (2 * dy);
-                double X = -px / RHO, Y = -py / RHO;
-                double f = 2 * OMEGA * std::sin(latRad[i]);
-                double r = FRICTION, den = r * r + f * f;
-                u[i] = (r * X + f * Y) / den;
-                v[i] = (-f * X + r * Y) / den;
-            }
-        }
-        for (int x = 0; x < W; x++) { u[idx(x, 0)] = v[idx(x, 0)] = u[idx(x, H - 1)] = v[idx(x, H - 1)] = 0; }
+        // The air moves itself: six ten-minute steps of thickness and wind
+        // inside this hour of radiation and water.
+        for (int k = 0; k < DYN_SUBSTEPS; k++) stepDynamics(DT / DYN_SUBSTEPS);
 
         // Divergence -> uplift; orographic uplift from wind into slope.
 #pragma omp parallel for
@@ -337,6 +424,66 @@ struct Model {
                               v[i] * (elev[idx(x, y + 1)] - elev[idx(x, y - 1)]) / (2 * dy));
                 div[i] = wup + std::max(oro, 0.0) - std::max(-oro, 0.0) * 0.5;
             }
+        }
+
+        // Moisture transport, done conservatively and in three passes.
+        //
+        // One pass cannot do it: a cell has four faces, and each on its own
+        // may pass the CFL check while the four together export more water
+        // than the cell contains. Whatever was clamped away then reappeared
+        // at the neighbours, who had already been promised the full flux --
+        // rain came to four and a half times the world's evaporation, and
+        // that phantom water is what cooked the poles every time this model
+        // was pushed. So: compute every face, find what each cell would lose,
+        // scale ITS OWN faces down until it can afford them, and only then
+        // apply. What one cell sends is what the next receives.
+        {
+            double dx0 = 2 * 3.14159265 * R_EARTH / W;
+            double dy = 3.14159265 * R_EARTH / H;
+#pragma omp parallel for
+            for (int y = 0; y < H; y++) {
+                double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.05);
+                double dx = dx0 * cosl;
+                for (int x = 0; x < W; x++) {
+                    int i = idx(x, y), xe = idx(wrapX(x + 1), y);
+                    int yn = idx(x, std::min(y + 1, H - 1));
+                    double ue = 0.5 * (u[i] + u[xe]);
+                    double vn = 0.5 * (v[i] + v[yn]);
+                    // Upwind, and each face carries humidity rather than an
+                    // absolute load: air arriving somewhere colder is already
+                    // at saturation and leaves the rest behind it.
+                    double capE = std::min(capArr[i], capArr[xe]);
+                    double capN = std::min(capArr[i], capArr[yn]);
+                    fluxE[i] = ue * (ue > 0 ? Wv[i] / capArr[i] : Wv[xe] / capArr[xe]) * capE / dx;
+                    fluxN[i] = (y >= H - 1) ? 0.0
+                                            : vn * (vn > 0 ? Wv[i] / capArr[i] : Wv[yn] / capArr[yn]) *
+                                                  capN / dy;
+                }
+            }
+#pragma omp parallel for
+            for (int y = 1; y < H - 1; y++) {
+                double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.05);
+                double cosN = std::max(std::cos(((y + 1.0) / (double)H - 0.5) * 3.14159265), 0.02);
+                double cosS = std::max(std::cos(((y + 0.0) / (double)H - 0.5) * 3.14159265), 0.02);
+                for (int x = 0; x < W; x++) {
+                    int i = idx(x, y), xw = idx(wrapX(x - 1), y), ys = idx(x, y - 1);
+                    double out = std::max(fluxE[i], 0.0) + std::max(-fluxE[xw], 0.0) +
+                                 (cosN / cosl) * std::max(fluxN[i], 0.0) +
+                                 (cosS / cosl) * std::max(-fluxN[ys], 0.0);
+                    capArr[i] = out * DT > 1e-12 ? std::min(1.0, 0.9 * Wv[i] / (out * DT)) : 1.0;
+                }
+            }
+            // capArr now holds each cell's affordable share; scale its own
+            // outgoing faces by it, then it is free to be capacity again.
+#pragma omp parallel for
+            for (int y = 1; y < H - 1; y++)
+                for (int x = 0; x < W; x++) {
+                    int i = idx(x, y), xe = idx(wrapX(x + 1), y), yn = idx(x, y + 1);
+                    fluxE[i] *= fluxE[i] > 0 ? capArr[i] : capArr[xe];
+                    fluxN[i] *= fluxN[i] > 0 ? capArr[i] : capArr[yn];
+                }
+#pragma omp parallel for
+            for (int i = 0; i < W * H; i++) capArr[i] = std::max(capOf(T[i]), 0.05);
         }
 
         // Thermodynamics + moisture, upwind advection + diffusion.
@@ -445,14 +592,7 @@ struct Model {
                 // dew point on the way here.
                 double lifted = Wv[i] * std::clamp(wUp * DT / H_MOIST, 0.0, 0.6);
                 double rain = lifted + std::max(Wv[i] - RAIN_FRAC * cap, 0.0) * RAIN_RATE;
-                auto face = [&](double ur, double Wl, double Wr, double dd) {
-                    double uc = std::clamp(ur, -0.8 * dd / DT, 0.8 * dd / DT);
-                    return (uc > 0 ? Wl : Wr) * uc / dd;
-                };
-                double fe = face(0.5 * (u[i] + u[xe]), Wv[i], Wv[xe], dx);
-                double fw = face(0.5 * (u[xw] + u[i]), Wv[xw], Wv[i], dx);
-                double fn = face(0.5 * (v[i] + v[yn]), Wv[i], Wv[yn], dy);
-                double fs = face(0.5 * (v[ys] + v[i]), Wv[ys], Wv[i], dy);
+                double fe = fluxE[i], fw = fluxE[xw], fn = fluxN[i], fs = fluxN[ys];
                 // Flux form with per-face CFL limiting still lets four faces
                 // between them export more than the cell contains, and the
                 // clamp below then invents the shortfall. Measured: rain came

@@ -109,20 +109,26 @@ int main(int argc, char** argv) {
     // Round four. Everything but the poles is on target; what is left is that
     // moisture DIFFUSES to the pole rather than travelling by wind and raining
     // its way there, so it arrives with its whole load. K_DIFF is that pipe.
-    const double cAir[] = {2.0e5, 5.0e5, 1.0e6};  // K_DIFF
-    const double ktDiff[] = {2.2e6, 3.0e6};
+    // With transport conservative at last, the pump is bounded and the world
+    // can be warmed and watered without it running away.
+    const double cAir[] = {0.12};            // EVAP_WATER
+    const double kdiff2[] = {2.0e6, 4.0e6, 1.0e7};  // C_AIR, the seasonal question
+    const double ktDiff[] = {0.16};   // CLOUD_ALBEDO
     const double kSurf[] = {5.0};
-    const double emiss[] = {0.978, 0.988};
+    const double emiss[] = {0.992};
 
     double best = 1e30;
     std::string bestName;
     for (double ca2 : cAir)
+      for (double kd : kdiff2)
         for (double kt : ktDiff)
             for (double wf : kSurf)
                 for (double em : emiss) {
-                    atmosphere::K_DIFF = ca2;
-                    atmosphere::C_AIR = 1.0e7;
-                    atmosphere::KT_DIFF = kt;
+                    atmosphere::C_AIR = kd;
+                    atmosphere::K_DIFF = 2.0e5;
+                    atmosphere::EVAP_WATER = ca2;
+                    atmosphere::EVAP_LAND = ca2 * 0.28;
+                    atmosphere::CLOUD_ALBEDO = kt;
                     atmosphere::K_SURF_AIR = wf;
                     atmosphere::W_FRONT = 200.0;
                     atmosphere::EMISS = em;
@@ -131,10 +137,10 @@ int main(int argc, char** argv) {
                     Score s = judge(c);
                     char line[512];
                     snprintf(line, sizeof line,
-                             "K_DIFF %.1e KT %.1e KS %4.1f EM %.3f | err %7.2f | mean %5.1f rain "
+                             "EV %.2f CAIR %.0e CA %.2f KS %4.1f EM %.3f | err %6.1f | mean %5.1f rain "
                              "%4.2f polarRain %5.2f | eq %5.1f sub %5.1f mls %5.1f mlw %5.1f 60s "
                              "%5.1f 60w %5.1f ps %5.1f pw %5.1f",
-                             ca2, kt, wf, em, s.err, s.mean, s.rain, s.polarRain, s.spot[0],
+                             ca2, kd, kt, wf, em, s.err, s.mean, s.rain, s.polarRain, s.spot[0],
                              s.spot[1], s.spot[2], s.spot[3], s.spot[4], s.spot[5], s.spot[6],
                              s.spot[7]);
                     fprintf(stderr, "%s\n", line);
