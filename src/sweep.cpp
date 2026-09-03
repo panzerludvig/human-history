@@ -257,6 +257,99 @@ int main(int argc, char** argv) {
                     (tot - base) / std::max(nL, 1.0), q10, q50, q90, upl / std::max(nL, 1.0));
         }
 
+        // Everything above runs on the 192x96 atmosphere grid at the block-mean
+        // elevation, which means no lapse correction at all -- hLocal and the
+        // coarse elevation are the same number, so the term vanishes. The
+        // renderer does not do that. It calls deriveAt per pixel at the TRUE
+        // local height, and the lapse term there is worth several degrees in
+        // both directions inside a single 208 km cell. Sand needs ground above
+        // 2 C, so a report of sand near a pole cannot come from the coarse
+        // grid and has to be looked for the way the map draws it.
+        {
+            const int GW = hydrology::W, GH = hydrology::H;
+            const int NB = 12;
+            double sSand[NB] = {0}, sDes[NB] = {0}, sBare[NB] = {0}, sN[NB] = {0};
+            double sT[NB] = {0}, sM[NB] = {0}, hot = 0, hotN = 0;
+            #pragma omp parallel for
+            for (int y = 0; y < GH; y++) {
+                double lat = ((y + 0.5) / GH - 0.5) * 3.14159265;
+                // Accumulate the row privately and merge once, not per cell:
+                // a critical section two million times over is not a probe.
+                double rSand = 0, rDes = 0, rBare = 0, rT = 0, rM = 0, rN = 0, rHot = 0, rHotN = 0;
+                for (int x = 0; x < GW; x += 2) {
+                    float h = hy.heightM[y * GW + x];
+                    if (h <= 0) continue;
+                    double lon = ((x + 0.5) / GW * 2.0 - 1.0) * 3.14159265;
+                    terrain::V3 n{(float)(std::cos(lat) * std::cos(lon)),
+                                  (float)(std::cos(lat) * std::sin(lon)), (float)std::sin(lat)};
+                    terrain::V3 w = terrain::rotate(rot, n) + offset;
+                    atmosphere::DerivedClimate d =
+                        atmosphere::deriveAt(c, (float)lat, (float)lon, w, h);
+                    float slope = terrain::slopeAt(n, cp, seaLevel, 8, pf, rot, offset);
+                    float up = pf.sample({n.x, n.y, n.z}).uplift;
+                    terrain::Mixture m =
+                        terrain::mixtureAt(h, slope, d.temp, d.moist, up, false,
+                                           terrain::patchNoise(w), d.swamp, d.tCold, d.tWarm);
+                    rSand += m.sub[1]; rDes += m.cov[10]; rBare += m.cov[0];
+                    rT += d.temp; rM += d.moist; rN += 1;
+                    if (m.sub[1] > 0.4) { rHot += d.temp; rHotN += 1; }
+                }
+                if (rN < 1) continue;
+                int b = std::min(NB - 1, std::max(0, (int)((lat / 3.14159265 + 0.5) * NB)));
+                #pragma omp critical
+                {
+                    sSand[b] += rSand; sDes[b] += rDes; sBare[b] += rBare;
+                    sT[b] += rT; sM[b] += rM; sN[b] += rN;
+                    hot += rHot; hotN += rHotN;
+                }
+            }
+            fprintf(stderr, "\nAS THE MAP DRAWS IT: full resolution, deriveAt, real slope\n");
+            fprintf(stderr, "    %5s %8s %8s %8s %8s %8s\n", "lat", "sand", "desert", "bare",
+                    "degC", "moist");
+            double tot = 0, tS = 0, tD = 0, tB = 0;
+            for (int b = 0; b < NB; b++) {
+                if (sN[b] < 1) continue;
+                double la = ((b + 0.5) / NB - 0.5) * 180.0;
+                fprintf(stderr, "    %5.0f %7.1f%% %7.1f%% %7.1f%% %8.1f %8.2f\n", la,
+                        100 * sSand[b] / sN[b], 100 * sDes[b] / sN[b], 100 * sBare[b] / sN[b],
+                        sT[b] / sN[b], sM[b] / sN[b]);
+                tot += sN[b]; tS += sSand[b]; tD += sDes[b]; tB += sBare[b];
+            }
+            fprintf(stderr, "    %5s %7.1f%% %7.1f%% %7.1f%%   (mean annual temp where sand > 40%%: %.1f C)\n",
+                    "all", 100 * tS / std::max(tot, 1.0), 100 * tD / std::max(tot, 1.0),
+                    100 * tB / std::max(tot, 1.0), hot / std::max(hotN, 1.0));
+
+            // The cursor reads 0.0 mm/d wherever it is put down. A zonal mean
+            // of 0.84 is consistent both with land that drizzles everywhere
+            // and with land that is bone dry except for a few soaked cells,
+            // and those are different bugs. So count the cells, by season,
+            // since the readout is seasonal and the moisture is annual.
+            double hist[6] = {0}, nLand = 0, zeroAny = 0, zeroAll = 0;
+            const double EDGE[6] = {0.05, 0.5, 1.0, 2.0, 5.0, 1e9};
+            for (int i = 0; i < AW * AH; i++) {
+                if (c.elev[i] <= 0.0f) continue;
+                double ann = 0;
+                int nz = 0;
+                for (int se = 0; se < atmosphere::SEASONS; se++) {
+                    double r = c.rainMmDay[se * AW * AH + i];
+                    ann += r / atmosphere::SEASONS;
+                    if (r < 0.05) nz++;
+                }
+                for (int b = 0; b < 6; b++)
+                    if (ann < EDGE[b]) { hist[b] += 1; break; }
+                if (nz > 0) zeroAny += 1;
+                if (nz == atmosphere::SEASONS) zeroAll += 1;
+                nLand += 1;
+            }
+            fprintf(stderr, "\nHOW THE RAIN IS SPREAD OVER LAND (annual mean, mm/day)\n");
+            const char* LBL[6] = {"  < 0.05", "0.05-0.5", " 0.5-1.0", " 1.0-2.0",
+                                  " 2.0-5.0", "   > 5.0"};
+            for (int b = 0; b < 6; b++)
+                fprintf(stderr, "  %s %6.1f%%\n", LBL[b], 100 * hist[b] / std::max(nLand, 1.0));
+            fprintf(stderr, "  land with a bone-dry season: %.1f%%   dry all four: %.1f%%\n",
+                    100 * zeroAny / std::max(nLand, 1.0), 100 * zeroAll / std::max(nLand, 1.0));
+        }
+
         // And straight from the hydrology raster, before the atmosphere coarsens
         // anything, so a smoothing artefact cannot be blamed.
         {
