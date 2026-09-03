@@ -356,7 +356,19 @@ inline double W_OROG = 0.35;       // only the windward slope of a cell rises
 // cell two hundred kilometres wide does not rise like a thunderhead. At the
 // first scaling this alone put a tenth of a metre a second over every warm
 // surface, which collapsed the capacity and rained the column dry.
-inline double W_CONV = 5.0e-5;     // m/s per W/m2 of sensible heat into the air
+// And the flux that drives it is the whole turbulent flux, not the sensible
+// part alone. Deep convection over a warm ocean is MOIST convection: the
+// buoyancy comes from latent heat released aloft, and the energy available for
+// it is the surface moist static energy flux, sensible plus latent. Over the
+// tropical ocean that is 10 W/m2 of sensible against 120 of latent, so feeding
+// this term the sensible part alone hands it a tenth of what it should have.
+// Measured, it showed: equatorial ascent came to 0.0011 m/s, the weakest on the
+// planet outside the poles, against the 0.005 to 0.01 of a real ITCZ -- and the
+// water was there, the column peaking at 25 mm right at the equator with
+// nothing to lift it. The constant below was never the problem; the comment
+// above says it is scaled for a centimetre a second in the ITCZ, and with the
+// full flux (about 130 W/m2) it delivers exactly that.
+inline double W_CONV = 5.0e-5;     // m/s per W/m2 of turbulent heat into the air
 // div[] is ALREADY a vertical velocity in m/s -- convergence and orography
 // both, computed in the block above. Multiplying it by 600 as though it were
 // a divergence in 1/s, and adding a second orographic term on top, gave
@@ -1184,9 +1196,11 @@ struct Model {
                 // How fast the air here is rising, from every cause there is.
                 double gtx = (Tsl[xe] - Tsl[xw]) / (2 * dx), gty = (Tsl[yn] - Tsl[ys]) / (2 * dy);
                 // (Orography is already in div[], from the block above.)
-                // Convective: ground hotter than the air above it, which is
-                // exactly the instability the surface budget already computes.
-                double wConv = W_CONV * std::max(sens, 0.0);
+                // Convective: the heat the surface actually gives the air,
+                // both ways it gives it. Latent is the larger by an order of
+                // magnitude over warm water, and it is the half that makes a
+                // thunderhead; sens alone left the ITCZ becalmed.
+                double wConv = W_CONV * std::max(sens + lFlux, 0.0);
                 // Large-scale ascent where the flow converges, and frontal
                 // lifting where warm air meets cold.
                 // Signed: convergence lifts, divergence sinks, and the

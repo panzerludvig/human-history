@@ -326,6 +326,99 @@ int main(int argc, char** argv) {
                     (tot - base) / std::max(nL, 1.0), q10, q50, q90, upl / std::max(nL, 1.0));
         }
 
+        // The equator takes 0.84 mm/day and 38 degrees takes 2.28, which is the
+        // rainfall profile upside down. Two things could do that and they live
+        // in different code: either the air never rises over the equator, or it
+        // rises and no rain follows. The model already records what lifts it,
+        // so ask. Everything here is a zonal mean over the whole band, land and
+        // sea alike -- the ITCZ is an ocean feature first.
+        {
+            fprintf(stderr, "\nWHAT LIFTS THE AIR, AND WHAT FALLS OUT (zonal, all surfaces)\n");
+            fprintf(stderr, "  %5s %9s %9s %9s %9s %9s %8s %7s\n", "lat", "convect", "converge",
+                    "front", "orog", "total", "Wv mm", "rain");
+            for (int y0 = 0; y0 < AH; y0 += 6) {
+                double uc = 0, ud = 0, uf = 0, uo = 0, wv = 0, rn = 0, n = 0;
+                for (int y = y0; y < std::min(y0 + 6, AH); y++)
+                    for (int x = 0; x < AW; x++)
+                        for (int se = 0; se < atmosphere::SEASONS; se++) {
+                            int i = se * AW * AH + y * AW + x;
+                            uc += c.upConv[i]; ud += c.upDiv[i];
+                            uf += c.upFront[i]; uo += c.upOrog[i];
+                            wv += c.wv[i]; rn += c.rainMmDay[i];
+                            n += 1;
+                        }
+                if (n < 1) continue;
+                double lat = ((y0 + 3.0) / AH - 0.5) * 180.0;
+                fprintf(stderr, "  %5.0f %9.4f %9.4f %9.4f %9.4f %9.4f %8.1f %7.2f\n", lat,
+                        uc / n, ud / n, uf / n, uo / n, (uc + ud + uf + uo) / n, wv / n, rn / n);
+            }
+            fprintf(stderr, "  (ascent in m/s; life's ITCZ rises at roughly 0.005 to 0.01)\n");
+
+            // In a steady state rain EQUALS evaporation, so no amount of uplift
+            // can raise the total -- it can only move it about. If the tropics
+            // are dry it is because the cycle itself is running slow, and the
+            // question is which term holds it back: the wind that carries the
+            // vapour off the surface, the surface's own supply of water, or the
+            // sunlight available to pay the latent heat.
+            fprintf(stderr, "\nWHY THE CYCLE RUNS SLOW (zonal, all surfaces)\n");
+            fprintf(stderr, "  %5s %8s %8s %8s %8s %9s\n", "lat", "evap", "rain", "wind",
+                    "supply", "energy-capped");
+            for (int y0 = 0; y0 < AH; y0 += 6) {
+                double ev = 0, rn = 0, sp = 0, su = 0, af = 0, n = 0;
+                for (int y = y0; y < std::min(y0 + 6, AH); y++)
+                    for (int x = 0; x < AW; x++)
+                        for (int se = 0; se < atmosphere::SEASONS; se++) {
+                            int i = se * AW * AH + y * AW + x;
+                            ev += c.evapF[i]; rn += c.rainMmDay[i];
+                            sp += c.spdF[i]; su += c.supplyF[i]; af += c.affordF[i];
+                            n += 1;
+                        }
+                if (n < 1) continue;
+                double lat = ((y0 + 3.0) / AH - 0.5) * 180.0;
+                fprintf(stderr, "  %5.0f %8.2f %8.2f %8.2f %8.2f %8.0f%%\n", lat, ev / n, rn / n,
+                        sp / n, su / n, 100 * af / n);
+            }
+            fprintf(stderr, "  (life: about 2.7 mm/day globally, and 4 to 5 over tropical ocean;\n"
+                            "   near-surface wind over the sea runs 6 to 7 m/s)\n");
+            // Rain must equal evaporation in a steady state. dbgEvap divides by
+            // the spin-up hours as well as the sampled ones, so it is diluted;
+            // these two fields share a normalisation, so they can be compared.
+            // If they disagree, water is going somewhere.
+            {
+                double ev = 0, rn = 0, wgt = 0;
+                for (int y = 0; y < AH; y++) {
+                    double cwl = std::cos(((y + 0.5) / AH - 0.5) * 3.14159265);
+                    for (int x = 0; x < AW; x++)
+                        for (int se = 0; se < atmosphere::SEASONS; se++) {
+                            int i = se * AW * AH + y * AW + x;
+                            ev += c.evapF[i] * cwl;
+                            rn += c.rainMmDay[i] * cwl;
+                            wgt += cwl;
+                        }
+                }
+                fprintf(stderr,
+                        "  GLOBAL, same normalisation: evap %.2f  rain %.2f  gap %+.2f mm/day\n",
+                        ev / wgt, rn / wgt, ev / wgt - rn / wgt);
+                // Advection and diffusion only MOVE water, so summed over the
+                // whole planet they must come to nothing. If they do not, the
+                // transport is inventing or destroying the gap.
+                double ad = 0, di = 0, az = 0, am = 0;
+                for (int y = 0; y < AH; y++) {
+                    double cwl = std::cos(((y + 0.5) / AH - 0.5) * 3.14159265);
+                    for (int x = 0; x < AW; x++)
+                        for (int se = 0; se < atmosphere::SEASONS; se++) {
+                            int i = se * AW * AH + y * AW + x;
+                            ad += c.advF[i] * cwl; di += c.difF[i] * cwl;
+                            az += c.advZF[i] * cwl; am += c.advMF[i] * cwl;
+                        }
+                }
+                fprintf(stderr,
+                        "  transport, which should sum to zero: adv %+.3f  dif %+.3f"
+                        "  (zonal %+.3f, meridional %+.3f)\n",
+                        ad / wgt, di / wgt, az / wgt, am / wgt);
+            }
+        }
+
         // Everything above runs on the 192x96 atmosphere grid at the block-mean
         // elevation, which means no lapse correction at all -- hLocal and the
         // coarse elevation are the same number, so the term vanishes. The
