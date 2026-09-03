@@ -270,12 +270,14 @@ int main(int argc, char** argv) {
             const int NB = 12;
             double sSand[NB] = {0}, sDes[NB] = {0}, sBare[NB] = {0}, sN[NB] = {0};
             double sT[NB] = {0}, sM[NB] = {0}, hot = 0, hotN = 0;
+            double ghost = 0, ghostSand = 0, ghostWarm = 0, ghostPolar = 0;
             #pragma omp parallel for
             for (int y = 0; y < GH; y++) {
                 double lat = ((y + 0.5) / GH - 0.5) * 3.14159265;
                 // Accumulate the row privately and merge once, not per cell:
                 // a critical section two million times over is not a probe.
                 double rSand = 0, rDes = 0, rBare = 0, rT = 0, rM = 0, rN = 0, rHot = 0, rHotN = 0;
+                double rGhost = 0, rGhostSand = 0, rGhostWarm = 0, rGhostPolar = 0;
                 for (int x = 0; x < GW; x += 2) {
                     float h = hy.heightM[y * GW + x];
                     if (h <= 0) continue;
@@ -293,6 +295,20 @@ int main(int argc, char** argv) {
                     rSand += m.sub[1]; rDes += m.cov[10]; rBare += m.cov[0];
                     rT += d.temp; rM += d.moist; rN += 1;
                     if (m.sub[1] > 0.4) { rHot += d.temp; rHotN += 1; }
+                    // The climate grid is 208 km to a cell, and a cell that is
+                    // less than half land is called ocean and carries the sea's
+                    // climate. Polar sea in this model runs 7 K warmer than
+                    // polar land. So ask directly: how much land lives inside a
+                    // cell the atmosphere calls ocean, and does it come out
+                    // above the 2 C the sand gate needs?
+                    int ax = std::min(AW - 1, std::max(0, (int)((lon / 6.2831853 + 0.5) * AW)));
+                    int ay = std::min(AH - 1, std::max(0, (int)((lat / 3.14159265 + 0.5) * AH)));
+                    if (c.elev[ay * AW + ax] <= 0.0f) {
+                        rGhost += 1;
+                        rGhostSand += m.sub[1];
+                        if (d.temp > 2.0f) rGhostWarm += 1;
+                        if (std::fabs(lat) > 0.87) rGhostPolar += 1; // beyond 50 degrees
+                    }
                 }
                 if (rN < 1) continue;
                 int b = std::min(NB - 1, std::max(0, (int)((lat / 3.14159265 + 0.5) * NB)));
@@ -301,6 +317,8 @@ int main(int argc, char** argv) {
                     sSand[b] += rSand; sDes[b] += rDes; sBare[b] += rBare;
                     sT[b] += rT; sM[b] += rM; sN[b] += rN;
                     hot += rHot; hotN += rHotN;
+                    ghost += rGhost; ghostSand += rGhostSand;
+                    ghostWarm += rGhostWarm; ghostPolar += rGhostPolar;
                 }
             }
             fprintf(stderr, "\nAS THE MAP DRAWS IT: full resolution, deriveAt, real slope\n");
@@ -318,6 +336,13 @@ int main(int argc, char** argv) {
             fprintf(stderr, "    %5s %7.1f%% %7.1f%% %7.1f%%   (mean annual temp where sand > 40%%: %.1f C)\n",
                     "all", 100 * tS / std::max(tot, 1.0), 100 * tD / std::max(tot, 1.0),
                     100 * tB / std::max(tot, 1.0), hot / std::max(hotN, 1.0));
+            fprintf(stderr,
+                    "  land inside cells the atmosphere calls ocean: %.1f%% of all land\n"
+                    "    of it, %.1f%% reads above the 2 C sand needs, and its mean sand is %.0f%%\n"
+                    "    %.1f%% of it lies beyond 50 degrees\n",
+                    100 * ghost / std::max(tot, 1.0), 100 * ghostWarm / std::max(ghost, 1.0),
+                    100 * ghostSand / std::max(ghost, 1.0),
+                    100 * ghostPolar / std::max(ghost, 1.0));
 
             // The cursor reads 0.0 mm/d wherever it is put down. A zonal mean
             // of 0.84 is consistent both with land that drizzles everywhere
