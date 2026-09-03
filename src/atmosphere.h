@@ -1363,12 +1363,27 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
     // running totals, so each sample sees the interval and not the epoch
     std::vector<double> lastE(W * H, 0.0), lastA(W * H, 0.0), lastD(W * H, 0.0);
     std::vector<double> lastZ(W * H, 0.0), lastM(W * H, 0.0);
+    bool statSeeded = false;
     std::vector<double> cnt(SEASONS, 0.0);
     int totalDays = SPINUP_DAYS + STAT_YEARS * 365;
     for (int day = 0; day < totalDays; day++) {
         int doy = day % 365;
         int season = Climatology::seasonOfDay(doy);
         bool stat = day >= SPINUP_DAYS;
+        // These probes read a RUNNING TOTAL and bank the difference since the
+        // last sample. The totals start at day zero, the sampling starts after
+        // the spin-up, and the last* baselines started at zero -- so the first
+        // sample banked the entire spin-up in one lump and every flux built on
+        // them came out high, by more the longer the spin-up ran. Measured:
+        // evaporation read 2.66 mm/day at a one-year spin-up and 4.28 at three,
+        // against a true 1.70, which looked exactly like a third of the world's
+        // water evaporating and never falling. Seed the baselines when the
+        // sampling starts, so the first difference is a difference.
+        if (stat && !statSeeded) {
+            lastE = m.evapAcc; lastA = m.advAcc; lastD = m.difAcc;
+            lastZ = m.advZ;    lastM = m.advM;
+            statSeeded = true;
+        }
         std::fill(dayMin.begin(), dayMin.end(), 1e9);
         std::fill(dayMax.begin(), dayMax.end(), -1e9);
         for (int h = 0; h < 24; h++) {
