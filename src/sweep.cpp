@@ -370,6 +370,97 @@ int main(int argc, char** argv) {
                         (lN > 0 && sN > 0) ? lT / lN - sT / sN : 0.0,
                         lN > 0 ? hSum / lN : 0.0, 100 * lN / std::max(lN + sN, 1.0));
             }
+            // Naming classes keeps answering the wrong question. Six of the
+            // eleven covers are painted in a tan or khaki -- tundra above all,
+            // at 0.55/0.52/0.42, which reads as sand from any distance -- so
+            // the desert share says nothing about whether the map looks like a
+            // desert. Run the shader's own palette and ask what colour the
+            // land actually comes out. Green foliage is the only thing in the
+            // palette with more green in it than red.
+            {
+                const double SUBC[7][3] = {{0.45, 0.38, 0.28}, {0.80, 0.72, 0.50},
+                                           {0.45, 0.42, 0.38}, {0.52, 0.49, 0.45},
+                                           {0.55, 0.48, 0.36}, {0.35, 0.33, 0.25},
+                                           {0.94, 0.95, 0.97}};
+                const double COVC[11][3] = {{0, 0, 0},          {0.55, 0.52, 0.42},
+                                            {0.10, 0.26, 0.16}, {0.12, 0.32, 0.12},
+                                            {0.06, 0.28, 0.10}, {0.36, 0.52, 0.22},
+                                            {0.62, 0.58, 0.32}, {0.60, 0.56, 0.28},
+                                            {0.50, 0.50, 0.30}, {0.25, 0.40, 0.25},
+                                            {0.78, 0.66, 0.42}};
+                double green = 0, rSum = 0, gSum = 0, bSum = 0, n2 = 0;
+                double zG[12] = {0}, zN[12] = {0}, cG = 0, cN = 0, iG = 0, iN = 0;
+                double zR[12] = {0}, zM[12] = {0}, zT[12] = {0};
+                for (int i = 0; i < AW * AH; i++) {
+                    if (c.elev[i] <= 0.0f) continue;
+                    int x = i % AW, y = i / AW;
+                    double lat = ((y + 0.5) / (double)AH - 0.5) * 3.14159265;
+                    double lon = ((x + 0.5) / (double)AW * 2.0 - 1.0) * 3.14159265;
+                    terrain::V3 nn{(float)(std::cos(lat) * std::cos(lon)),
+                                   (float)(std::cos(lat) * std::sin(lon)), (float)std::sin(lat)};
+                    terrain::V3 ww = terrain::rotate(rot, nn) + offset;
+                    double rain = 0, t = 0, tc = 1e9, tw = -1e9;
+                    for (int se = 0; se < atmosphere::SEASONS; se++) {
+                        rain += c.rainMmDay[se * AW * AH + i] / atmosphere::SEASONS;
+                        t += c.meanT[se * AW * AH + i] / atmosphere::SEASONS;
+                        tc = std::min(tc, (double)c.meanT[se * AW * AH + i]);
+                        tw = std::max(tw, (double)c.meanT[se * AW * AH + i]);
+                    }
+                    double pet = std::max(0.4, 0.11 * (t + 8.0));
+                    float mo = (float)std::clamp(0.5 * rain / pet, 0.0, 1.0) +
+                               terrain::moistureDetail(ww);
+                    terrain::Mixture mx = terrain::mixtureAt(
+                        c.elev[i], 0.0f, (float)t, std::clamp(mo, 0.0f, 1.0f), 0.0f, false,
+                        terrain::patchNoise(ww), 0.0f, (float)tc, (float)tw);
+                    double col[3] = {0, 0, 0};
+                    for (int k = 0; k < 3; k++) {
+                        double base = 0;
+                        for (int j = 0; j < 7; j++) base += SUBC[j][k] * mx.sub[j];
+                        col[k] = base * mx.cov[0];
+                        for (int j = 1; j < 11; j++) col[k] += COVC[j][k] * mx.cov[j];
+                    }
+                    rSum += col[0]; gSum += col[1]; bSum += col[2];
+                    if (col[1] > col[0]) green += 1;
+                    n2 += 1;
+                    // Where the green is, not how much: a world with the right
+                    // green share can still be green in all the wrong places.
+                    int band = std::min(11, std::max(0, y * 12 / AH));
+                    zN[band] += 1;
+                    if (col[1] > col[0]) zG[band] += 1;
+                    zR[band] += rain;
+                    zM[band] += mo;
+                    zT[band] += t;
+                    bool coastal = false;
+                    for (int dy = -2; dy <= 2 && !coastal; dy++)
+                        for (int dx = -2; dx <= 2 && !coastal; dx++) {
+                            int yy = y + dy;
+                            if (yy < 0 || yy >= AH) continue;
+                            int xx = ((x + dx) % AW + AW) % AW;
+                            if (c.elev[yy * AW + xx] <= 0.0f) coastal = true;
+                        }
+                    if (coastal) { cN += 1; if (col[1] > col[0]) cG += 1; }
+                    else         { iN += 1; if (col[1] > col[0]) iG += 1; }
+                }
+                fprintf(stderr, "\nWHAT COLOUR IS THE LAND, in the shader's own palette\n");
+                fprintf(stderr, "  mean rendered land  %.2f %.2f %.2f\n", rSum / std::max(n2, 1.0),
+                        gSum / std::max(n2, 1.0), bSum / std::max(n2, 1.0));
+                fprintf(stderr, "  reads as green      %5.1f%%   life about 48%%\n",
+                        100 * green / std::max(n2, 1.0));
+                fprintf(stderr, "  reads as tan/bare   %5.1f%%   life about 52%%\n",
+                        100 * (n2 - green) / std::max(n2, 1.0));
+                fprintf(stderr, "  coastal green %5.1f%%   interior green %5.1f%%\n",
+                        100 * cG / std::max(cN, 1.0), 100 * iG / std::max(iN, 1.0));
+                fprintf(stderr, "  green by latitude (life is wettest and greenest at the equator)\n");
+                fprintf(stderr, "    %5s %8s %8s %8s %8s\n", "lat", "green%", "rain", "moist",
+                        "degC");
+                for (int bnd = 0; bnd < 12; bnd++) {
+                    if (zN[bnd] < 1) continue;
+                    double lat = ((bnd + 0.5) / 12.0 - 0.5) * 180.0;
+                    fprintf(stderr, "    %5.0f %7.1f%% %8.2f %8.2f %8.1f\n", lat,
+                            100 * zG[bnd] / zN[bnd], zR[bnd] / zN[bnd], zM[bnd] / zN[bnd],
+                            zT[bnd] / zN[bnd]);
+                }
+            }
             fprintf(stderr,
                     "  what makes it bare: high %4.1f%%  ice %4.1f%%  cold %4.1f%%  dry %4.1f%%"
                     "   (mean land %4.1f C)\n",
