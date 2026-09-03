@@ -783,7 +783,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         float uplift = pf.sample({n.x, n.y, n.z}).uplift;
         terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift,
                                                 hy.cells[i].nearRiver > 0.5f, terrain::patchNoise(w),
-                                                dc.swamp, dc.tCold);
+                                                dc.swamp, dc.tCold, dc.tWarm);
 
         // kFood is sustained yield; the pristine ceiling is higher. Water is
         // a physical daily supply and is not scaled (it rarely binds before

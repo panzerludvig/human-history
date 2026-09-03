@@ -1653,7 +1653,7 @@ inline void seasonProfile(const Climatology& c, terrain::V3 nRaw, float hLocal, 
 // the per-cell consumers (population yields, tooltip) were paying for the
 // fuzz noise four times over.
 struct DerivedClimate {
-    float temp, moist, tCold, swamp;
+    float temp, moist, tCold, tWarm, swamp;
 };
 
 inline float swampFromBalance(float b) {
@@ -1668,21 +1668,24 @@ inline DerivedClimate deriveAt(const Climatology& c, float latRad, float lonRad,
         d.temp = terrain::temperatureC(latRad, hLocal);
         d.moist = terrain::moistureAt(w, latRad);
         d.tCold = d.temp - 4.0f;
+        d.tWarm = d.temp + 4.0f;
         d.swamp = 0.0f;
         return d;
     }
     terrain::V3 n = climFuzz(unitAt(latRad, lonRad));
     float coarseE = annualAt(c.elev4(), n);
     float lapse = 6.5f * (std::max(hLocal, 0.0f) - coarseE) / 1000.0f;
-    float annT = 0, rain = 0, tMin = 1e9f;
+    float annT = 0, rain = 0, tMin = 1e9f, tMax = -1e9f;
     for (int se = 0; se < SEASONS; se++) {
         float t = bilinearAt(c.meanT, se, n);
         annT += t / SEASONS;
         tMin = std::min(tMin, t);
+        tMax = std::max(tMax, t);
         rain += bilinearAt(c.rainMmDay, se, n) / SEASONS;
     }
     d.temp = annT - lapse;
     d.tCold = tMin - lapse;
+    d.tWarm = tMax - lapse;
     float pet = std::max(0.4f, 0.11f * (d.temp + 8.0f));
     d.moist = std::clamp(std::clamp(0.5f * rain / pet, 0.0f, 1.0f) + terrain::moistureDetail(w),
                          0.0f, 1.0f);

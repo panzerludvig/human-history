@@ -283,10 +283,12 @@ inline float patchNoise(V3 w) { return fbm(w * 90.0f + 7.0f, 3, 0.5f) * 0.5f + 0
 inline float moistureDetail(V3 w) { return 0.12f * fbm(w * 5.0f + 31.0f, 3, 0.5f); }
 
 // `tCold` is the coldest-season temperature (rainforest needs warmth all
-// year); the sentinel default derives it crudely from the annual mean.
+// year) and `tWarm` the warmest; the sentinel defaults derive both crudely
+// from the annual mean, for callers with no seasonal climate to hand.
 inline Mixture mixtureAt(float h, float slope, float temp, float moist, float uplift, bool nearRiver, float patch,
-                         float swamp = 0.0f, float tCold = -999.0f) {
+                         float swamp = 0.0f, float tCold = -999.0f, float tWarm = -999.0f) {
     if (tCold < -900.0f) tCold = temp - 4.0f;
+    if (tWarm < -900.0f) tWarm = temp + 4.0f;
     Mixture m{};
     float* s = m.sub;
     s[0] = 1.0f;
@@ -299,11 +301,23 @@ inline Mixture mixtureAt(float h, float slope, float temp, float moist, float up
                                     smoothstep(0.3f, 0.7f, 1.0f - patch)));
     pullTo(s, NSUB, 3, smoothstep(0.12f, 0.22f, slope) * smoothstep(0.2f, 0.4f, uplift));
     pullTo(s, NSUB, 2, std::max(smoothstep(0.28f, 0.4f, slope), smoothstep(3200.0f, 3900.0f, h)));
-    pullTo(s, NSUB, 6, smoothstep(-11.0f, -16.0f, temp + slope * 4.0f));
+    // Standing ice is where the summer never arrives, not where the year
+    // averages cold: an ice sheet is defined by a warmest month below
+    // freezing. The slope term keeps it off cliffs, as before.
+    pullTo(s, NSUB, 6, smoothstep(0.0f, -4.0f, tWarm + slope * 4.0f));
 
     float* v = m.cov;
-    float tree = smoothstep(0.22f, 0.55f, moist) * smoothstep(-3.0f, 4.0f, temp) * (0.45f + 0.55f * patch);
-    float wT = smoothstep(9.0f, 3.0f, temp);
+    // The treeline follows summer warmth, not the annual mean. Koppen puts
+    // the forest-tundra boundary at a warmest month of 10 C, and it holds
+    // because a tree needs a growing season rather than a mild winter:
+    // Verkhoyansk averages about -14 C over the year and stands in larch
+    // forest. Gating this on the annual mean turned every such place into
+    // bare rock, and most of the boreal belt with it.
+    float tree = smoothstep(0.22f, 0.55f, moist) * smoothstep(6.0f, 12.0f, tWarm) *
+                 (0.45f + 0.55f * patch);
+    // Boreal against temperate IS the winter, so here the cold season is the
+    // right measure -- Koppen's line is a coldest month near -3 C.
+    float wT = smoothstep(0.0f, -6.0f, tCold);
     // Rainforest only in the hot, truly wet cores (~7 mm/day at tropical
     // evaporation); plain forest is the default tree everywhere else.
     float wR = smoothstep(16.0f, 20.0f, tCold) * smoothstep(0.72f, 0.85f, moist);
@@ -323,8 +337,13 @@ inline Mixture mixtureAt(float h, float slope, float temp, float moist, float up
     v[7] += open * oSav / on; v[8] += open * oShrub / on;
 
     pullTo(v, NCOV, 9, s[5]);
-    pullTo(v, NCOV, 1, smoothstep(1.0f, -5.0f, temp));
-    float bare = std::max(std::max(s[2] + s[3] * 0.6f, s[6]), smoothstep(-8.0f, -15.0f, temp));
+    // Tundra is what fills the gap between the treeline and the ground that
+    // never thaws, so it keys on the same summer the treeline does.
+    pullTo(v, NCOV, 1, smoothstep(10.0f, 4.0f, tWarm));
+    // Bare from cold is polar desert -- Koppen EF, a warmest month below
+    // freezing, where nothing has a growing season at all. It used to strip
+    // the ground at an ANNUAL mean of -8 to -15 C, which is Siberia.
+    float bare = std::max(std::max(s[2] + s[3] * 0.6f, s[6]), smoothstep(2.0f, -2.0f, tWarm));
     bare = std::max(bare, smoothstep(0.1f, 0.03f, moist) * 0.5f);
     pullTo(v, NCOV, 0, std::clamp(bare, 0.0f, 1.0f));
     return m;

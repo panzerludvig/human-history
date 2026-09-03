@@ -288,6 +288,7 @@ int main(int argc, char** argv) {
                                     "desert"};
             const double LIFE[11] = {8, 10, 10, 21, 6, 9, 8, 8, 6, 2, 12}; // rough land shares
             double cov[11] = {0}, tot = 0, hiCold = 0;
+            double bHigh = 0, bIce = 0, bCold = 0, bDry = 0, bT = 0, dom[11] = {0};
             for (int i = 0; i < AW * AH; i++) {
                 if (c.elev[i] <= 0.0f) continue;
                 int x = i % AW, y = i / AW;
@@ -296,28 +297,85 @@ int main(int argc, char** argv) {
                 terrain::V3 n{(float)(std::cos(lat) * std::cos(lon)),
                               (float)(std::cos(lat) * std::sin(lon)), (float)std::sin(lat)};
                 terrain::V3 w = terrain::rotate(rot, n) + offset;
-                double rain = 0, t = 0, tc = 1e9;
+                double rain = 0, t = 0, tc = 1e9, tw = -1e9;
                 for (int se = 0; se < atmosphere::SEASONS; se++) {
                     rain += c.rainMmDay[se * AW * AH + i] / atmosphere::SEASONS;
                     t += c.meanT[se * AW * AH + i] / atmosphere::SEASONS;
                     tc = std::min(tc, (double)c.meanT[se * AW * AH + i]);
+                    tw = std::max(tw, (double)c.meanT[se * AW * AH + i]);
                 }
                 double pet = std::max(0.4, 0.11 * (t + 8.0));
                 float m = (float)std::clamp(0.5 * rain / pet, 0.0, 1.0) +
                           terrain::moistureDetail(w);
                 terrain::Mixture mx = terrain::mixtureAt(c.elev[i], 0.0f, (float)t,
                                                          std::clamp(m, 0.0f, 1.0f), 0.0f, false,
-                                                         terrain::patchNoise(w), 0.0f, (float)tc);
+                                                         terrain::patchNoise(w), 0.0f, (float)tc,
+                                                         (float)tw);
                 for (int k = 0; k < 11; k++) cov[k] += mx.cov[k];
+                // The mean fraction is ambiguous -- every cell a third bare
+                // and a third of cells wholly bare give the same number, and
+                // they look nothing alike. The eye reads the dominant class,
+                // so count that too. Bare has no colour of its own: it shows
+                // the substrate under it, which is why bare ground reads as
+                // desert on the map whatever the desert class says.
+                int best = 0;
+                for (int k = 1; k < 11; k++)
+                    if (mx.cov[k] > mx.cov[best]) best = k;
+                dom[best] += 1;
                 tot += 1;
                 if (c.elev[i] > 2000.0f) hiCold += 1;
+                // Bare overrides whatever vegetation was computed, and four
+                // things can raise it. Which one is doing it here? Slope and
+                // uplift are zero on this grid -- its elevation is a block
+                // mean over 208 km, so a slope read off it would be fiction --
+                // so this is the floor, and the rendered world adds rock and
+                // scree on the steep ground on top of what this shows.
+                double mm = std::clamp(m, 0.0f, 1.0f);
+                bHigh += terrain::smoothstep(3200.0f, 3900.0f, c.elev[i]);
+                bIce += terrain::smoothstep(0.0f, -4.0f, (float)tw);
+                bCold += terrain::smoothstep(2.0f, -2.0f, (float)tw);
+                bDry += terrain::smoothstep(0.1f, 0.03f, (float)mm) * 0.5f;
+                bT += t;
             }
             fprintf(stderr, "\nLAND COVER, from the renderer's own mixtureAt\n");
+            fprintf(stderr, "  %-12s %8s %8s %8s\n", "", "mean", "dominant", "life");
             for (int k = 0; k < 11; k++)
-                fprintf(stderr, "  %-12s %6.1f%%   life about %3.0f%%\n", NAME[k],
-                        100 * cov[k] / std::max(tot, 1.0), LIFE[k]);
+                fprintf(stderr, "  %-12s %7.1f%% %7.1f%% %7.0f%%\n", NAME[k],
+                        100 * cov[k] / std::max(tot, 1.0), 100 * dom[k] / std::max(tot, 1.0),
+                        LIFE[k]);
             fprintf(stderr, "  %-12s %6.1f%%   life about   5%%\n", "land >2km",
                     100 * hiCold / std::max(tot, 1.0));
+            // Land at 0.1 C against life's 8.5 while the globe is only 2 K low.
+            // Is the land simply lying in cold latitudes in this world, or is
+            // it too cold for the latitude it lies in? Only a comparison
+            // against the sea at the SAME latitude can tell the two apart.
+            fprintf(stderr, "\nLAND AGAINST THE SEA AT THE SAME LATITUDE\n");
+            fprintf(stderr, "  %5s %8s %8s %8s %8s %8s\n", "lat", "land C", "sea C", "diff",
+                    "elev m", "land%");
+            for (int y0 = 0; y0 < AH; y0 += 8) {
+                double lT = 0, sT = 0, lN = 0, sN = 0, hSum = 0;
+                for (int y = y0; y < std::min(y0 + 8, AH); y++)
+                    for (int x = 0; x < AW; x++) {
+                        int i = y * AW + x;
+                        double t = 0;
+                        for (int se = 0; se < atmosphere::SEASONS; se++)
+                            t += c.meanT[se * AW * AH + i] / atmosphere::SEASONS;
+                        if (c.elev[i] > 0.0f) { lT += t; lN += 1; hSum += c.elev[i]; }
+                        else { sT += t; sN += 1; }
+                    }
+                if (lN < 1 && sN < 1) continue;
+                double lat = ((y0 + 4.0) / AH - 0.5) * 180.0;
+                fprintf(stderr, "  %5.0f %8.1f %8.1f %8.1f %8.0f %8.0f\n", lat,
+                        lN > 0 ? lT / lN : 0.0, sN > 0 ? sT / sN : 0.0,
+                        (lN > 0 && sN > 0) ? lT / lN - sT / sN : 0.0,
+                        lN > 0 ? hSum / lN : 0.0, 100 * lN / std::max(lN + sN, 1.0));
+            }
+            fprintf(stderr,
+                    "  what makes it bare: high %4.1f%%  ice %4.1f%%  cold %4.1f%%  dry %4.1f%%"
+                    "   (mean land %4.1f C)\n",
+                    100 * bHigh / std::max(tot, 1.0), 100 * bIce / std::max(tot, 1.0),
+                    100 * bCold / std::max(tot, 1.0), 100 * bDry / std::max(tot, 1.0),
+                    bT / std::max(tot, 1.0));
         }
 
         // The zonal profile, every four degrees. Spot latitudes hide

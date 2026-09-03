@@ -2032,7 +2032,7 @@ static std::string describePoint(Vec3 n) {
     float slope = terrain::slopeAt(nf, wd.cp, wd.seaLevel, std::min(app.octaves, 12), wd.plateField, wd.rot, off);
     float uplift = wd.plateField.sample({nf.x, nf.y, nf.z}).uplift;
     terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift, nearRiver, terrain::patchNoise(w),
-                                            dcTip.swamp, dcTip.tCold);
+                                            dcTip.swamp, dcTip.tCold, dcTip.tWarm);
     std::string extra;
     if (!wd.pop.K.empty()) {
         int ci = cy * hydrology::W + cx;
