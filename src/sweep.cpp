@@ -138,6 +138,75 @@ int main(int argc, char** argv) {
     plates::Field pf = plates::build(seed);
     float seaLevel = terrain::seaLevelFor(landPct / 100.0f, cp, rot, offset, pf);
     hydrology::Result hy = hydrology::build(cp, seaLevel, rot, offset, 12000.0f, pf);
+    // The same bilinear the climate samplers use, but weighted by whether the
+    // cell is land. Interpolating a land temperature out of ocean cells is the
+    // wider version of the majority-vote problem: a land point need only be
+    // within half a cell of the sea -- plus the 64 km climFuzz displacement --
+    // to be handed a sea-weighted average, and near the poles the sea runs
+    // 7 to 15 K warmer than the land beside it.
+    auto landMaskedT = [](const atmosphere::Climatology& c, int season, terrain::V3 n,
+                          bool& anyLand) {
+        const int W = atmosphere::W, H = atmosphere::H;
+        float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
+        float lon = std::atan2(n.y, n.x);
+        float u = ((lon + 3.14159265f) / (2 * 3.14159265f)) * W - 0.5f;
+        float vv = ((lat + 3.14159265f / 2) / 3.14159265f) * H - 0.5f;
+        int x0 = (int)std::floor(u), y0 = (int)std::floor(vv);
+        float fx = u - x0, fy = vv - y0;
+        double num = 0, den = 0;
+        anyLand = false;
+        for (int j = 0; j <= 1; j++)
+            for (int i = 0; i <= 1; i++) {
+                int xx = ((x0 + i) % W + W) % W, yy = std::clamp(y0 + j, 0, H - 1);
+                double wgt = (i ? fx : 1 - fx) * (j ? fy : 1 - fy);
+                if (c.elev[yy * W + xx] <= 0.0f) continue;
+                anyLand = true;
+                num += c.meanT[season * W * H + yy * W + xx] * wgt;
+                den += wgt;
+            }
+        return den > 1e-6 ? (float)(num / den) : 0.0f;
+    };
+
+    // Before anything else: how much of the world does the land/sea majority
+    // vote actually misrepresent? A cell 40% land is modelled as pure ocean and
+    // a cell 60% land as pure continent, so every mixed cell is wrong about one
+    // part of itself. If mixed cells are rare the vote is a fair approximation
+    // and fractional land is not worth the work; if they are common it is not
+    // an approximation at all.
+    {
+        const int AW = atmosphere::W, AH = atmosphere::H;
+        const int bx = hydrology::W / AW, by = hydrology::H / AH;
+        double hist[5] = {0}, wgt = 0, mixed = 0, landLost = 0, seaLost = 0, landAll = 0;
+        for (int y = 0; y < AH; y++) {
+            double cw = std::cos(((y + 0.5) / AH - 0.5) * 3.14159265);
+            for (int x = 0; x < AW; x++) {
+                double land = 0;
+                for (int yy = 0; yy < by; yy++)
+                    for (int xx = 0; xx < bx; xx++)
+                        if (hy.heightM[(y * by + yy) * hydrology::W + (x * bx + xx)] > 0) land++;
+                double lf = land / (bx * by);
+                int b = lf < 0.02 ? 0 : (lf < 0.25 ? 1 : (lf < 0.75 ? 2 : (lf < 0.98 ? 3 : 4)));
+                hist[b] += cw;
+                wgt += cw;
+                if (lf > 0.02 && lf < 0.98) mixed += cw;
+                landAll += lf * cw;
+                if (lf < 0.5) landLost += lf * cw;              // land called ocean
+                else seaLost += (1.0 - lf) * cw;                // ocean called land
+            }
+        }
+        const char* L[5] = {"all sea      ", "under 1/4 land", "mixed        ",
+                            "over 3/4 land", "all land     "};
+        fprintf(stderr, "\nWHAT THE LAND/SEA VOTE COSTS (area-weighted cells)\n");
+        for (int b = 0; b < 5; b++)
+            fprintf(stderr, "  %s %6.1f%%\n", L[b], 100 * hist[b] / std::max(wgt, 1.0));
+        fprintf(stderr, "  cells that are neither purely one nor the other: %.1f%%\n",
+                100 * mixed / std::max(wgt, 1.0));
+        fprintf(stderr, "  land modelled as ocean: %.1f%% of all land\n",
+                100 * landLost / std::max(landAll, 1e-9));
+        fprintf(stderr, "  ocean modelled as land: %.1f%% of the planet\n\n",
+                100 * seaLost / std::max(wgt, 1.0));
+    }
+
     fprintf(stderr, "sweeping...\n");
 
     // The sweep is no longer a sweep. Everything it used to vary --
@@ -269,8 +338,11 @@ int main(int argc, char** argv) {
             const int GW = hydrology::W, GH = hydrology::H;
             const int NB = 12;
             double sSand[NB] = {0}, sDes[NB] = {0}, sBare[NB] = {0}, sN[NB] = {0};
+            double sIce[NB] = {0}, sSoil[NB] = {0}, sWarm[NB] = {0};
             double sT[NB] = {0}, sM[NB] = {0}, hot = 0, hotN = 0;
             double ghost = 0, ghostSand = 0, ghostWarm = 0, ghostPolar = 0;
+            double bleed = 0, bleedN = 0, bleedBig = 0, bleedGate = 0;
+            double zBleed[12] = {0}, zBleedN[12] = {0};
             #pragma omp parallel for
             for (int y = 0; y < GH; y++) {
                 double lat = ((y + 0.5) / GH - 0.5) * 3.14159265;
@@ -278,6 +350,8 @@ int main(int argc, char** argv) {
                 // a critical section two million times over is not a probe.
                 double rSand = 0, rDes = 0, rBare = 0, rT = 0, rM = 0, rN = 0, rHot = 0, rHotN = 0;
                 double rGhost = 0, rGhostSand = 0, rGhostWarm = 0, rGhostPolar = 0;
+                double rBleed = 0, rBleedN = 0, rBleedBig = 0, rBleedGate = 0;
+                double rIce = 0, rSoil = 0, rWarm = 0;
                 for (int x = 0; x < GW; x += 2) {
                     float h = hy.heightM[y * GW + x];
                     if (h <= 0) continue;
@@ -293,6 +367,7 @@ int main(int argc, char** argv) {
                         terrain::mixtureAt(h, slope, d.temp, d.moist, up, false,
                                            terrain::patchNoise(w), d.swamp, d.tCold, d.tWarm);
                     rSand += m.sub[1]; rDes += m.cov[10]; rBare += m.cov[0];
+                    rIce += m.sub[6]; rSoil += m.sub[0]; rWarm += d.tWarm;
                     rT += d.temp; rM += d.moist; rN += 1;
                     if (m.sub[1] > 0.4) { rHot += d.temp; rHotN += 1; }
                     // The climate grid is 208 km to a cell, and a cell that is
@@ -301,6 +376,26 @@ int main(int argc, char** argv) {
                     // polar land. So ask directly: how much land lives inside a
                     // cell the atmosphere calls ocean, and does it come out
                     // above the 2 C the sand gate needs?
+                    // How much warmth does the land borrow from the sea? Same
+                    // fuzzed point, same bilinear, once as the model does it
+                    // and once masked to land cells only.
+                    {
+                        terrain::V3 nf = atmosphere::climFuzz(
+                            atmosphere::unitAt((float)lat, (float)lon));
+                        bool anyLand = false;
+                        double raw = 0, msk = 0;
+                        for (int se = 0; se < atmosphere::SEASONS; se++) {
+                            raw += atmosphere::bilinearAt(c.meanT, se, nf) / atmosphere::SEASONS;
+                            msk += landMaskedT(c, se, nf, anyLand) / atmosphere::SEASONS;
+                        }
+                        if (anyLand) {
+                            rBleed += raw - msk;
+                            rBleedN += 1;
+                            if (raw - msk > 2.0) rBleedBig += 1;
+                            // Does the borrowed warmth carry it over the gate?
+                            if (raw > 2.0 && msk <= 2.0) rBleedGate += 1;
+                        }
+                    }
                     int ax = std::min(AW - 1, std::max(0, (int)((lon / 6.2831853 + 0.5) * AW)));
                     int ay = std::min(AH - 1, std::max(0, (int)((lat / 3.14159265 + 0.5) * AH)));
                     if (c.elev[ay * AW + ax] <= 0.0f) {
@@ -316,21 +411,26 @@ int main(int argc, char** argv) {
                 {
                     sSand[b] += rSand; sDes[b] += rDes; sBare[b] += rBare;
                     sT[b] += rT; sM[b] += rM; sN[b] += rN;
+                    sIce[b] += rIce; sSoil[b] += rSoil; sWarm[b] += rWarm;
                     hot += rHot; hotN += rHotN;
+                    bleed += rBleed; bleedN += rBleedN;
+                    bleedBig += rBleedBig; bleedGate += rBleedGate;
+                    zBleed[b] += rBleed; zBleedN[b] += rBleedN;
                     ghost += rGhost; ghostSand += rGhostSand;
                     ghostWarm += rGhostWarm; ghostPolar += rGhostPolar;
                 }
             }
             fprintf(stderr, "\nAS THE MAP DRAWS IT: full resolution, deriveAt, real slope\n");
-            fprintf(stderr, "    %5s %8s %8s %8s %8s %8s\n", "lat", "sand", "desert", "bare",
-                    "degC", "moist");
+            fprintf(stderr, "    %5s %8s %8s %8s %8s %8s %8s %8s\n", "lat", "sand", "desert",
+                    "bare", "ice", "soil", "summer", "degC");
             double tot = 0, tS = 0, tD = 0, tB = 0;
             for (int b = 0; b < NB; b++) {
                 if (sN[b] < 1) continue;
                 double la = ((b + 0.5) / NB - 0.5) * 180.0;
-                fprintf(stderr, "    %5.0f %7.1f%% %7.1f%% %7.1f%% %8.1f %8.2f\n", la,
-                        100 * sSand[b] / sN[b], 100 * sDes[b] / sN[b], 100 * sBare[b] / sN[b],
-                        sT[b] / sN[b], sM[b] / sN[b]);
+                fprintf(stderr, "    %5.0f %7.1f%% %7.1f%% %7.1f%% %7.1f%% %7.1f%% %8.1f %8.1f\n",
+                        la, 100 * sSand[b] / sN[b], 100 * sDes[b] / sN[b], 100 * sBare[b] / sN[b],
+                        100 * sIce[b] / sN[b], 100 * sSoil[b] / sN[b], sWarm[b] / sN[b],
+                        sT[b] / sN[b]);
                 tot += sN[b]; tS += sSand[b]; tD += sDes[b]; tB += sBare[b];
             }
             fprintf(stderr, "    %5s %7.1f%% %7.1f%% %7.1f%%   (mean annual temp where sand > 40%%: %.1f C)\n",
@@ -339,10 +439,22 @@ int main(int argc, char** argv) {
             fprintf(stderr,
                     "  land inside cells the atmosphere calls ocean: %.1f%% of all land\n"
                     "    of it, %.1f%% reads above the 2 C sand needs, and its mean sand is %.0f%%\n"
-                    "    %.1f%% of it lies beyond 50 degrees\n",
+                    "    %.1f%% of it lies beyond 50 degrees\n"
+                    "  WARMTH THE LAND BORROWS FROM THE SEA (bilinear vs land-masked)\n"
+                    "    mean over land %+.2f K\n"
+                    "    land warmed by more than 2 K: %.1f%%\n"
+                    "    land carried OVER the 2 C sand gate by it: %.1f%%\n",
                     100 * ghost / std::max(tot, 1.0), 100 * ghostWarm / std::max(ghost, 1.0),
                     100 * ghostSand / std::max(ghost, 1.0),
-                    100 * ghostPolar / std::max(ghost, 1.0));
+                    100 * ghostPolar / std::max(ghost, 1.0),
+                    bleed / std::max(bleedN, 1.0), 100 * bleedBig / std::max(bleedN, 1.0),
+                    100 * bleedGate / std::max(bleedN, 1.0));
+            fprintf(stderr, "    by latitude:");
+            for (int b = 0; b < NB; b++)
+                if (zBleedN[b] > 0)
+                    fprintf(stderr, " %.0f:%+.1f", ((b + 0.5) / NB - 0.5) * 180.0,
+                            zBleed[b] / zBleedN[b]);
+            fprintf(stderr, "\n");
 
             // The cursor reads 0.0 mm/d wherever it is put down. A zonal mean
             // of 0.84 is consistent both with land that drizzles everywhere

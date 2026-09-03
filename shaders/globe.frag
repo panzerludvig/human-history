@@ -768,10 +768,12 @@ void substrateMix(float h, float slope, float temp, float moist, float uplift, b
                       swamp * smoothstep(0.035, 0.015, slope) * smoothstep(0.3, 0.7, 1.0 - patchy)));
     pullSub(s, 3, smoothstep(0.12, 0.22, slope) * smoothstep(0.2, 0.4, uplift));
     pullSub(s, 2, max(smoothstep(0.28, 0.4, slope), smoothstep(3200.0, 3900.0, h)));
-    // Standing ice is where the summer never arrives, not where the year
-    // averages cold: an ice sheet is a warmest month below freezing. The
-    // slope term keeps it off cliffs, as before. Mirrors terrain.h.
-    pullSub(s, 6, smoothstep(0.0, -4.0, tWarm + slope * 4.0));
+    // Standing ice needs BOTH the summer and the annual mean: permanent ice
+    // is a mass balance, not one threshold on the summer peak. Antarctica's
+    // coast is near 0 C in summer and solid ice; Siberian tundra at -12 C
+    // annual with a +7 C summer is not. Mirrors terrain.h.
+    pullSub(s, 6, smoothstep(4.0, 0.0, tWarm + slope * 4.0) *
+                      smoothstep(-5.0, -15.0, temp));
 }
 
 // `patchy` is a 0..1 noise that varies tree density within a climate zone.

@@ -301,10 +301,16 @@ inline Mixture mixtureAt(float h, float slope, float temp, float moist, float up
                                     smoothstep(0.3f, 0.7f, 1.0f - patch)));
     pullTo(s, NSUB, 3, smoothstep(0.12f, 0.22f, slope) * smoothstep(0.2f, 0.4f, uplift));
     pullTo(s, NSUB, 2, std::max(smoothstep(0.28f, 0.4f, slope), smoothstep(3200.0f, 3900.0f, h)));
-    // Standing ice is where the summer never arrives, not where the year
-    // averages cold: an ice sheet is defined by a warmest month below
-    // freezing. The slope term keeps it off cliffs, as before.
-    pullTo(s, NSUB, 6, smoothstep(0.0f, -4.0f, tWarm + slope * 4.0f));
+    // Standing ice needs BOTH, and keying it on the summer alone was wrong.
+    // Koppen's EF line is a warmest month below freezing, but permanent ice is
+    // an annual mass balance -- what accumulates against what melts -- and
+    // ground averaging -30 C buries itself faster than a summer peaking at
+    // +1.6 C can strip it. Antarctica's coast sits near 0 C in summer and is
+    // solid ice; Siberian tundra at -12 C annual with a +7 C summer is not.
+    // Gating on summer alone left a -29.5 C polar cap drawing as bare soil.
+    // The slope term keeps ice off cliffs, as before.
+    pullTo(s, NSUB, 6, smoothstep(4.0f, 0.0f, tWarm + slope * 4.0f) *
+                           smoothstep(-5.0f, -15.0f, temp));
 
     float* v = m.cov;
     // The treeline follows summer warmth, not the annual mean. Koppen puts
