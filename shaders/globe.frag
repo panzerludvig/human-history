@@ -41,6 +41,9 @@ const float CRUST_WEIGHT = 0.2;
 uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 < 0 hides it
 
 const float HEIGHT_SCALE_M = 8000.0;
+// Land relief as a fraction of the mountain scale; see terrain.h.
+const float LAND_RELIEF = 0.40;
+const float RANGE_GAIN = 1.25;
 const int HW = 2048, HH = 1024;     // hydrology grid size, must match hydrology.h
 const float NO_LAKE = -1.0e6;
 
@@ -225,8 +228,8 @@ float terrainHeight(vec3 p, vec3 n, int octaves) {
     float hills = ridged(p * 4.0 + 2.0, clamp(octaves - 2, 1, 6)) *
                   smoothstep(0.02, 0.25, continent) *
                   smoothstep(0.3, 0.7, fbm(p * 2.2 + 41.0, 3, 0.5) * 0.5 + 0.5);
-    float h = continent + detail * 0.06 + ranges * max(uplift, 0.0) * 0.9 +
-              min(uplift, 0.0) * 0.12 + hills * 0.12;
+    float h = (continent + detail * 0.06 + hills * 0.12) * LAND_RELIEF +
+              ranges * max(uplift, 0.0) * RANGE_GAIN + min(uplift, 0.0) * 0.12;
     return h * HEIGHT_SCALE_M;
 }
 

@@ -15,6 +15,16 @@ namespace terrain {
 constexpr float HEIGHT_SCALE_M = 8000.0f;
 // How strongly continental vs oceanic crust shifts the continent field.
 constexpr float CRUST_WEIGHT = 0.2f;
+// Relief of the land itself, as a fraction of the mountain scale. One scale
+// used to set both, and it cannot be right for both: sized so the peaks reach
+// 8800 m, it also made the median field 1.8 km above the sea. Continents are
+// platforms -- crust floats at a level set by its thickness, which varies
+// little across a craton -- and the mountains are what rises out of them.
+inline float LAND_RELIEF = 0.40f;
+// Height of a mountain belt above the land it stands on. Set so the highest
+// peak reaches Everest; it had absorbed part of the old, too-tall base, so
+// lowering the base means re-deriving it against the same target.
+inline float RANGE_GAIN = 1.25f;
 
 struct V3 {
     float x, y, z;
@@ -202,8 +212,10 @@ inline float heightMeters(V3 p, V3 n, const ContinentParams& cp, float seaLevel,
     float hills = ridged(p * 4.0f + 2.0f, std::clamp(octaves - 2, 1, 6)) *
                   smoothstep(0.02f, 0.25f, continent) *
                   smoothstep(0.3f, 0.7f, fbm(p * 2.2f + 41.0f, 3, 0.5f) * 0.5f + 0.5f);
-    float h = continent + detail * 0.06f + ranges * std::max(uplift, 0.0f) * 0.9f +
-              std::min(uplift, 0.0f) * 0.12f + hills * 0.12f;
+    // The continent field, its fine detail and its hills are all land relief;
+    // only the range term and the trenches are built at the mountain scale.
+    float h = (continent + detail * 0.06f + hills * 0.12f) * LAND_RELIEF +
+              ranges * std::max(uplift, 0.0f) * RANGE_GAIN + std::min(uplift, 0.0f) * 0.12f;
     return h * HEIGHT_SCALE_M;
 }
 

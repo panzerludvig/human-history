@@ -163,6 +163,163 @@ int main(int argc, char** argv) {
                 s.spot[2], s.spot[3], s.spot[4], s.spot[5], s.spot[6], s.spot[7], c.dbgWv,
                 c.dbgWv / std::max(c.dbgRain, 1e-6), c.dbgWind, c.dbgRH * 100, s.coastRain,
                 s.innerRain, c.dbgEvap, c.dbgRain, c.dbgClamp);
+        // What the MAP actually shows. Green is not where it rains, it is where
+        // rain beats evaporative demand -- m = 0.5*rain/pet with pet rising
+        // steeply with temperature -- so the same rainfall is desert when warm
+        // and grassland when cool. If the green is sitting on the high ground
+        // rather than near the sea, this is why.
+        {
+            const int NB = 5;
+            double edge[NB + 1] = {0, 250, 600, 1200, 2000, 9999};
+            double mSum[NB] = {0}, rSum[NB] = {0}, tSum[NB] = {0}, n[NB] = {0};
+            double cM = 0, cN = 0, iM = 0, iN = 0;
+            for (int i = 0; i < AW * AH; i++) {
+                if (c.elev[i] <= 0.0f) continue;
+                double rain = 0, t = 0;
+                for (int se = 0; se < atmosphere::SEASONS; se++) {
+                    rain += c.rainMmDay[se * AW * AH + i] / atmosphere::SEASONS;
+                    t += c.meanT[se * AW * AH + i] / atmosphere::SEASONS;
+                }
+                double pet = std::max(0.4, 0.11 * (t + 8.0));
+                double m = std::clamp(0.5 * rain / pet, 0.0, 1.0);
+                double h = c.elev[i];
+                for (int b = 0; b < NB; b++)
+                    if (h >= edge[b] && h < edge[b + 1]) {
+                        mSum[b] += m; rSum[b] += rain; tSum[b] += t; n[b] += 1;
+                    }
+                int x = i % AW, y = i / AW;
+                bool coastal = false;
+                for (int dy = -2; dy <= 2 && !coastal; dy++)
+                    for (int dx = -2; dx <= 2 && !coastal; dx++) {
+                        int yy = y + dy;
+                        if (yy < 0 || yy >= AH) continue;
+                        int xx = ((x + dx) % AW + AW) % AW;
+                        if (c.elev[yy * AW + xx] <= 0.0f) coastal = true;
+                    }
+                if (coastal) { cM += m; cN += 1; } else { iM += m; iN += 1; }
+            }
+            fprintf(stderr, "\nWHAT THE MAP SHOWS: moisture = 0.5*rain/pet\n");
+            fprintf(stderr, "  %-16s %8s %8s %8s %8s\n", "elevation", "moisture", "rain",
+                    "degC", "cells");
+            for (int b = 0; b < NB; b++) {
+                if (n[b] < 1) continue;
+                fprintf(stderr, "  %5.0f - %-8.0f %8.2f %8.2f %8.1f %8.0f\n", edge[b],
+                        edge[b + 1], mSum[b] / n[b], rSum[b] / n[b], tSum[b] / n[b], n[b]);
+            }
+            fprintf(stderr, "  %-16s %8.2f\n  %-16s %8.2f\n", "coastal land",
+                    cN > 0 ? cM / cN : 0.0, "interior land", iN > 0 ? iM / iN : 0.0);
+            fprintf(stderr, "  (0.3 is about where desert gives way to grass)\n");
+        }
+
+        // Where the height comes from. The land is 2188 m in the mean against
+        // life's 840, and the total is
+        //
+        //   h = continent + detail + ranges*uplift + hills,   all times 8000 m
+        //
+        // so the question is which term carries it: the base continental field
+        // that sea level is cut from, or the mountains piled on top.
+        {
+            double nL = 0, base = 0, tot = 0, upl = 0;
+            double q10 = 0, q50 = 0, q90 = 0;
+            std::vector<double> baseV;
+            for (int y = 0; y < hydrology::H; y += 3)
+                for (int x = 0; x < hydrology::W; x += 3) {
+                    double lat = ((y + 0.5) / hydrology::H - 0.5) * 3.14159265;
+                    double lon = ((x + 0.5) / hydrology::W * 2.0 - 1.0) * 3.14159265;
+                    terrain::V3 n{(float)(std::cos(lat) * std::cos(lon)),
+                                  (float)(std::cos(lat) * std::sin(lon)), (float)std::sin(lat)};
+                    terrain::V3 w = terrain::rotate(rot, n) + offset;
+                    plates::Cell pl = pf.sample({n.x, n.y, n.z});
+                    double cont = terrain::continentField(w, cp) +
+                                  pl.crust * terrain::CRUST_WEIGHT - seaLevel;
+                    float h = hy.heightM[y * hydrology::W + x];
+                    if (h <= 0) continue;
+                    nL += 1;
+                    base += cont * terrain::HEIGHT_SCALE_M * terrain::LAND_RELIEF;
+                    tot += h;
+                    upl += std::max(pl.uplift, 0.0f);
+                    baseV.push_back(cont * terrain::HEIGHT_SCALE_M * terrain::LAND_RELIEF);
+                }
+            std::sort(baseV.begin(), baseV.end());
+            if (!baseV.empty()) {
+                q10 = baseV[baseV.size() / 10];
+                q50 = baseV[baseV.size() / 2];
+                q90 = baseV[baseV.size() * 9 / 10];
+            }
+            fprintf(stderr,
+                    "\nWHERE THE HEIGHT COMES FROM (land cells)\n"
+                    "  total height            %7.0f m\n"
+                    "  of which base field     %7.0f m   <- what sea level cuts\n"
+                    "  of which mountains etc  %7.0f m\n"
+                    "  base field p10/50/90    %7.0f %7.0f %7.0f m\n"
+                    "  mean uplift             %7.2f\n",
+                    tot / std::max(nL, 1.0), base / std::max(nL, 1.0),
+                    (tot - base) / std::max(nL, 1.0), q10, q50, q90, upl / std::max(nL, 1.0));
+        }
+
+        // And straight from the hydrology raster, before the atmosphere coarsens
+        // anything, so a smoothing artefact cannot be blamed.
+        {
+            double n = 0, sum = 0, hi = 0, hi4 = 0, mx = 0;
+            for (int i = 0; i < hydrology::W * hydrology::H; i++) {
+                float h = hy.heightM[i];
+                if (h <= 0) continue;
+                n += 1; sum += h;
+                if (h > 2000) hi += 1;
+                if (h > 4000) hi4 += 1;
+                mx = std::max(mx, (double)h);
+            }
+            fprintf(stderr,
+                    "\nTERRAIN, straight from the hydrology raster\n"
+                    "  mean land elevation   %7.0f m   life 840\n"
+                    "  land above 2 km       %7.1f%%   life about 5\n"
+                    "  land above 4 km       %7.1f%%   life about 1\n"
+                    "  highest point         %7.0f m   life 8848\n",
+                    sum / std::max(n, 1.0), 100 * hi / std::max(n, 1.0),
+                    100 * hi4 / std::max(n, 1.0), mx);
+        }
+
+        // Stop inferring what the map shows and ask it. The same mixtureAt the
+        // renderer calls, over every land cell, with the climate this run
+        // produced.
+        {
+            const char* NAME[11] = {"bare",   "tundra", "taiga",    "forest",  "rainforest",
+                                    "grass",  "steppe", "savanna",  "shrub",   "marsh",
+                                    "desert"};
+            const double LIFE[11] = {8, 10, 10, 21, 6, 9, 8, 8, 6, 2, 12}; // rough land shares
+            double cov[11] = {0}, tot = 0, hiCold = 0;
+            for (int i = 0; i < AW * AH; i++) {
+                if (c.elev[i] <= 0.0f) continue;
+                int x = i % AW, y = i / AW;
+                double lat = ((y + 0.5) / (double)AH - 0.5) * 3.14159265;
+                double lon = ((x + 0.5) / (double)AW * 2.0 - 1.0) * 3.14159265;
+                terrain::V3 n{(float)(std::cos(lat) * std::cos(lon)),
+                              (float)(std::cos(lat) * std::sin(lon)), (float)std::sin(lat)};
+                terrain::V3 w = terrain::rotate(rot, n) + offset;
+                double rain = 0, t = 0, tc = 1e9;
+                for (int se = 0; se < atmosphere::SEASONS; se++) {
+                    rain += c.rainMmDay[se * AW * AH + i] / atmosphere::SEASONS;
+                    t += c.meanT[se * AW * AH + i] / atmosphere::SEASONS;
+                    tc = std::min(tc, (double)c.meanT[se * AW * AH + i]);
+                }
+                double pet = std::max(0.4, 0.11 * (t + 8.0));
+                float m = (float)std::clamp(0.5 * rain / pet, 0.0, 1.0) +
+                          terrain::moistureDetail(w);
+                terrain::Mixture mx = terrain::mixtureAt(c.elev[i], 0.0f, (float)t,
+                                                         std::clamp(m, 0.0f, 1.0f), 0.0f, false,
+                                                         terrain::patchNoise(w), 0.0f, (float)tc);
+                for (int k = 0; k < 11; k++) cov[k] += mx.cov[k];
+                tot += 1;
+                if (c.elev[i] > 2000.0f) hiCold += 1;
+            }
+            fprintf(stderr, "\nLAND COVER, from the renderer's own mixtureAt\n");
+            for (int k = 0; k < 11; k++)
+                fprintf(stderr, "  %-12s %6.1f%%   life about %3.0f%%\n", NAME[k],
+                        100 * cov[k] / std::max(tot, 1.0), LIFE[k]);
+            fprintf(stderr, "  %-12s %6.1f%%   life about   5%%\n", "land >2km",
+                    100 * hiCold / std::max(tot, 1.0));
+        }
+
         // The zonal profile, every four degrees. Spot latitudes hide
         // inversions: a reading of -32 at 62 degrees next to -4 at 82 is not
         // a calibration error, it is something structurally wrong in between,
