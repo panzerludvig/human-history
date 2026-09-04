@@ -218,6 +218,7 @@ int main(int argc, char** argv) {
     // names the mechanism still missing.
     {
         if (argc >= 3) atmosphere::SPINUP_DAYS = atoi(argv[2]) * 365;
+        if (argc >= 4 && std::string(argv[3]) == "phys") atmosphere::PRESCRIBED = false;
         fprintf(stderr, "spin-up %d days\n", atmosphere::SPINUP_DAYS);
         atmosphere::Climatology c = atmosphere::build(cp, seaLevel, rot, offset, pf, hy, false);
         Score s = judge(c);
@@ -371,6 +372,38 @@ int main(int argc, char** argv) {
                             s[2], s[3], s[4], s[5], s[6], s[2] + s[3] - s[4] - s[5] - s[6], tb, tf,
                             nSea > 0 ? tSea / nSea : 0.0, nLand > 0 ? tLand / nLand : 0.0,
                             nSea > 0 ? iceS / nSea : 0.0);
+                }
+            }
+            // And the winter north split by surface: the sea and the land
+            // at one latitude are different animals, and the mean of them
+            // says which is warm without saying why.
+            for (int sf = 1; sf >= 0; sf--) {
+                fprintf(stderr, "\n  NORTH OF 45, DJF, %s ONLY (W/m2; cells by the atmosphere's own mask)\n",
+                        sf ? "LAND" : "SEA");
+                fprintf(stderr, "  %5s | %6s %6s %6s | %6s %6s %6s %6s %6s | %6s | %6s %6s %6s %6s %6s %6s | %6s %6s %6s\n",
+                        "lat", "absSW", "OLR", "net", "BLhor", "FThor", "depos", "entr", "pool",
+                        "cond", "sSW", "LWdn", "LWup", "sens", "latent", "snet", "Ts", "Tb", "Tf");
+                for (int y0 = AH * 3 / 4; y0 < AH; y0 += 4) {
+                    double s[NZ] = {0}; double n = 0, ts = 0, tb = 0, tf = 0, nc = 0;
+                    for (int y = y0; y < std::min(y0 + 4, AH); y++) {
+                        const double* z = &c.zonBudLS[((0 * 2 + sf) * AH + y) * NZ];
+                        double w = z[NZ - 1];
+                        for (int k = 0; k < NZ - 1; k++) s[k] += z[k] * w;
+                        n += w;
+                        for (int x = 0; x < AW; x++) {
+                            bool land = c.elev[y * AW + x] > 0.0f;
+                            if (land != (sf == 1)) continue;
+                            int j = y * AW + x;
+                            ts += c.meanT[j]; tb += c.airT[j]; tf += c.airTf[j]; nc += 1;
+                        }
+                    }
+                    if (n < 1) continue;
+                    for (int k = 0; k < NZ - 1; k++) s[k] /= n;
+                    double lat = ((y0 + 2.0) / AH - 0.5) * 180.0;
+                    fprintf(stderr, "  %5.0f | %6.0f %6.0f %6.0f | %6.0f %6.0f %6.0f %6.0f %6.0f | %6.0f | %6.0f %6.0f %6.0f %6.0f %6.0f %6.0f | %6.1f %6.1f %6.1f\n",
+                            lat, s[0], s[1], s[0] - s[1], s[7], s[8], s[9], s[10], s[11], s[12],
+                            s[2], s[3], s[4], s[5], s[6], s[2] + s[3] - s[4] - s[5] - s[6],
+                            nc > 0 ? ts / nc : 0.0, nc > 0 ? tb / nc : 0.0, nc > 0 ? tf / nc : 0.0);
                 }
             }
             fprintf(stderr, "\n  SURFACE, zonal: %5s %6s %6s %6s %6s %6s %6s\n", "lat", "SW", "LWdn",

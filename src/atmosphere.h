@@ -518,6 +518,7 @@ inline double W_DIVERGE = 1.0;     // it is already the velocity
 // weather the grid cannot resolve, and it cancels.
 constexpr double UPLIFT_TAU = 86400.0; // s
 inline double W_FRONT = 200.0;    // m/s per (K/m) of temperature gradient
+inline double FRONT_SIDE_K = 4.0; // K above the neighbours for full lift, below for none
 // (There was a W_COAST here: uplift driven by the gradient of the SURFACE
 // temperature, added to wet the coasts when interiors were raining a third
 // more than they should. It was a fitted duplicate of the frontal term above
@@ -557,7 +558,7 @@ constexpr double DIV_CAP_SCALE = 0.05;          // m/s of uplift for a ~46% capa
 // is not withheld until a convergence line): an e-folding of ~3 days, i.e.
 // ~1300 km at typical winds. This is what makes coasts wetter than deep
 // continental interiors.
-constexpr double LAND_RAINOUT_TAU = 3.0 * 86400.0; // s
+// (LAND_RAINOUT_TAU, the 3-day e-folding, is no longer referenced anywhere.)
 inline double K_DIFF = 2.0e5;                // m^2/s eddy diffusion of moisture
 // Frontal-storm rain: mid-latitude rain on Earth is mostly baroclinic storms
 // riding the temperature gradient, which steady diagnostic winds cannot
@@ -672,6 +673,126 @@ inline double DYN_VISC = 6.0e5;     // m2/s, keeps the grid-scale quiet
 // (10% humidity) before any moisture could gather.
 constexpr int DYN_SUBSTEPS = 18;    // 200 seconds each
 
+
+// PRESCRIBED CLIMATE (Design/Weather.md, decision of 2026-09-04). The
+// prognostic atmosphere below is parked: without baroclinic eddies it
+// cannot make a cold winter continent and westerlies at the same time, and
+// eddies need a dynamic second layer and a ten-minute step. What the game
+// needs is a climate realistic enough that any continent layout gets its
+// deserts, forests, tundra and monsoons in the right places. So the surface
+// temperature and the surface wind are PAINTED from the same Earth targets
+// the calibration aimed at -- zonal curves for land and sea, a seasonal
+// swing scaled by continentality and lagged, the lapse rate on elevation,
+// a diurnal swing, and the belt circulation bent by the land-sea thermal
+// contrast -- and everything downstream is still DERIVED by the machinery
+// that worked: moisture transport on the wind, evaporation, uplift by
+// convection, convergence, fronts and slopes, rain, snow, humidity and
+// cloud. Rain shadows, interior deserts and the monsoon's seasonal march
+// are consequences of transport on a bounded temperature field, not of
+// painting. Set PRESCRIBED false to run the physics instead.
+inline bool PRESCRIBED = true;
+constexpr double PRE_LAPSE = 6.5;          // K/km on the model's smoothed elevation
+constexpr double PRE_CONT_KM = 500.0;      // e-folding of continentality with distance from the sea: 500 km inland is already continental
+constexpr double PRE_P_PER_DEG = 120.0;    // Pa of thermal-anomaly pressure per K (the old diagnostic model's)
+constexpr double PRE_FRICTION = 1.0 / (8.0 * 3600.0); // the Ekman balance's friction
+constexpr double PRE_ITCZ_SHIFT = 8.0;     // degrees the belts follow the sun
+constexpr double PRE_DIURNAL_LAND = 5.0;   // K half-swing, deep interior; coasts less
+constexpr double PRE_DIURNAL_SEA = 0.5;
+struct Prescribed {
+    std::vector<float> cont;    // continentality: 0 at sea, 1 deep in a continent
+    std::vector<float> lonDeg, latDeg;
+    // Zonal targets on |lat|, knots every 15 degrees from the equator to the
+    // pole. Means are annual; amplitudes are the seasonal half-swing, the
+    // land's at full continentality.
+    // The sea's curve is the SURFACE the air sees: open water where it
+    // is above freezing, the ice's skin where it is not -- which is why it
+    // runs to -30 at the winter pole though the water beneath never does.
+    // The land curves are the deep INTERIOR's; a coast has the sea's
+    // climate, and continentality mixes between them -- mean and swing
+    // both, since a maritime coast is warmer than the interior in the
+    // annual mean as well as flatter through the year.
+    static constexpr double LAND_MEAN[7] = {26.0, 25.0, 20.0, 8.0, -8.0, -24.0, -36.0};
+    static constexpr double LAND_AMP[7] = {1.5, 5.0, 12.0, 19.0, 28.0, 24.0, 16.0};
+    static constexpr double SEA_MEAN[7] = {27.5, 26.5, 21.0, 13.0, 3.0, -10.0, -18.0};
+    static constexpr double SEA_AMP[7] = {1.0, 1.5, 4.0, 5.5, 6.0, 12.0, 16.0};
+    // The belts on latitude relative to the shifted ITCZ, knots every 10
+    // degrees: zonal wind (east positive) and the poleward component.
+    static constexpr double BELT_U[10] = {-2.0, -6.0, -6.0, -1.0, 6.0, 9.0, 7.0, 1.0, -3.0, -2.0};
+    static constexpr double BELT_VP[10] = {0.0, -2.5, -2.0, -0.5, 1.0, 1.5, 1.0, -0.5, -1.0, 0.0};
+    static double knots(const double* v, int n, double step, double a) {
+        double p = std::clamp(a / step, 0.0, (double)(n - 1));
+        int k = std::min((int)p, n - 2);
+        double t = p - k;
+        return v[k] + t * (v[k + 1] - v[k]);
+    }
+    void init(const std::vector<unsigned char>& water, const std::vector<float>& latRad) {
+        cont.assign(W * H, 0.0f);
+        lonDeg.assign(W * H, 0.0f);
+        latDeg.assign(W * H, 0.0f);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                int i = y * W + x;
+                lonDeg[i] = (float)(((x + 0.5) / W) * 360.0 - 180.0);
+                latDeg[i] = (float)(latRad[i] * 180.0 / 3.14159265);
+            }
+        // Distance to the sea, in km, by relaxation over the grid: each land
+        // cell is the nearest neighbour's distance plus the step to it.
+        const double dyKm = 3.14159265 * R_EARTH / H / 1000.0;
+        std::vector<float> d(W * H, 1e9f);
+        for (int i = 0; i < W * H; i++) if (water[i]) d[i] = 0.0f;
+        for (int pass = 0; pass < 64; pass++) {
+            bool changed = false;
+            for (int y = 0; y < H; y++) {
+                double dxKm = dyKm * 2.0 * std::max(std::cos((double)latRad[y * W]), 0.05);
+                for (int x = 0; x < W; x++) {
+                    int i = y * W + x;
+                    if (water[i]) continue;
+                    float best = d[i];
+                    best = std::min(best, d[y * W + (x + 1) % W] + (float)dxKm);
+                    best = std::min(best, d[y * W + (x + W - 1) % W] + (float)dxKm);
+                    if (y + 1 < H) best = std::min(best, d[(y + 1) * W + x] + (float)dyKm);
+                    if (y > 0) best = std::min(best, d[(y - 1) * W + x] + (float)dyKm);
+                    if (best < d[i]) { d[i] = best; changed = true; }
+                }
+            }
+            if (!changed) break;
+        }
+        for (int i = 0; i < W * H; i++)
+            cont[i] = water[i] ? 0.0f : (float)(1.0 - std::exp(-d[i] / PRE_CONT_KM));
+    }
+    // The surface temperature of a cell at a moment.
+    double surfaceT(int i, bool water, double elevM, double doy, double hour) const {
+        double lat = latDeg[i], alat = std::fabs(lat);
+        // Land peaks about a month after the solstice, the sea two; the
+        // south is half a year behind.
+        double peak = (water ? 230.0 : 200.0) + (lat < 0 ? 182.5 : 0.0);
+        double phase = std::cos(2 * 3.14159265 * (doy - peak) / 365.0);
+        double mean, amp;
+        if (water) {
+            mean = knots(SEA_MEAN, 7, 15.0, alat);
+            amp = knots(SEA_AMP, 7, 15.0, alat);
+        } else {
+            double c = cont[i];
+            mean = (1 - c) * knots(SEA_MEAN, 7, 15.0, alat) + c * knots(LAND_MEAN, 7, 15.0, alat);
+            amp = (1 - c) * (knots(SEA_AMP, 7, 15.0, alat) + 2.0) + c * knots(LAND_AMP, 7, 15.0, alat);
+        }
+        double T = mean + amp * phase;
+        if (!water) T -= PRE_LAPSE * std::max(elevM, 0.0) / 1000.0;
+        double lh = hour + lonDeg[i] / 15.0;
+        double di = water ? PRE_DIURNAL_SEA : PRE_DIURNAL_LAND * (0.5 + 0.5 * cont[i]);
+        T += di * std::cos(2 * 3.14159265 * (lh - 15.0) / 24.0);
+        return T;
+    }
+    // The belt wind of a latitude at a time of year.
+    void beltWind(int i, double doy, double& u, double& v) const {
+        double shift = PRE_ITCZ_SHIFT * std::cos(2 * 3.14159265 * (doy - 200.0) / 365.0);
+        double p = latDeg[i] - shift;
+        double a = std::fabs(p), sgn = p >= 0 ? 1.0 : -1.0;
+        u = knots(BELT_U, 10, 10.0, a);
+        v = sgn * knots(BELT_VP, 10, 10.0, a);
+    }
+};
+
 struct Climatology {
     // PROBE: the tropical-ocean column budget, term by term -- every
     // open-sea cell within 15 degrees of the equator, every hour after
@@ -690,6 +811,7 @@ struct Climatology {
     static constexpr int NZB = 14;
     std::vector<double> zonBud;  // annual, [H][NZB]
     std::vector<double> zonBudS; // by season, [SEASONS][H][NZB]
+    std::vector<double> zonBudLS; // by season and surface, [SEASONS][2: sea, land][H][NZB]
     double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
     double dbgWv = 0, dbgWind = 0, dbgRH = 0;     // PROBE: water, wind, saturation
     // [season][cell]
@@ -784,6 +906,8 @@ struct Model {
     bool recordBudget = false;
     std::vector<double> soil;          // land water store, mm: what there is to evaporate
     std::vector<double> ice, nIce;     // sea ice, m of thickness (see L_ICE)
+    Prescribed pre;                    // the painted climate (see PRESCRIBED)
+    std::vector<double> anomA, anomB;  // its thermal-anomaly pressure, smoothed
     std::vector<double> evapAcc, rainAcc, madeAcc; // PROBE, one cell per thread: no atomics
     std::vector<double> advAcc, difAcc, advZ, advM; // PROBE: and what the wind and eddies bring
     std::vector<double> pSpd, pCapSkin, pSupply, pAfford; // PROBE: the evaporation, term by term
@@ -885,12 +1009,15 @@ struct Model {
         hbNew.assign(W * H, H_LAYER);
         physRow.assign(H, 0.0);
         budRow.assign(14 * H, 0.0);
-        zonRow.assign(SEASONS * Climatology::NZB * H, 0.0);
+        zonRow.assign(SEASONS * 2 * Climatology::NZB * H, 0.0);
         nu2.assign(W * H, 0.0);
         nv2.assign(W * H, 0.0);
         soil.assign(W * H, SOIL_REF_MM); // half full; the spin-up settles it
         ice.assign(W * H, 0.0);          // the first winter makes it
         nIce.assign(W * H, 0.0);
+        anomA.assign(W * H, 0.0);
+        anomB.assign(W * H, 0.0);
+        if (PRESCRIBED) pre.init(water, latRad);
         evapAcc.assign(W * H, 0.0);
         rainAcc.assign(W * H, 0.0);
         madeAcc.assign(W * H, 0.0);
@@ -1154,7 +1281,64 @@ struct Model {
     }
 
     // One hour. doy in [0,365), hourOfDay in [0,24).
+    // PRESCRIBED: paint this hour's surface temperature and wind. The wind
+    // is the belt pattern plus the Ekman-balanced flow down the gradient of
+    // the thermal anomaly -- the temperature's departure from its zonal
+    // mean, twice smoothed -- which is the old diagnostic model's monsoon:
+    // summer continents draw the sea's air in, winter continents push it
+    // out. The air above follows the surface at fixed gaps, and the ice is
+    // wherever the sea is at freezing.
+    void prescribeHour(double doy, double hour) {
+        double dx0 = 2 * 3.14159265 * R_EARTH / W;
+        double dy = 3.14159265 * R_EARTH / H;
+#pragma omp parallel for
+        for (int i = 0; i < W * H; i++) {
+            T[i] = pre.surfaceT(i, water[i] != 0, elev[i], doy, hour);
+            Tb[i] = T[i] - BL_LAPSE - (water[i] ? 1.5 : 2.0);
+            Tf[i] = Tb[i] - 40.0;
+            ice[i] = (water[i] && T[i] <= SEA_FREEZE + 0.05) ? 1.0 : 0.0;
+            anomA[i] = T[i] + PRE_LAPSE * std::max((double)elev[i], 0.0) / 1000.0;
+        }
+        for (int y = 0; y < H; y++) {
+            double m = 0;
+            for (int x = 0; x < W; x++) m += anomA[y * W + x];
+            m /= W;
+            for (int x = 0; x < W; x++) anomA[y * W + x] -= m;
+        }
+        for (int pass = 0; pass < 2; pass++) {
+#pragma omp parallel for
+            for (int y = 0; y < H; y++)
+                for (int x = 0; x < W; x++) {
+                    int i = idx(x, y);
+                    int yn = std::min(y + 1, H - 1), ys = std::max(y - 1, 0);
+                    anomB[i] = 0.5 * anomA[i] + 0.125 * (anomA[idx(wrapX(x + 1), y)] +
+                                                        anomA[idx(wrapX(x - 1), y)] +
+                                                        anomA[idx(x, yn)] + anomA[idx(x, ys)]);
+                }
+            std::swap(anomA, anomB);
+        }
+#pragma omp parallel for
+        for (int y = 1; y < H - 1; y++) {
+            double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.2);
+            double dx = dx0 * cosl;
+            for (int x = 0; x < W; x++) {
+                int i = idx(x, y);
+                double px = -PRE_P_PER_DEG * (anomA[idx(wrapX(x + 1), y)] - anomA[idx(wrapX(x - 1), y)]) / (2 * dx);
+                double py = -PRE_P_PER_DEG * (anomA[idx(x, y + 1)] - anomA[idx(x, y - 1)]) / (2 * dy);
+                double X = -px / RHO, Y = -py / RHO;
+                double f = 2 * OMEGA * std::sin(latRad[i]);
+                double r = PRE_FRICTION, den = r * r + f * f;
+                double bu, bv;
+                pre.beltWind(i, doy, bu, bv);
+                u[i] = bu + (r * X + f * Y) / den;
+                v[i] = bv + (-f * X + r * Y) / den;
+            }
+        }
+        for (int x = 0; x < W; x++) u[idx(x, 0)] = v[idx(x, 0)] = u[idx(x, H - 1)] = v[idx(x, H - 1)] = 0.0;
+    }
+
     void step(double doy, double hour) {
+        if (PRESCRIBED) prescribeHour(doy, hour);
         double dec = 23.5 * 3.14159265 / 180.0 * std::cos(2 * 3.14159265 * (doy - 171.0) / 365.0);
         double dx0 = 2 * 3.14159265 * R_EARTH / W;   // m at equator
         double dy = 3.14159265 * R_EARTH / H;
@@ -1205,9 +1389,10 @@ struct Model {
         const double C_FT = C_AIR - C_BL;
         // The air moves itself: six ten-minute steps of thickness and wind
         // inside this hour of radiation and water.
-        thermalTarget();
         hPrev = hP;
         TbPrev = Tb;
+        if (!PRESCRIBED) { // the air moves itself (see PRESCRIBED for when it does not)
+        thermalTarget();
         // The heat goes into the dynamics as thickness times temperature
         // (see FLUX FORM in stepDynamics) and comes back out as the ratio.
         for (int i = 0; i < W * H; i++) hT[i] = (H_LAYER + hP[i]) * Tb[i];
@@ -1218,6 +1403,7 @@ struct Model {
         polarFilter(hP, false);
         polarFilter(hT, false);
         for (int i = 0; i < W * H; i++) Tb[i] = hT[i] / (H_LAYER + hP[i]);
+        }
 
         // Divergence -> uplift; orographic uplift from wind into slope.
 #pragma omp parallel for
@@ -1647,7 +1833,7 @@ struct Model {
                                     -95.0, 70.0);
                 // PROBE: the zonal budget, every term as W/m2 (see zonBud).
                 if (recordBudget) {
-                    double* z = &zonRow[(curSeason * H + y) * Climatology::NZB];
+                    double* z = &zonRow[((curSeason * 2 + (water[i] ? 0 : 1)) * H + y) * Climatology::NZB];
                     z[0] += sw + swAir;   z[1] += olr;     z[2] += sw;
                     z[3] += lwDown;       z[4] += lwUp;    z[5] += sens;
                     z[6] += lFlux;
@@ -1687,7 +1873,34 @@ struct Model {
                 // cell. Taking only the positive part is what made the
                 // rectifier that had to be dealt with above.
                 double wDiv = W_DIVERGE * divSm[i];
-                double wFront = W_FRONT * std::sqrt(gtx * gtx + gty * gty);
+                // Only where the wind carries warm air over cold ground:
+                // warm advection is the classic condition for ascent, and
+                // the warm air is what rises. Lifting both sides of a
+                // gradient exported 75 W/m2 of air through the top of the
+                // winter continent's boundary layer (against 26 over the
+                // sea beside it), the surface wind converged from the warm
+                // sea to fill the hole, 85 W/m2 of marine warmth landed in
+                // the continental boundary layer, and 60N winter sat at -13
+                // where Earth's is -25 -- with the same term digging the
+                // 300 m low around the Antarctic coast. Cold air draining
+                // off a continent now lifts nothing.
+                //
+                // Gated on warm ADVECTION it took the storm tracks with it:
+                // with no eddies to carry air across a zonal gradient the
+                // term went quiet over the oceans too, the subpolar lows
+                // and the westerlies vanished, and the Antarctic fell to
+                // -60. The gradient's magnitude is the eddy activity a model
+                // without eddies can see (baroclinic growth goes as the
+                // gradient), so it stays; the SIDE is what changes. Lift the
+                // warm side of the gradient -- the cell standing above its
+                // neighbours -- and not the cold one.
+                double gmag = std::sqrt(gtx * gtx + gty * gty);
+                double tNb = 0.25 * (Tsl[xe] + Tsl[xw] + Tsl[yn] + Tsl[ys]);
+                // (With the climate painted there is no boundary layer to drain,
+                // and the gradient's magnitude is the mid-latitude rain.)
+                double warmSide = PRESCRIBED ? 1.0
+                                             : std::clamp(0.5 + (Tsl[i] - tNb) / FRONT_SIDE_K, 0.0, 1.0);
+                double wFront = W_FRONT * gmag * warmSide;
                 double wUp = wConv + wDiv + wFront;
                 // The diabatic part detrains into the upper branch (see
                 // W_EXPORT); read next hour by the dynamics.
@@ -1828,6 +2041,7 @@ struct Model {
                 nW[idx(x, y)] += f * (mW - nW[idx(x, y)]);
             }
         }
+        if (PRESCRIBED) { nT = T; nTb = Tb; nTf = Tf; nIce = ice; } // painted, not integrated
         std::swap(T, nT);
         std::swap(ice, nIce);
         // PROBE (see dbgE): what the air's heat did this hour against what
@@ -2024,10 +2238,22 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             const int NZ = Climatology::NZB;
             c.zonBud.assign(NZ * H, 0.0);
             c.zonBudS.assign(SEASONS * NZ * H, 0.0);
+            c.zonBudLS.assign(SEASONS * 2 * NZ * H, 0.0);
             for (int y = 0; y < H; y++) {
                 double tot[Climatology::NZB] = {0};
                 for (int se = 0; se < SEASONS; se++) {
-                    const double* z = &m.zonRow[(se * H + y) * NZ];
+                    double zs[Climatology::NZB] = {0};
+                    for (int sf = 0; sf < 2; sf++) {
+                        const double* zl = &m.zonRow[((se * 2 + sf) * H + y) * NZ];
+                        double cl = std::max(zl[NZ - 1], 1.0);
+                        for (int k = 0; k < NZ - 1; k++) {
+                            c.zonBudLS[((se * 2 + sf) * H + y) * NZ + k] = zl[k] / cl;
+                            zs[k] += zl[k];
+                        }
+                        c.zonBudLS[((se * 2 + sf) * H + y) * NZ + NZ - 1] = zl[NZ - 1];
+                        zs[NZ - 1] += zl[NZ - 1];
+                    }
+                    const double* z = zs;
                     double cnt = std::max(z[NZ - 1], 1.0);
                     for (int k = 0; k < NZ - 1; k++) {
                         c.zonBudS[(se * H + y) * NZ + k] = z[k] / cnt;

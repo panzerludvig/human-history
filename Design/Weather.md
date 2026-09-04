@@ -2,6 +2,23 @@
 
 **Status:** Implemented — see [[Meta/Status Vocabulary]]
 
+---
+
+## Decision (2026-09-04): prescribe the climate, derive the rain, build weather on top
+
+The prognostic rebuild (branch `climate-rebuild`, then `conserving-atmosphere`) is parked. What it bought: radiation in two layers and two bands, sea ice as a mass, a conserving energy budget, and a zonal probe that matches Earth's top-of-atmosphere budget at every latitude. What it could not buy: the mid-latitudes. Winter continents, storm tracks and westerlies are made by baroclinic eddies — travelling lows that grow on the temperature gradient, lift warm air poleward over the oceans and sink cold air over the winter continents. This model has no eddies, and every proxy for them traded a cold winter continent against the westerlies or the Antarctic. Eddies need a second dynamic layer and a timestep an order of magnitude shorter. That is months of work whose product is weather that would still need to be made legible.
+
+The goal was never Earth. It is a climate realistic enough that any continent layout gets deserts, forests, tundra and monsoons in the right places, and weather that feels connected. So:
+
+- **Temperature is prescribed**: zonal target curves for land and sea (the same Earth targets the calibration aimed at), a seasonal swing scaled by continentality (distance from the sea) and lagged, the lapse rate on elevation, and a diurnal swing. Bounded by construction; ports to any world.
+- **Circulation is prescribed**: the belt pattern (trades, westerlies, polar easterlies) shifted with the season, plus the thermal-anomaly wind of the old diagnostic model — the Ekman balance on the land-sea temperature contrast — which is what bends the belts into monsoons.
+- **Everything downstream is still derived** by the existing machinery on those fields: moisture transport, evaporation, convective, convergent, frontal and orographic uplift, rain, snow, humidity and cloud. Rain shadows, interior deserts, wet windward coasts and the seasonal migration of rain onto summer continents are consequences of transport, not of painting, and they are what makes a world feel like a world.
+- **Weather** is a layer above the climatology, designed alongside it: travelling systems born on the storm-track belts and carried east, monsoon onset and retreat on the seasonal swing, cyclones seeded over warm sea. Rule-based, coherent in space, persistent in time.
+
+Options considered and rejected: paint zonal targets alone (stripes on a sphere — no rain shadows, no monsoons); keep the physical temperature and prescribe only the wind (the calibration pain returns for ice and seasonal lag that the prescription gives for free). The physics stays in the tree behind a flag and on its branches; the moment a rule proves inadequate it can come back for that one thing. See [[Meta/Open Threads]] for what would reopen it.
+
+---
+
 Weather is a two-layer atmospheric model run **once, at world generation**, and stored as a climatology — a per-place, per-season probability function for rain, wind, cloud, and temperature swing. At runtime, weather is a pure function: climatology instantiated with seeded noise. Climate is the time-average of weather; since nothing perturbs it year over year, simulating it live would only re-derive the same statistics.
 
 ---
