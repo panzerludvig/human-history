@@ -698,6 +698,7 @@ constexpr double PRE_FRICTION = 1.0 / (8.0 * 3600.0); // the Ekman balance's fri
 constexpr double PRE_ITCZ_SHIFT = 8.0;     // degrees the belts follow the sun
 constexpr double PRE_DIURNAL_LAND = 5.0;   // K half-swing, deep interior; coasts less
 constexpr double PRE_DIURNAL_SEA = 0.5;
+constexpr double PRE_STORM_SAT = 0.4;      // how much sooner a storm-track cell rains (see BELT_STORM)
 struct Prescribed {
     std::vector<float> cont;    // continentality: 0 at sea, 1 deep in a continent
     std::vector<float> lonDeg, latDeg;
@@ -717,8 +718,11 @@ struct Prescribed {
     static constexpr double SEA_AMP[7] = {1.0, 1.5, 4.0, 5.5, 6.0, 12.0, 16.0};
     // The belts on latitude relative to the shifted ITCZ, knots every 10
     // degrees: zonal wind (east positive) and the poleward component.
-    static constexpr double BELT_U[10] = {-2.0, -6.0, -6.0, -1.0, 6.0, 9.0, 7.0, 1.0, -3.0, -2.0};
-    static constexpr double BELT_VP[10] = {0.0, -2.5, -2.0, -0.5, 1.0, 1.5, 1.0, -0.5, -1.0, 0.0};
+    // These are the LAYER's winds: the surface wind the fluxes see is
+    // seven tenths of them, so Earth's 6-7 m/s surface trades are 8.5
+    // here and the 8 m/s surface westerlies 12.
+    static constexpr double BELT_U[10] = {-3.0, -8.5, -8.5, -1.5, 8.0, 12.0, 10.0, 1.5, -4.0, -3.0};
+    static constexpr double BELT_VP[10] = {0.0, -3.5, -3.0, -0.7, 1.5, 2.0, 1.5, -0.7, -1.5, 0.0};
     static double knots(const double* v, int n, double step, double a) {
         double p = std::clamp(a / step, 0.0, (double)(n - 1));
         int k = std::min((int)p, n - 2);
@@ -760,6 +764,17 @@ struct Prescribed {
         for (int i = 0; i < W * H; i++)
             cont[i] = water[i] ? 0.0f : (float)(1.0 - std::exp(-d[i] / PRE_CONT_KM));
     }
+    // The land's zonal temperature at a moderately continental coast: what
+    // the air over a mid-latitude sea in winter has just blown off.
+    double landZonalT(int i, double doy) const {
+        double lat = latDeg[i], alat = std::fabs(lat);
+        double peak = 200.0 + (lat < 0 ? 182.5 : 0.0);
+        double phase = std::cos(2 * 3.14159265 * (doy - peak) / 365.0);
+        const double c = 0.7;
+        double mean = (1 - c) * knots(SEA_MEAN, 7, 15.0, alat) + c * knots(LAND_MEAN, 7, 15.0, alat);
+        double amp = (1 - c) * (knots(SEA_AMP, 7, 15.0, alat) + 2.0) + c * knots(LAND_AMP, 7, 15.0, alat);
+        return mean + amp * phase;
+    }
     // The surface temperature of a cell at a moment.
     double surfaceT(int i, bool water, double elevM, double doy, double hour) const {
         double lat = latDeg[i], alat = std::fabs(lat);
@@ -784,6 +799,33 @@ struct Prescribed {
         return T;
     }
     // The belt wind of a latitude at a time of year.
+    // The mean vertical motion of the overturning that the painted belts
+    // imply and the model cannot make for itself: the eddies' ascent
+    // along the storm tracks at 45-65, the subtropical subsidence under
+    // the highs, and the weak polar sinking. The ITCZ's own ascent comes
+    // from convection and convergence already and gets nothing here.
+    // Knots every 10 degrees from the shifted ITCZ, m/s.
+    // Sized against the ITCZ, whose convection plus convergence lift about
+    // 0.005 m/s here and make 6 mm/day: the storm tracks lift as hard.
+    // Earth's mean storm track is at 45; put at 50-60 the rain landed on
+    // the taiga and the 30-45 band stayed tan.
+    static constexpr double BELT_W[10] = {0.0, 0.0, -0.002, -0.002, 0.004, 0.006, 0.003, 0.001, 0.0, -0.001};
+    // Storminess: how much of a cell the eddies saturate ahead of the
+    // mean. The rain rule lets part of a cell rain before the whole is
+    // saturated (RAIN_FRAC); along the storm tracks that part is bigger,
+    // and this is what puts rain on the 30-45 band that a mean ascent
+    // could not -- a column at 43% humidity does not rain however gently
+    // it is lifted, but a cyclone lifts a strip of it to saturation.
+    // Knots every 10 degrees from the shifted ITCZ, 0..1.
+    static constexpr double BELT_STORM[10] = {0.0, 0.0, 0.0, 0.4, 1.0, 1.0, 0.6, 0.3, 0.0, 0.0};
+    double storminess(int i, double doy) const {
+        double shift = PRE_ITCZ_SHIFT * std::cos(2 * 3.14159265 * (doy - 200.0) / 365.0);
+        return knots(BELT_STORM, 10, 10.0, std::fabs(latDeg[i] - shift));
+    }
+    double beltUplift(int i, double doy) const {
+        double shift = PRE_ITCZ_SHIFT * std::cos(2 * 3.14159265 * (doy - 200.0) / 365.0);
+        return knots(BELT_W, 10, 10.0, std::fabs(latDeg[i] - shift));
+    }
     void beltWind(int i, double doy, double& u, double& v) const {
         double shift = PRE_ITCZ_SHIFT * std::cos(2 * 3.14159265 * (doy - 200.0) / 365.0);
         double p = latDeg[i] - shift;
@@ -1294,7 +1336,14 @@ struct Model {
 #pragma omp parallel for
         for (int i = 0; i < W * H; i++) {
             T[i] = pre.surfaceT(i, water[i] != 0, elev[i], doy, hour);
-            Tb[i] = T[i] - BL_LAPSE - (water[i] ? 1.5 : 2.0);
+            // Over the sea the air is a little cooler than the water -- and
+            // in winter a lot cooler, because it came off the continent.
+            // Earth's 45N ocean evaporates 2.5-3 mm/day mostly in cold-air
+            // outbreaks; painted 1.5 K under the sea all year it managed
+            // half that, and the temperate column stayed too dry to rain.
+            double chill = 0.0;
+            if (water[i]) chill = std::min(0.25 * std::max(T[i] - pre.landZonalT(i, doy), 0.0), 6.0);
+            Tb[i] = T[i] - BL_LAPSE - (water[i] ? 1.5 + chill : 2.0);
             Tf[i] = Tb[i] - 40.0;
             ice[i] = (water[i] && T[i] <= SEA_FREEZE + 0.05) ? 1.0 : 0.0;
             anomA[i] = T[i] + PRE_LAPSE * std::max((double)elev[i], 0.0) / 1000.0;
@@ -1872,7 +1921,7 @@ struct Model {
                 // subtropical deserts are the sinking half of the Hadley
                 // cell. Taking only the positive part is what made the
                 // rectifier that had to be dealt with above.
-                double wDiv = W_DIVERGE * divSm[i];
+                double wDiv = W_DIVERGE * divSm[i] + (PRESCRIBED ? pre.beltUplift(i, doy) : 0.0);
                 // Only where the wind carries warm air over cold ground:
                 // warm advection is the classic condition for ascent, and
                 // the warm air is what rises. Lifting both sides of a
@@ -1939,7 +1988,8 @@ struct Model {
                 double capLift =
                     std::min(cap, cap * std::exp(-LAPSE_MOIST * dz / CAP_SCALE));
                 capEff[i] = std::max(capLift, 0.05);
-                double rain = std::max(Wv[i] - RAIN_FRAC * capLift, 0.0) * RAIN_RATE;
+                double fracHere = RAIN_FRAC * (PRESCRIBED ? 1.0 - PRE_STORM_SAT * pre.storminess(i, doy) : 1.0);
+                double rain = std::max(Wv[i] - fracHere * capLift, 0.0) * RAIN_RATE;
                 double fe = fluxE[i], fw = fluxE[xw], fn = fluxN[i], fs = fluxN[ys];
                 // Flux form with per-face CFL limiting still lets four faces
                 // between them export more than the cell contains, and the
@@ -2185,7 +2235,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             fprintf(stderr, "atmo: day %d/%d  T [%.0f, %.0f]  |u|max %.0f  Wmax %.0f\n",
                     day, totalDays, tmin, tmax, umax, wmax);
         }
-        if (day % 30 == 0) { // PROBE, always: the leak is the point
+        if (day % 30 == 0 && !PRESCRIBED) { // PROBE: the leak is the point (painted air conserves nothing)
             fprintf(stderr, "  air heat, 30-day mean W/m2: changed %+.2f  given %+.2f  leak %+.2f"
                             "  mass-mismatch %+.2f\n",
                     m.dbgE[0] / 720, m.dbgE[1] / 720, (m.dbgE[0] - m.dbgE[1]) / 720,

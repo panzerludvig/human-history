@@ -904,8 +904,16 @@ int main(int argc, char** argv) {
                 double green = 0, rSum = 0, gSum = 0, bSum = 0, n2 = 0;
                 double zG[12] = {0}, zN[12] = {0}, cG = 0, cN = 0, iG = 0, iN = 0;
                 double zR[12] = {0}, zM[12] = {0}, zT[12] = {0};
+                // And the picture itself, in the same palette, written as a
+                // PPM next to the sweep's output: the sea blue, the land as
+                // the shader would paint it, north up.
+                std::vector<unsigned char> img(AW * AH * 3, 0);
                 for (int i = 0; i < AW * AH; i++) {
-                    if (c.elev[i] <= 0.0f) continue;
+                    if (c.elev[i] <= 0.0f) {
+                        int x = i % AW, y = i / AW, o = ((AH - 1 - y) * AW + x) * 3;
+                        img[o] = 30; img[o + 1] = 60; img[o + 2] = 110;
+                        continue;
+                    }
                     int x = i % AW, y = i / AW;
                     double lat = ((y + 0.5) / (double)AH - 0.5) * 3.14159265;
                     double lon = ((x + 0.5) / (double)AW * 2.0 - 1.0) * 3.14159265;
@@ -935,6 +943,11 @@ int main(int argc, char** argv) {
                     rSum += col[0]; gSum += col[1]; bSum += col[2];
                     if (col[1] > col[0]) green += 1;
                     n2 += 1;
+                    {
+                        int o = ((AH - 1 - y) * AW + x) * 3;
+                        for (int k = 0; k < 3; k++)
+                            img[o + k] = (unsigned char)std::clamp(col[k] * 255.0, 0.0, 255.0);
+                    }
                     // Where the green is, not how much: a world with the right
                     // green share can still be green in all the wrong places.
                     int band = std::min(11, std::max(0, y * 12 / AH));
@@ -953,6 +966,16 @@ int main(int argc, char** argv) {
                         }
                     if (coastal) { cN += 1; if (col[1] > col[0]) cG += 1; }
                     else         { iN += 1; if (col[1] > col[0]) iG += 1; }
+                }
+                {
+                    char name[64];
+                    snprintf(name, sizeof name, "map_seed%u.ppm", seed);
+                    if (FILE* f = fopen(name, "wb")) {
+                        fprintf(f, "P6\n%d %d\n255\n", AW, AH);
+                        fwrite(img.data(), 1, img.size(), f);
+                        fclose(f);
+                        fprintf(stderr, "\n  (the map, in the shader's palette: %s)\n", name);
+                    }
                 }
                 fprintf(stderr, "\nWHAT COLOUR IS THE LAND, in the shader's own palette\n");
                 fprintf(stderr, "  mean rendered land  %.2f %.2f %.2f\n", rSum / std::max(n2, 1.0),
