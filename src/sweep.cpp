@@ -232,6 +232,33 @@ int main(int argc, char** argv) {
                 s.spot[2], s.spot[3], s.spot[4], s.spot[5], s.spot[6], s.spot[7], c.dbgWv,
                 c.dbgWv / std::max(c.dbgRain, 1e-6), c.dbgWind, c.dbgRH * 100, s.coastRain,
                 s.innerRain, c.dbgEvap, c.dbgRain, c.dbgClamp);
+        // The tropical-ocean column, term by term, against measurement. SST
+        // there is set by this balance and almost nothing else -- no
+        // arrangement of continents moves it more than a few degrees -- so
+        // whichever term stands furthest from its measured value names the
+        // energy leak, on any world. Earth references: CERES/ERA-era means
+        // for open tropical ocean. One honest asymmetry: Earth's tropical
+        // surface keeps a ~30 W/m2 surplus that ocean currents export; this
+        // model has no currents, so its net must close at zero instead.
+        {
+            const double* b = c.tropBud;
+            double net = b[0] + b[3] - b[2] - b[4] - b[5];
+            fprintf(stderr,
+                    "\nTROPICAL OCEAN COLUMN (|lat|<15, open sea, W/m2)   model    earth\n"
+                    "  SW absorbed at surface                          %7.1f      190\n"
+                    "  SW absorbed in the air                          %7.1f       75\n"
+                    "  LW up from the surface                          %7.1f      460\n"
+                    "  LW down from the sky                            %7.1f      410\n"
+                    "  sensible heat off the surface                   %7.1f       10\n"
+                    "  latent heat off the surface                     %7.1f      120\n"
+                    "  OLR out the top                                 %7.1f      255\n"
+                    "  net into the surface                            %7.1f       30 (currents; here: 0)\n"
+                    "  Ts %5.1f C (earth 27)   Tb %5.1f C (earth ~23)   Tf %5.1f C (earth ~-18)   Wv %5.1f mm (earth 45)\n"
+                    "  emissivity %4.2f (earth ~0.90)   cloud %4.2f (earth ~0.65)   cell-hours %.0f\n",
+                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], net,
+                    b[7], b[8], b[12], b[9], b[10], b[11], b[13]);
+        }
+
         // What the MAP actually shows. Green is not where it rains, it is where
         // rain beats evaporative demand -- m = 0.5*rain/pet with pet rising
         // steeply with temperature -- so the same rainfall is desert when warm
@@ -800,21 +827,25 @@ int main(int argc, char** argv) {
         // of it. If hP is not tracking hWant the pressure gradient is not the
         // hypsometric one whatever the coefficient says, and the wind cannot
         // be either.
-        fprintf(stderr, "\n%6s %7s %8s %8s %7s %7s\n", "lat", "Tair", "hP", "hWant",
-                "u", "v");
+        fprintf(stderr, "\n%6s %7s %7s %8s %8s %7s %7s\n", "lat", "Tbl", "Tfree", "hP",
+                "hWant", "u", "v");
+        const double fbl = atmosphere::RHO * atmosphere::CP_AIR * atmosphere::H_LAYER /
+                           atmosphere::C_AIR;
         for (int y = AH - 2; y >= 1; y -= 4) {
             double la = ((y + 0.5) / (double)AH - 0.5) * 180.0;
-            double ta = 0, hp = 0, uu = 0, vv = 0;
+            double tb = 0, tf = 0, hp = 0, uu = 0, vv = 0;
             for (int x = 0; x < AW; x++) {
                 int j = 2 * AW * AH + y * AW + x;
-                ta += c.airT[j];
+                tb += c.airT[j];
+                tf += c.airTf[j];
                 hp += c.press[j];
                 uu += c.windU[j];
                 vv += c.windV[j];
             }
-            ta /= AW; hp /= AW; uu /= AW; vv /= AW;
-            fprintf(stderr, "%6.0f %7.1f %8.1f %8.1f %7.1f %7.1f\n", la, ta, hp,
-                    atmosphere::THERM_H_PER_K * (ta + 25.0), uu, vv);
+            tb /= AW; tf /= AW; hp /= AW; uu /= AW; vv /= AW;
+            double tcol = fbl * tb + (1.0 - fbl) * tf;
+            fprintf(stderr, "%6.0f %7.1f %7.1f %8.1f %8.1f %7.1f %7.1f\n", la, tb, tf, hp,
+                    -atmosphere::THERM_H_PER_K * (tcol + 25.0), uu, vv);
         }
         // Cloud, against what is actually up there. The global mean is the
         // easy half and it already matches; the pattern is the half that
