@@ -65,7 +65,40 @@ constexpr double SIGMA = 5.670374e-8;
 // right point.
 constexpr double EMISS_A = 0.735, EMISS_B = 0.318;
 inline double tauOf(double wv) { return EMISS_A * std::pow(std::max(wv, 1e-3), EMISS_B); }
-inline double emissOf(double wv) { return 1.0 - std::exp(-tauOf(wv)); }
+// TWO BANDS. Grey layers over-cool the boundary layer: a layer that emits
+// in the window as freely as in the bands sends a quarter of its upward
+// face straight past the free troposphere to space, and the two-layer
+// scheme measured that at 60-80 W/m2 of net loss off the tropical boundary
+// layer, against Earth's 30 -- paid for by a sea 7 K warmer than the air
+// giving two and a half times Earth's sensible heat. In life the water
+// vapour spectrum has a window, 8 to 13 microns, holding about 28% of the
+// Planck emission at these temperatures. There the vapour is nearly
+// transparent (only the continuum, which goes as the square of the
+// humidity and so lives near the surface) and cloud is opaque; in the
+// bands the vapour is opaque within a few millimetres and the layers
+// exchange with what is next to them. The surface loses to space through
+// the window; the boundary layer does not.
+//
+// The same two anchors fix both curves. Clear-sky emissivity over the
+// near-surface blackbody is 0.6 at 2 mm and 0.87 at 25 mm, and the total
+// is (1-w)*eBand + w*eWin. Bands: 0.82 at 2 mm, 0.98 at 25 -- the column
+// curve above scaled by BAND_K, same exponent. Window: 0.05 at 2 mm, 0.57
+// at 25 -- a continuum optical depth of 0.84 at 25 mm going as W^1.1. Both
+// reproduce the anchors to a hundredth; neither is a dial.
+constexpr double WINDOW_FRAC = 0.28;  // of the Planck emission in the window
+constexpr double BAND_K = 1.85;       // band optical depth over the column curve
+constexpr double WIN_TAU25 = 0.84;    // continuum optical depth at 25 mm
+constexpr double WIN_EXP = 1.1;       // and its power in W
+// The continuum goes as the square of the humidity, so its scale height
+// is half the vapour's and the lowest 1200 m hold 1 - exp(-1200/1225).
+constexpr double WIN_BL_SHARE = 0.62; // of the continuum in the boundary layer
+inline double tauBandOf(double wv) { return BAND_K * tauOf(wv); }
+inline double tauWinOf(double wv) { return WIN_TAU25 * std::pow(std::max(wv, 1e-3) / 25.0, WIN_EXP); }
+// The whole column's clear-sky emissivity, for diagnostics.
+inline double emissOf(double wv) {
+    return (1.0 - WINDOW_FRAC) * (1.0 - std::exp(-tauBandOf(wv))) +
+           WINDOW_FRAC * (1.0 - std::exp(-tauWinOf(wv)));
+}
 // The whole column. A thinner, more responsive layer (3e6, the lowest
 // kilometre or two) gives a far better seasonal swing and much better
 // mid-latitudes -- and hands the poles back to the latent pump, +22 degC in
@@ -127,6 +160,20 @@ inline double GAP_BF = 49.0;        // K, dry-adiabatic gap between the layers' 
 // cooled that layer 10 K below the sea and put back-radiation at 293,
 // LOWER than the one-layer scheme managed. The boundary layer's own faces
 // straddle BL_LAPSE the same way: down from its base, up from its top.
+//
+// Physically this is the ENVIRONMENT's lapse over the same five kilometres
+// the dry parcel crosses in GAP_BF, about 7 K/km against the parcel's 9.8,
+// which says 35: the base would then meet the boundary layer's top in the
+// tropics and stand above it over a winter pole, which is the inversion.
+// Measured, 35 did not do what that argument promised. The tropical
+// boundary layer warmed 1.2 K (the free troposphere cooled 2.4 to pay for
+// its warmer face, and the rest went into wind and evaporation), while the
+// poles and the mid-latitude winters warmed 3 to 7 K and the calibration
+// error went from 10 to 19. The boundary layer's 7 K deficit under the sea
+// is not this constant: it is the grey approximation, which has the layer
+// emit in the window as freely as in the bands, so a quarter of its upward
+// face goes straight to space past the free troposphere. That needs a
+// window band, not a warmer face. 27 stays until then.
 inline double FT_FACE = 27.0;       // K, the free troposphere's lower face above its emitting level
 // Vapour is bottom-heavy: with the 2.4 km scale height Q_SCALE implies, the
 // lowest 1200 m hold 1 - exp(-1200/2450) of the column. Both the optical
@@ -624,6 +671,14 @@ struct Climatology {
     // else, so each term can face its measured Earth value no matter what
     // the continents are doing.
     double tropBud[14] = {};
+    // PROBE: the zonal energy budget, every cell, every hour after spin-up,
+    // as W/m2 means per row. Order: absorbed SW (TOA), OLR, surface SW,
+    // LW down, LW up, sensible, latent, BL horizontal (wind+eddies), FT
+    // horizontal (eddies), deposit into BL, FT entrainment from BL, FT pool
+    // exchange, condensation, cell-hours. The question it answers: where
+    // the planet's pole-to-equator contrast is made and where it is lost.
+    static constexpr int NZB = 14;
+    std::vector<double> zonBud;
     double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
     double dbgWv = 0, dbgWind = 0, dbgRH = 0;     // PROBE: water, wind, saturation
     // [season][cell]
@@ -693,11 +748,26 @@ struct Model {
     std::vector<double> hP, nhP, nu2, nv2; // the moving air: thickness and momentum
     std::vector<double> hWant, hTmp;       // what the warmth asks of the height, smoothed
     std::vector<double> wTop;              // diabatic ascent leaving through the top, m/s
+    // The hour's mass movements, banked by the dynamics for the heat to
+    // ride on: face fluxes east and north (m2 per unit width), the thermal
+    // relaxation's mass source (m), the thickness at the hour's start, and
+    // each cell's affordable share of its outgoing mass (see FLUX FORM).
+    std::vector<double> hT, nhT, tSub;     // thickness x temperature: the heat the mass carries
+    std::vector<double> hPrev, TbPrev, stabArr; // the hour's start, and last hour's stability
+    // PROBE: is the air's heat conserved? Per hour: the two layers' energy
+    // change, the physics that entered them, and the mass the heat rode on
+    // against the mass the dynamics ended with. Summed per day.
+    std::vector<double> hbNew, physRow;
+    double dbgE[3] = {0, 0, 0};
+    long dbgN[3] = {0, 0, 0};                 // cell-hours at the Tb clamp, Tf clamp, flux limiter
+    double dbgX[4] = {1e9, -1e9, -1e9, 1e9};  // hP min, hP max, Tb max, Tf min
+    double tRelaxPool = 0; // temperature of the mass the relaxation takes, this hour
     double wTopMean = 0;                   // its area-weighted mean: what comes back down
     double tfPool = 0;                     // export-weighted mean Tf: what the upper branch carries
     // PROBE: tropical-ocean budget rows (13 terms x H); each thread owns
     // its own row of the parallel loop, so no atomics. Gated on stat.
     std::vector<double> budRow;
+    std::vector<double> zonRow; // PROBE: zonal energy budget, one row per thread
     bool recordBudget = false;
     std::vector<double> soil;          // land water store, mm: what there is to evaporate
     std::vector<double> evapAcc, rainAcc, madeAcc; // PROBE, one cell per thread: no atomics
@@ -792,7 +862,16 @@ struct Model {
         hWant.assign(W * H, 0.0);
         hTmp.assign(W * H, 0.0);
         wTop.assign(W * H, 0.0);
+        hT.assign(W * H, 0.0);
+        nhT.assign(W * H, 0.0);
+        tSub.assign(W * H, 0.0);
+        hPrev.assign(W * H, 0.0);
+        TbPrev.assign(W * H, 0.0);
+        stabArr.assign(W * H, 1.0);
+        hbNew.assign(W * H, H_LAYER);
+        physRow.assign(H, 0.0);
         budRow.assign(14 * H, 0.0);
+        zonRow.assign(Climatology::NZB * H, 0.0);
         nu2.assign(W * H, 0.0);
         nv2.assign(W * H, 0.0);
         soil.assign(W * H, SOIL_REF_MM); // half full; the spin-up settles it
@@ -934,6 +1013,43 @@ struct Model {
     void stepDynamics(double dt) {
         double dx0 = 2 * 3.14159265 * R_EARTH / W;
         double dy = 3.14159265 * R_EARTH / H;
+        // FLUX FORM. The boundary layer's heat rides on this substep's own
+        // mass fluxes: the prognostic is thickness times temperature, and
+        // it moves with the same face fluxes, the same relaxation, the
+        // same export and deposit as the thickness itself. A temperature
+        // equation against a fixed capacity could not see the heat that
+        // leaves with mass exported through the top or arrives with mass
+        // converging to replace it, and that blindness summed to a 9 W/m2
+        // sink over the planet -- absorbed sunlight exceeding emitted
+        // longwave by that much in a steady state, with every greenhouse
+        // lever being pushed against it. Doing it hourly on the banked
+        // fluxes needed a limiter where the meridians crowd, and a limiter
+        // that scales heat but not mass left cells holding the heat of air
+        // that had gone: 70 degC and a runaway. On the substep the
+        // dynamics' own stability is the limiter.
+        //
+        // The relaxation's mass is a redistribution -- taken from columns
+        // standing above their thermal target, given to those below -- and
+        // it carries heat like any other mass: out at the column's own
+        // temperature, in at the pooled temperature of what was taken.
+        double tRelaxPool = 0;
+        {
+            double neg = 0, negT = 0;
+            for (int y = 1; y < H - 1; y++) {
+                double cw = std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265);
+                for (int x = 0; x < W; x++) {
+                    int i = idx(x, y);
+                    tSub[i] = hT[i] / (H_LAYER + hP[i]);
+                    double r = hWant[i] - hP[i];
+                    if (r < 0) { neg -= r * cw; negT -= r * cw * tSub[i]; }
+                }
+            }
+            for (int x = 0; x < W; x++) {
+                tSub[idx(x, 0)] = tSub[idx(x, 1)];
+                tSub[idx(x, H - 1)] = tSub[idx(x, H - 2)];
+            }
+            tRelaxPool = neg > 0 ? negT / neg : 0.0;
+        }
 #pragma omp parallel for
         for (int y = 1; y < H - 1; y++) {
             double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.05);
@@ -977,19 +1093,45 @@ struct Model {
                 // cell's surface signature, which conv alone cannot make
                 // because frictional inflow only ever FILLS a low.
                 double want = hWant[i];
-                nhP[i] = hP[i] + dt * (conv + (want - hP[i]) / THERM_TAU -
-                                       W_EXPORT * (wTop[i] - wTopMean));
-                nhP[i] = std::clamp(nhP[i], -0.5 * H_LAYER, 0.5 * H_LAYER);
+                double relax = (want - hP[i]) / THERM_TAU;
+                double wExp = W_EXPORT * std::max(wTop[i], 0.0);
+                double wDep = W_EXPORT * std::max(wTopMean, 0.0);
+                double raw = hP[i] + dt * (conv + relax - wExp + wDep);
+                nhP[i] = std::clamp(raw, -0.5 * H_LAYER, 0.5 * H_LAYER);
+                // And the heat on every one of those masses (see FLUX FORM
+                // above): upwind on the faces; the relaxation's out at this
+                // column's temperature and in at the pool's; export out at
+                // this column's; the deposit in warmed by the gap -- where
+                // the layer is stirred enough to take it (stabArr, from the
+                // surface's stability), and at the layer's own temperature
+                // where it is not, its warmth staying aloft in the free
+                // troposphere's books.
+                double tE = fluxE > 0 ? tSub[i] : tSub[xe], tW = fluxW > 0 ? tSub[xw] : tSub[i];
+                double tN = fluxN > 0 ? tSub[i] : tSub[yn], tS = fluxS > 0 ? tSub[ys] : tSub[i];
+                double qconv = -((fluxE * tE - fluxW * tW) / (2 * dx) +
+                                 (fluxN * tN - fluxS * tS) / (2 * dy));
+                double st = stabArr[i];
+                double q = qconv + (relax > 0 ? relax * tRelaxPool : relax * tSub[i]) -
+                           wExp * tSub[i] +
+                           wDep * (st * (Tf[i] + GAP_BF) + (1.0 - st) * tSub[i]);
+                nhT[i] = hT[i] + dt * q;
+                // If the thickness was clamped, the heat keeps its ratio:
+                // the temperature is what the clamp must not change.
+                if (nhP[i] != raw && H_LAYER + raw > 1.0)
+                    nhT[i] *= (H_LAYER + nhP[i]) / (H_LAYER + raw);
             }
         }
         for (int x = 0; x < W; x++) {
             nu2[idx(x, 0)] = nv2[idx(x, 0)] = nu2[idx(x, H - 1)] = nv2[idx(x, H - 1)] = 0.0;
             nhP[idx(x, 0)] = nhP[idx(x, 1)];
             nhP[idx(x, H - 1)] = nhP[idx(x, H - 2)];
+            nhT[idx(x, 0)] = nhT[idx(x, 1)];
+            nhT[idx(x, H - 1)] = nhT[idx(x, H - 2)];
         }
         std::swap(u, nu2);
         std::swap(v, nv2);
         std::swap(hP, nhP);
+        std::swap(hT, nhT);
         polarFilter(u, true);
         polarFilter(v, true);
         polarFilter(hP, true);
@@ -1048,11 +1190,18 @@ struct Model {
         // The air moves itself: six ten-minute steps of thickness and wind
         // inside this hour of radiation and water.
         thermalTarget();
+        hPrev = hP;
+        TbPrev = Tb;
+        // The heat goes into the dynamics as thickness times temperature
+        // (see FLUX FORM in stepDynamics) and comes back out as the ratio.
+        for (int i = 0; i < W * H; i++) hT[i] = (H_LAYER + hP[i]) * Tb[i];
         for (int k = 0; k < DYN_SUBSTEPS; k++) stepDynamics(DT / DYN_SUBSTEPS);
         // and once, now the hour is done, the anisotropy.
         polarFilter(u, false);
         polarFilter(v, false);
         polarFilter(hP, false);
+        polarFilter(hT, false);
+        for (int i = 0; i < W * H; i++) Tb[i] = hT[i] / (H_LAYER + hP[i]);
 
         // Divergence -> uplift; orographic uplift from wind into slope.
 #pragma omp parallel for
@@ -1261,35 +1410,53 @@ struct Model {
                 // to express.
                 double Tk = T[i] + 273.15, Tbk = Tb[i] + 273.15, Tfk = Tf[i] + 273.15;
                 double lwUp = SIGMA * Tk * Tk * Tk * Tk;
-                // Two grey layers (see BL_LAPSE, GAP_BF). The vapour's
-                // optical depth is the calibrated column curve, split between
-                // the layers in proportion to the water each holds, so the
-                // column's total transmission is exactly what the anchors
-                // fixed. The cloud closes its share of the window the same
-                // way: its base is in the boundary layer and its top in the
-                // free troposphere, so half its depth goes to each -- and
-                // that is what makes a cloudy night warm and a cloud top
-                // cold, without a special case for either.
-                double tauW = tauOf(Wv[i]);
-                double tauC = -std::log(1.0 - CLOUD_LW * cf);
-                double emB = 1.0 - std::exp(-(tauW * BL_WV_SHARE + 0.5 * tauC));
-                double emF = 1.0 - std::exp(-(tauW * (1.0 - BL_WV_SHARE) + 0.5 * tauC));
-                double em = 1.0 - (1.0 - emB) * (1.0 - emF); // the column, for the probe
+                // Two layers (see BL_LAPSE, GAP_BF) in two bands (see
+                // WINDOW_FRAC). Each band's optical depth is split between
+                // the layers by where its absorber lives -- band vapour by
+                // the water share, the window continuum by its own, deeper
+                // share -- so the column's total transmission in each band
+                // is exactly what the anchors fixed. The cloud is grey: it
+                // closes both bands alike, its base in the boundary layer
+                // and its top in the free troposphere, half its depth to
+                // each -- which is what makes a cloudy night warm and a
+                // cloud top cold, without a special case for either.
+                //
                 // Each layer radiates from its two faces at those faces'
                 // own temperatures (see FT_FACE): the boundary layer down
                 // from its base and up from its top, the free troposphere
-                // down from its base and up from its emitting level.
-                auto face = [](double em, double tk) { return em * SIGMA * tk * tk * tk * tk; };
-                double eBdn = face(emB, Tbk + BL_LAPSE), eBup = face(emB, Tbk - BL_LAPSE);
-                double eFdn = face(emF, Tfk + FT_FACE), eFup = face(emF, Tfk);
-                // Upward through the boundary layer, then through the free
-                // troposphere; downward from space (nothing) to the ground.
-                // Down is warm and up is cold because the faces that look
-                // down ARE the warm ones, which is what the one-layer
-                // scheme's fixed offset was standing in for.
-                double up1 = (1.0 - emB) * lwUp + eBup;   // leaving the BL top
-                double olr = (1.0 - emF) * up1 + eFup;    // leaving the planet
-                double lwDown = eBdn + (1.0 - emB) * eFdn; // arriving at the ground
+                // down from its base and up from its emitting level. Down
+                // is warm and up is cold because the faces that look down
+                // ARE the warm ones.
+                double tauC = -std::log(1.0 - CLOUD_LW * cf);
+                double tauBand = tauBandOf(Wv[i]), tauWin = tauWinOf(Wv[i]);
+                const double frac[2] = {1.0 - WINDOW_FRAC, WINDOW_FRAC};
+                const double tB[2] = {tauBand * BL_WV_SHARE + 0.5 * tauC,
+                                      tauWin * WIN_BL_SHARE + 0.5 * tauC};
+                const double tF[2] = {tauBand * (1.0 - BL_WV_SHARE) + 0.5 * tauC,
+                                      tauWin * (1.0 - WIN_BL_SHARE) + 0.5 * tauC};
+                auto planck = [](double tk) { return SIGMA * tk * tk * tk * tk; };
+                double pBdn = planck(Tbk + BL_LAPSE), pBup = planck(Tbk - BL_LAPSE);
+                double pFdn = planck(Tfk + FT_FACE), pFup = planck(Tfk);
+                // Summed over the bands: what each layer emits from each
+                // face, what each absorbs, and what reaches the ground and
+                // space. Upward through the boundary layer, then through the
+                // free troposphere; downward from space (nothing) down.
+                double eBdn = 0, eBup = 0, eFdn = 0, eFup = 0, absB = 0, absF = 0;
+                double olr = 0, lwDown = 0, up1 = 0, em = 0;
+                for (int k = 0; k < 2; k++) {
+                    double emB = 1.0 - std::exp(-tB[k]), emF = 1.0 - std::exp(-tF[k]);
+                    double f = frac[k];
+                    double bdn = f * emB * pBdn, bup = f * emB * pBup;
+                    double fdn = f * emF * pFdn, fup = f * emF * pFup;
+                    double u1 = (1.0 - emB) * f * lwUp + bup;   // leaving the BL top
+                    eBdn += bdn; eBup += bup; eFdn += fdn; eFup += fup;
+                    absB += emB * (f * lwUp + fdn);
+                    absF += emF * u1;
+                    up1 += u1;
+                    olr += (1.0 - emF) * u1 + fup;              // leaving the planet
+                    lwDown += bdn + (1.0 - emB) * fdn;          // arriving at the ground
+                    em += f * (1.0 - (1.0 - emB) * (1.0 - emF)); // the column, for the probe
+                }
                 double heatHere = (water[i] && T[i] < -1.0) ? C_SEAICE : heatC[i];
                 // The exchange coefficient, from the wind that is actually
                 // blowing here. Surface wind is about seven tenths of the
@@ -1335,23 +1502,13 @@ struct Model {
                     evap *= afford / lFlux;
                     lFlux = afford;
                 }
-                // An explicit step cannot move more than a cell's worth of
-                // anything per step, and diffusion and advection spend from
-                // the same budget; measure what the wind spends and let the
-                // diffusion have what is left.
-                double uMax = 0.8 * dx / DT, vMax = 0.8 * dy / DT;
-                double ua = std::clamp(u[i], -uMax, uMax), va = std::clamp(v[i], -vMax, vMax);
+                // The boundary layer's advection and vertical exchange
+                // happened on the dynamics' substeps (see FLUX FORM in
+                // stepDynamics); Tb already holds them. What is left here is
+                // the physics and the eddies, against the mass that is
+                // actually there.
+                double hb0 = H_LAYER + hP[i];
                 double kxa = ktx, kya = kty;
-                {
-                    double cour = std::fabs(ua) * DT / dx + std::fabs(va) * DT / dy;
-                    double want = 2 * kxa + kya * (fN + fS);
-                    double room = std::max(0.0, 0.8 - cour);
-                    if (want > room) {
-                        double sc = want > 0 ? room / want : 0.0;
-                        kxa *= sc;
-                        kya *= sc;
-                    }
-                }
                 double difT = kxa * (Tb[xe] + Tb[xw] - 2 * Tb[i]) +
                               kya * (fN * (Tb[yn] - Tb[i]) + fS * (Tb[ys] - Tb[i]));
                 // The free troposphere has no wind of its own here, so the
@@ -1359,17 +1516,12 @@ struct Model {
                 // since it spends nothing on advection.
                 double difTf = ktx * (Tf[xe] + Tf[xw] - 2 * Tf[i]) +
                                kty * (fN * (Tf[yn] - Tf[i]) + fS * (Tf[ys] - Tf[i]));
-                // The boundary layer's heat, carried upwind by its own wind
-                // at full strength. The layer owns its temperature and its
-                // heat capacity now, so the moving air carries exactly the
-                // heat it holds. (This used to be the whole column's
-                // temperature scaled by the layer's share of the column mass
-                // -- the same physics in disguise, and before that the
-                // column's temperature at full strength, which froze the
-                // planet: a 1200 m wind handed the heat of a 10 km column.)
-                double advT = -(ua > 0 ? ua * (Tb[i] - Tb[xw]) : ua * (Tb[xe] - Tb[i])) / dx -
-                              (va > 0 ? va * (Tb[i] - Tb[ys]) : va * (Tb[yn] - Tb[i])) / dy;
-                advT *= DT;
+                // (The upwind temperature-form advection that stood here --
+                // and before it the whole column's temperature scaled by the
+                // layer's mass share, and before that the column at full
+                // strength, which froze the planet -- is replaced by the flux
+                // form above: the same wind, carrying exactly the heat of the
+                // mass it moves.)
                 // Under ice, the sea below conducts heat up to the surface.
                 double cond = (water[i] && T[i] < SEA_FREEZE)
                                   ? K_ICE_COND * (SEA_FREEZE - T[i])
@@ -1398,12 +1550,29 @@ struct Model {
                 // dry-adiabatically warmed by the gap.
                 const double xch = RHO * CP_AIR * W_EXPORT;
                 double swB = swAir * BL_WV_SHARE, swF = swAir - swB;
-                nTb[i] = std::clamp(Tb[i] +
-                                        (swB + emB * (lwUp + eFdn) - eBup - eBdn + sens) / C_BL * DT +
-                                        difT + advT +
-                                        xch * std::max(wTopMean, 0.0) * (Tf[i] + GAP_BF - Tb[i]) /
-                                            C_BL * DT,
+                // In heat-content form (see FLUX FORM): thickness times
+                // temperature, in and out with every mass that moves. Air
+                // exported through the top leaves with the layer's own heat;
+                // the relaxation's mass arrives at the layer's own
+                // temperature; and the subsiding air arrives warmed by the
+                // gap -- but only warms the layer if the layer is stirred
+                // enough to mix it in. Over a surface colder than its air
+                // the layer is stable, the warm air sits on top as a lid, and
+                // the surface goes on cooling under it: the polar winter
+                // inversion. The same stability factor the sensible heat
+                // uses gates that entrainment; what is not mixed in arrives
+                // at the layer's own temperature, and its warmth stays in
+                // the free troposphere's books, which is where the lid is.
+                nTb[i] = std::clamp(Tb[i] + difT +
+                                        (swB + absB - eBup - eBdn + sens) / (RHO * CP_AIR * hb0) * DT,
                                     -95.0, 70.0);
+                stabArr[i] = stab; // read by next hour's dynamics
+                hbNew[i] = hb0;
+                physRow[y] += swB + absB - eBup - eBdn + sens + swF + absF - eFup - eFdn +
+                              rainStep[i] * LATENT_J_PER_KG / DT;
+                // For the probes: the temperature the wind and the vertical
+                // exchange would each have made on their own.
+                double advT = Tb[i] - TbPrev[i]; // what the dynamics did this hour
                 // The free troposphere: the rest of the sunlight; what it
                 // absorbs of everything coming up through the boundary
                 // layer, less its two faces; the latent heat of every rain,
@@ -1412,12 +1581,35 @@ struct Model {
                 // passing through on its way down.
                 double condense = rainStep[i] * LATENT_J_PER_KG / C_FT;
                 nTf[i] = std::clamp(Tf[i] +
-                                        (swF + emF * up1 - eFup - eFdn) / C_FT * DT +
+                                        (swF + absF - eFup - eFdn) / C_FT * DT +
                                         condense + difTf +
+                                        // -- and the share of the subsiding air's warmth that
+                                        // a stable boundary layer would not take (see stab,
+                                        // above): it stays aloft, as the lid, so it stays in
+                                        // this layer's books. Dropping it was a 15 W/m2 leak
+                                        // out of the whole planet, measured at the top of
+                                        // the atmosphere.
                                         xch * (std::max(wTop[i], 0.0) * (Tb[i] - GAP_BF - Tf[i]) +
-                                               std::max(wTopMean, 0.0) * (tfPool - Tf[i])) /
+                                               std::max(wTopMean, 0.0) * (tfPool - Tf[i]) +
+                                               (1.0 - stab) * std::max(wTopMean, 0.0) *
+                                                   (Tf[i] + GAP_BF - Tb[i])) /
                                             C_FT * DT,
                                     -95.0, 70.0);
+                // PROBE: the zonal budget, every term as W/m2 (see zonBud).
+                if (recordBudget) {
+                    double* z = &zonRow[Climatology::NZB * y];
+                    z[0] += sw + swAir;   z[1] += olr;     z[2] += sw;
+                    z[3] += lwDown;       z[4] += lwUp;    z[5] += sens;
+                    z[6] += lFlux;
+                    z[7] += (difT + advT) * C_BL / DT; // temperature-change form
+                    z[8] += difTf * C_FT / DT;
+                    z[9] += stab * xch * std::max(wTopMean, 0.0) * (Tf[i] + GAP_BF - Tb[i]);
+                    z[10] += xch * std::max(wTop[i], 0.0) * (Tb[i] - GAP_BF - Tf[i]);
+                    z[11] += xch * std::max(wTopMean, 0.0) *
+                             ((tfPool - Tf[i]) + (1.0 - stab) * (Tf[i] + GAP_BF - Tb[i]));
+                    z[12] += condense * C_FT / DT;
+                    z[13] += 1.0;
+                }
                 if (i == probe) { // one cell only: no write contention
                     pSw += sw / heatHere * DT;
                     pOlr -= (lwUp - lwDown) / heatHere * DT;
@@ -1587,6 +1779,37 @@ struct Model {
             }
         }
         std::swap(T, nT);
+        // PROBE (see dbgE): what the air's heat did this hour against what
+        // it was given, as W/m2 over the planet.
+        {
+            double dE = 0, ph = 0, mm = 0, wsum = 0;
+            for (int y = 1; y < H - 1; y++) {
+                double cw = std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265);
+                double rowE = 0, rowM = 0;
+                for (int x = 0; x < W; x++) {
+                    int i = idx(x, y);
+                    rowE += RHO * CP_AIR * (hbNew[i] * nTb[i] - (H_LAYER + hPrev[i]) * TbPrev[i]) +
+                            (C_AIR - RHO * CP_AIR * H_LAYER) * (nTf[i] - Tf[i]);
+                    rowM += RHO * CP_AIR * (hbNew[i] - (H_LAYER + hP[i])) * nTb[i];
+                }
+                dE += rowE * cw; ph += physRow[y] * cw * DT; mm += rowM * cw;
+                physRow[y] = 0.0;
+                wsum += W * cw;
+            }
+            dbgE[0] += dE / wsum / DT; dbgE[1] += ph / wsum / DT; dbgE[2] += mm / wsum / DT;
+            // and where it could have gone: clamps, limiter, thickness
+            int cb = 0, cf2 = 0, sh = 0; double hmin = 1e9, hmax = -1e9, tbmax = -1e9, tfmin = 1e9;
+            for (int i = 0; i < W * H; i++) {
+                if (nTb[i] <= -95.0 || nTb[i] >= 70.0) cb++;
+                if (nTf[i] <= -95.0 || nTf[i] >= 70.0) cf2++;
+                (void)sh;
+                hmin = std::min(hmin, hP[i]); hmax = std::max(hmax, hP[i]);
+                tbmax = std::max(tbmax, nTb[i]); tfmin = std::min(tfmin, nTf[i]);
+            }
+            dbgN[0] += cb; dbgN[1] += cf2; dbgN[2] += sh;
+            dbgX[0] = std::min(dbgX[0], hmin); dbgX[1] = std::max(dbgX[1], hmax);
+            dbgX[2] = std::max(dbgX[2], tbmax); dbgX[3] = std::min(dbgX[3], tfmin);
+        }
         std::swap(Tb, nTb);
         std::swap(Tf, nTf);
         std::swap(Wv, nW);
@@ -1695,6 +1918,17 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             fprintf(stderr, "atmo: day %d/%d  T [%.0f, %.0f]  |u|max %.0f  Wmax %.0f\n",
                     day, totalDays, tmin, tmax, umax, wmax);
         }
+        if (day % 30 == 0) { // PROBE, always: the leak is the point
+            fprintf(stderr, "  air heat, 30-day mean W/m2: changed %+.2f  given %+.2f  leak %+.2f"
+                            "  mass-mismatch %+.2f\n",
+                    m.dbgE[0] / 720, m.dbgE[1] / 720, (m.dbgE[0] - m.dbgE[1]) / 720,
+                    m.dbgE[2] / 720);
+            fprintf(stderr, "    clamped cell-hours: Tb %ld  Tf %ld  limiter %ld;  hP [%.0f, %.0f]  Tb max %.0f  Tf min %.0f\n",
+                    m.dbgN[0], m.dbgN[1], m.dbgN[2], m.dbgX[0], m.dbgX[1], m.dbgX[2], m.dbgX[3]);
+            m.dbgE[0] = m.dbgE[1] = m.dbgE[2] = 0;
+            m.dbgN[0] = m.dbgN[1] = m.dbgN[2] = 0;
+            m.dbgX[0] = 1e9; m.dbgX[1] = -1e9; m.dbgX[2] = -1e9; m.dbgX[3] = 1e9;
+        }
     }
     {
         double e = 0, r = 0, mk = 0, wsum = 0, wv = 0, wnd = 0, rh = 0;
@@ -1733,6 +1967,14 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         double n = std::max(s[13], 1.0);
         for (int k = 0; k < 13; k++) c.tropBud[k] = s[k] / n;
         c.tropBud[13] = s[13];
+        c.zonBud.assign(Climatology::NZB * H, 0.0);
+        for (int y = 0; y < H; y++) {
+            const double* z = &m.zonRow[Climatology::NZB * y];
+            double cnt = std::max(z[Climatology::NZB - 1], 1.0);
+            for (int k = 0; k < Climatology::NZB - 1; k++)
+                c.zonBud[Climatology::NZB * y + k] = z[k] / cnt;
+            c.zonBud[Climatology::NZB * y + Climatology::NZB - 1] = z[Climatology::NZB - 1];
+        }
     }
     for (int s = 0; s < SEASONS; s++) {
         double hours = cnt[s] * 24.0;

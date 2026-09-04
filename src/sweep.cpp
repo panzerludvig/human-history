@@ -259,6 +259,103 @@ int main(int argc, char** argv) {
                     b[7], b[8], b[12], b[9], b[10], b[11], b[13]);
         }
 
+        // Where the pole-to-equator contrast is made and where it is lost.
+        // Top of atmosphere first: what each band absorbs of the sun and
+        // what it radiates away, against Earth's annual zonal means (CERES
+        // era, rounded). The difference is what the atmosphere has to carry
+        // poleward, and its running integral from the south pole is the
+        // transport across each latitude in petawatts; Earth's peaks near
+        // 5.5 PW at 35-40 degrees. Then the terms that carry it: the
+        // boundary layer's wind and eddies, the free troposphere's eddies,
+        // and the overturning -- deposit into the boundary layer, detrained
+        // air into the free troposphere, and the pool's exchange -- with the
+        // condensation heating that powers the upper branch.
+        {
+            static const struct { double lat, sw, olr; } EARTH[] = {
+                {0, 318, 250}, {15, 305, 260}, {30, 265, 255}, {45, 205, 235},
+                {60, 145, 210}, {75, 100, 190}, {90, 85, 180}};
+            auto earthAt = [&](double alat, bool sw) {
+                for (int k = 0; k < 6; k++)
+                    if (alat <= EARTH[k + 1].lat) {
+                        double t = (alat - EARTH[k].lat) / (EARTH[k + 1].lat - EARTH[k].lat);
+                        return sw ? EARTH[k].sw + t * (EARTH[k + 1].sw - EARTH[k].sw)
+                                  : EARTH[k].olr + t * (EARTH[k + 1].olr - EARTH[k].olr);
+                    }
+                return sw ? EARTH[6].sw : EARTH[6].olr;
+            };
+            const int NZ = atmosphere::Climatology::NZB;
+            const double R = 6.371e6;
+            fprintf(stderr, "\nWHERE THE CONTRAST IS MADE (zonal, W/m2; transport in PW)\n");
+            fprintf(stderr, "  %5s | %6s %6s %6s | %6s %6s %6s | %6s %6s | %6s %6s %6s %6s %6s | %6s\n",
+                    "lat", "absSW", "OLR", "net", "eSW", "eOLR", "enet", "PW", "ePW",
+                    "BLhor", "FThor", "depos", "entr", "pool", "cond");
+            double pw = 0, epw = 0;
+            std::vector<double> pwRow(AH, 0.0), epwRow(AH, 0.0);
+            for (int y = 0; y < AH; y++) {
+                double lat = ((y + 0.5) / (double)AH - 0.5) * 180.0;
+                double area = 2 * 3.14159265 * R * R * std::cos(lat * 3.14159265 / 180.0) *
+                              (3.14159265 / AH);
+                const double* z = &c.zonBud[NZ * y];
+                pw += (z[0] - z[1]) * area * 1e-15;
+                epw += (earthAt(std::fabs(lat), true) - earthAt(std::fabs(lat), false)) * area * 1e-15;
+                pwRow[y] = pw; epwRow[y] = epw;
+            }
+            for (int y0 = 0; y0 < AH; y0 += 8) {
+                double s[NZ] = {0}; double n = 0;
+                for (int y = y0; y < std::min(y0 + 8, AH); y++) {
+                    const double* z = &c.zonBud[NZ * y];
+                    for (int k = 0; k < NZ - 1; k++) s[k] += z[k];
+                    n += 1;
+                }
+                for (int k = 0; k < NZ - 1; k++) s[k] /= n;
+                double lat = ((y0 + 4.0) / AH - 0.5) * 180.0;
+                double alat = std::fabs(lat);
+                int ye = std::min(y0 + 7, AH - 1);
+                fprintf(stderr, "  %5.0f | %6.0f %6.0f %6.0f | %6.0f %6.0f %6.0f | %6.2f %6.2f | %6.0f %6.0f %6.0f %6.0f %6.0f | %6.0f\n",
+                        lat, s[0], s[1], s[0] - s[1], earthAt(alat, true), earthAt(alat, false),
+                        earthAt(alat, true) - earthAt(alat, false), pwRow[ye], epwRow[ye],
+                        s[7], s[8], s[9], s[10], s[11], s[12]);
+            }
+            {
+                double area = 4 * 3.14159265 * R * R;
+                fprintf(stderr, "  planet: absorbed - emitted = %+.1f W/m2 (%+.2f PW); a steady\n"
+                                "  state is zero, and anything else is a term that is not conserving\n",
+                        pw * 1e15 / area, pw);
+                // Every term's global mean. Each transport term should sum
+                // to zero over the planet; the one that does not is the leak.
+                double g[NZ] = {0}, wsum = 0;
+                for (int y = 0; y < AH; y++) {
+                    double cw = std::cos(((y + 0.5) / (double)AH - 0.5) * 3.14159265);
+                    const double* z = &c.zonBud[NZ * y];
+                    for (int k = 0; k < NZ - 1; k++) g[k] += z[k] * cw;
+                    wsum += cw;
+                }
+                for (int k = 0; k < NZ - 1; k++) g[k] /= wsum;
+                fprintf(stderr, "  global means: TOA net %+.1f  surface net %+.1f  |  BLhor %+.1f  FThor %+.1f\n"
+                                "    depos %+.1f  entr %+.1f  pool %+.1f  (vertical sum %+.1f)  cond-latent %+.1f\n",
+                        g[0] - g[1], g[2] + g[3] - g[4] - g[5] - g[6], g[7], g[8], g[9], g[10],
+                        g[11], g[9] + g[10] + g[11], g[12] - g[6]);
+            }
+            fprintf(stderr, "  (PW is the northward transport across the band's poleward edge;\n"
+                            "   e-columns are Earth. BLhor/FThor: horizontal heat into each layer.\n"
+                            "   depos: subsiding air into the BL; entr: BL air detrained into the FT;\n"
+                            "   pool: the upper branch's exchange; cond: latent heat released aloft.)\n");
+            fprintf(stderr, "\n  SURFACE, zonal: %5s %6s %6s %6s %6s %6s %6s\n", "lat", "SW", "LWdn",
+                    "LWup", "sens", "latent", "net");
+            for (int y0 = 0; y0 < AH; y0 += 8) {
+                double s[NZ] = {0}; double n = 0;
+                for (int y = y0; y < std::min(y0 + 8, AH); y++) {
+                    const double* z = &c.zonBud[NZ * y];
+                    for (int k = 0; k < NZ - 1; k++) s[k] += z[k];
+                    n += 1;
+                }
+                for (int k = 0; k < NZ - 1; k++) s[k] /= n;
+                double lat = ((y0 + 4.0) / AH - 0.5) * 180.0;
+                fprintf(stderr, "                  %5.0f %6.0f %6.0f %6.0f %6.0f %6.0f %6.0f\n", lat,
+                        s[2], s[3], s[4], s[5], s[6], s[2] + s[3] - s[4] - s[5] - s[6]);
+            }
+        }
+
         // What the MAP actually shows. Green is not where it rains, it is where
         // rain beats evaporative demand -- m = 0.5*rain/pet with pet rising
         // steeply with temperature -- so the same rainfall is desert when warm
