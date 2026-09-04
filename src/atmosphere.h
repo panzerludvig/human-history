@@ -203,22 +203,31 @@ constexpr double STORED_FLUX_WATER = 60.0, STORED_FLUX_LAND = 10.0; // W/m2
 // to draw on the driest air draws the most water, so a desert would cool
 // itself harder than a rainforest.
 constexpr double SOIL_CAP_MM = 120.0, SOIL_REF_MM = 40.0;
-// Melting holds a surface at freezing: ice takes 334 kJ/kg without changing
-// temperature, which is why a polar summer sits near zero however long the
-// sun is up.
-// Melting holds a surface at freezing: ice takes 334 kJ/kg without changing
-// temperature, which is why a polar summer sits near zero however long the
-// sun is up.
+// SEA ICE IS A MASS. It used to be four rules keyed on the surface
+// temperature of the moment -- a heat-capacity switch at -1 degC, a fixed
+// conduction below -1.8, a damping of the temperature change within two
+// degrees of zero standing in for latent heat, and an albedo ramp -- and a
+// cell had no memory of having been frozen. Two holes followed. The latent
+// buffer sat on the slab between -1 and +2, worth seven metres of ice, so
+// the winter sea at 56-64N sat at +8 and +3 and never reached the skin
+// regime at all. And the albedo followed the thermometer, so a polar sea
+// held at 0 degC by melting -- which on Earth is under ice at albedo 0.6 --
+// was 80% open water taking 147 W/m2 of summer sun into a 25 m slab and
+// paying it back all winter: 60N winter 20 K warm, with the radiation and
+// the transport both Earth's.
 //
-// It works in BOTH directions and this only damped warming. Freezing water
-// releases exactly the same latent heat and resists cooling by exactly as
-// much, so a one-sided version is a ratchet: a cell crossed the freezing
-// point downward at full speed and had to climb back at an eighth of it. Add
-// the hard fifty-fold drop in heat capacity at -1 degC, where the ocean slab
-// becomes a skin of sea ice, and a cell that dipped below freezing cooled
-// fast and warmed slowly -- which is a trapdoor into the ice-albedo
-// feedback, built out of an asymmetry that has no physical counterpart.
-constexpr double MELT_DAMP = 0.12;
+// Now: a thickness of ice per sea cell. Net cooling of open water below
+// freezing makes ice from the deficit. Under ice the surface is the ice
+// skin (C_SEAICE), heat conducts up from water held at SEA_FREEZE through
+// the thickness, and what it conducts it freezes at the bottom. Net heating
+// of the skin above the melting point melts from the top before any water
+// warms; when the last of it goes the water resumes at freezing. Albedo
+// follows cover, not temperature.
+constexpr double L_ICE = 3.06e8;        // J per m3 of ice: 334 kJ/kg at 917 kg/m3
+constexpr double ICE_K = 2.2;           // W/m/K, ice and its snow together (see SEA_FREEZE)
+constexpr double ICE_FULL_COVER = 0.3;  // m: thin ice is already white
+constexpr double ICE_MIN = 0.005;       // m: below this it is gone
+constexpr double ICE_MAX = 20.0;        // m: nothing here is an ice shelf
 // Sea ice insulates. Below freezing a skin of ice cuts the ocean's 25-metre
 // slab off from the air: the ice SURFACE radiates down towards -40 while the
 // water beneath stays near -1.8. Without it the slab's whole heat capacity
@@ -251,7 +260,8 @@ constexpr double C_SEAICE = 2.0e6; // J/m2/K: a thin skin, not an ocean
 // rather than being one, and the day the ocean moves heat for itself this
 // should come out.
 constexpr double SEA_FREEZE = -1.8;    // degC, salt water
-constexpr double K_ICE_COND = 0.88;    // W/m2/K through ice and its snow
+// (K_ICE_COND, 0.88 W/m2/K, was this conductivity over a fixed 2.5 m; the
+// thickness is prognostic now and the conductivity is ICE_K above.)
 // Snow and ice reflect most of what falls on them, and the albedo field was
 // static -- painted once from an analytic first guess, so nothing got
 // brighter when it froze. That is a real feedback and a strong one: it is
@@ -678,7 +688,8 @@ struct Climatology {
     // exchange, condensation, cell-hours. The question it answers: where
     // the planet's pole-to-equator contrast is made and where it is lost.
     static constexpr int NZB = 14;
-    std::vector<double> zonBud;
+    std::vector<double> zonBud;  // annual, [H][NZB]
+    std::vector<double> zonBudS; // by season, [SEASONS][H][NZB]
     double dbgEvap = 0, dbgRain = 0, dbgClamp = 0; // PROBE: is water conserved?
     double dbgWv = 0, dbgWind = 0, dbgRH = 0;     // PROBE: water, wind, saturation
     // [season][cell]
@@ -690,6 +701,7 @@ struct Climatology {
     std::vector<float> upConv, upDiv, upFront, upOrog, capX; // PROBE: what lifts the air
     std::vector<float> evapF, advF, difF, latF, advZF, advMF; // PROBE: the water budget
     std::vector<float> spdF, capSkinF, supplyF, affordF;     // PROBE: and the evaporation
+    std::vector<float> iceM;                                 // sea ice, m, by season
     std::vector<float> elev; // [cell], the model's smoothed elevation (for lapse correction)
     // elev has one band; bilinearAt/annualAt want [season][cell]. A repeated
     // view is built eagerly at the end of build() -- the lazy path races when
@@ -707,7 +719,7 @@ struct Climatology {
         for (auto* v : {&meanT, &rainMmDay, &snowMmDay, &rainProb, &windU, &windV, &cloud,
                         &diurnal, &wv, &rh, &press, &airT, &airTf, &upConv, &upDiv, &upFront,
                         &upOrog, &capX, &evapF, &advF, &difF, &latF, &advZF, &advMF, &spdF,
-                        &capSkinF, &supplyF, &affordF})
+                        &capSkinF, &supplyF, &affordF, &iceM})
             v->assign(SEASONS * W * H, 0.0f);
     }
     static int seasonOfDay(int doy) { // DJF=0 starting Dec 1 (day 334)
@@ -767,9 +779,11 @@ struct Model {
     // PROBE: tropical-ocean budget rows (13 terms x H); each thread owns
     // its own row of the parallel loop, so no atomics. Gated on stat.
     std::vector<double> budRow;
-    std::vector<double> zonRow; // PROBE: zonal energy budget, one row per thread
+    std::vector<double> zonRow; // PROBE: zonal energy budget, [season][row][term]
+    int curSeason = 0;
     bool recordBudget = false;
     std::vector<double> soil;          // land water store, mm: what there is to evaporate
+    std::vector<double> ice, nIce;     // sea ice, m of thickness (see L_ICE)
     std::vector<double> evapAcc, rainAcc, madeAcc; // PROBE, one cell per thread: no atomics
     std::vector<double> advAcc, difAcc, advZ, advM; // PROBE: and what the wind and eddies bring
     std::vector<double> pSpd, pCapSkin, pSupply, pAfford; // PROBE: the evaporation, term by term
@@ -871,10 +885,12 @@ struct Model {
         hbNew.assign(W * H, H_LAYER);
         physRow.assign(H, 0.0);
         budRow.assign(14 * H, 0.0);
-        zonRow.assign(Climatology::NZB * H, 0.0);
+        zonRow.assign(SEASONS * Climatology::NZB * H, 0.0);
         nu2.assign(W * H, 0.0);
         nv2.assign(W * H, 0.0);
         soil.assign(W * H, SOIL_REF_MM); // half full; the spin-up settles it
+        ice.assign(W * H, 0.0);          // the first winter makes it
+        nIce.assign(W * H, 0.0);
         evapAcc.assign(W * H, 0.0);
         rainAcc.assign(W * H, 0.0);
         madeAcc.assign(W * H, 0.0);
@@ -1390,8 +1406,12 @@ struct Model {
                 double lat = latRad[i];
                 double ha = 2 * 3.14159265 * (hour / 24.0 + (x + 0.5) / (double)W) + 3.14159265;
                 double cosz = std::sin(lat) * std::sin(dec) + std::cos(lat) * std::cos(dec) * std::cos(ha);
-                double white = std::clamp((SNOW_NONE_C - T[i]) / (SNOW_NONE_C - SNOW_FULL_C),
-                                          0.0, 1.0);
+                // Snow on land still follows the temperature ramp; sea ice
+                // follows its own cover (see L_ICE).
+                double white = water[i] ? std::clamp(ice[i] / ICE_FULL_COVER, 0.0, 1.0)
+                                        : std::clamp((SNOW_NONE_C - T[i]) /
+                                                         (SNOW_NONE_C - SNOW_FULL_C),
+                                                     0.0, 1.0);
                 double alb = albedo[i] + white * ((water[i] ? ALBEDO_SEAICE : ALBEDO_SNOW) -
                                                   albedo[i]);
                 // What the cloud overhead is doing, both ways. It was
@@ -1457,7 +1477,7 @@ struct Model {
                     lwDown += bdn + (1.0 - emB) * fdn;          // arriving at the ground
                     em += f * (1.0 - (1.0 - emB) * (1.0 - emF)); // the column, for the probe
                 }
-                double heatHere = (water[i] && T[i] < -1.0) ? C_SEAICE : heatC[i];
+                double heatHere = (water[i] && ice[i] > 0.0) ? C_SEAICE : heatC[i];
                 // The exchange coefficient, from the wind that is actually
                 // blowing here. Surface wind is about seven tenths of the
                 // layer's, and never less than the stirring convection does
@@ -1522,13 +1542,43 @@ struct Model {
                 // strength, which froze the planet -- is replaced by the flux
                 // form above: the same wind, carrying exactly the heat of the
                 // mass it moves.)
-                // Under ice, the sea below conducts heat up to the surface.
-                double cond = (water[i] && T[i] < SEA_FREEZE)
-                                  ? K_ICE_COND * (SEA_FREEZE - T[i])
-                                  : 0.0;
-                double dT = (sw - lwUp + lwDown - sens - lFlux + cond) / heatHere * DT;
-                if (water[i] && T[i] > -2.0 && T[i] < 2.0) dT *= MELT_DAMP;
-                nT[i] = std::clamp(T[i] + dT, -90.0, 65.0);
+                double fSurf = sw - lwUp + lwDown - sens - lFlux; // into the surface
+                double cond = 0.0;
+                if (!water[i]) {
+                    nT[i] = std::clamp(T[i] + fSurf / heatHere * DT, -90.0, 65.0);
+                    nIce[i] = 0.0;
+                } else if (ice[i] > 0.0) {
+                    // An ice skin over water at freezing (see L_ICE). Heat
+                    // conducts up through the thickness to a colder skin,
+                    // and what it conducts it freezes at the bottom; a skin
+                    // warmer than the water sends heat down and melts there.
+                    double h = ice[i];
+                    cond = ICE_K / std::max(h, 0.05) * (SEA_FREEZE - T[i]);
+                    double Tn = T[i] + (fSurf + cond) / C_SEAICE * DT;
+                    h += cond * DT / L_ICE;
+                    if (Tn > 0.0) { // the top melts, and the skin waits at zero
+                        h -= (Tn - 0.0) * C_SEAICE / L_ICE;
+                        Tn = 0.0;
+                    }
+                    if (h <= ICE_MIN) { // gone: the water beneath takes over
+                        double spare = std::max(-h, 0.0) * L_ICE; // melting energy left over
+                        h = 0.0;
+                        Tn = SEA_FREEZE + spare / C_WATER;
+                    }
+                    nT[i] = std::clamp(Tn, -90.0, 65.0);
+                    nIce[i] = std::min(h, ICE_MAX);
+                } else {
+                    // Open water: the slab. A deficit below freezing is not a
+                    // colder sea, it is ice.
+                    double Tn = T[i] + fSurf / C_WATER * DT;
+                    if (Tn < SEA_FREEZE) {
+                        nIce[i] = (SEA_FREEZE - Tn) * C_WATER / L_ICE;
+                        Tn = SEA_FREEZE;
+                    } else {
+                        nIce[i] = 0.0;
+                    }
+                    nT[i] = std::clamp(Tn, -90.0, 65.0);
+                }
                 // PROBE: the tropical-ocean column, term by term. OLR is
                 // what escapes the top: the window through the greenhouse
                 // plus the air's own upward face.
@@ -1597,7 +1647,7 @@ struct Model {
                                     -95.0, 70.0);
                 // PROBE: the zonal budget, every term as W/m2 (see zonBud).
                 if (recordBudget) {
-                    double* z = &zonRow[Climatology::NZB * y];
+                    double* z = &zonRow[(curSeason * H + y) * Climatology::NZB];
                     z[0] += sw + swAir;   z[1] += olr;     z[2] += sw;
                     z[3] += lwDown;       z[4] += lwUp;    z[5] += sens;
                     z[6] += lFlux;
@@ -1779,6 +1829,7 @@ struct Model {
             }
         }
         std::swap(T, nT);
+        std::swap(ice, nIce);
         // PROBE (see dbgE): what the air's heat did this hour against what
         // it was given, as W/m2 over the planet.
         {
@@ -1835,6 +1886,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         int season = Climatology::seasonOfDay(doy);
         bool stat = day >= SPINUP_DAYS;
         m.recordBudget = stat;
+        m.curSeason = season;
         // These probes read a RUNNING TOTAL and bank the difference since the
         // last sample. The totals start at day zero, the sampling starts after
         // the spin-up, and the last* baselines started at zero -- so the first
@@ -1859,6 +1911,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                 dayMax[i] = std::max(dayMax[i], m.T[i]);
                 int si = season * W * H + i;
                 c.meanT[si] += (float)m.T[i];
+                c.iceM[si] += (float)m.ice[i];
                 c.rainMmDay[si] += (float)(m.rainStep[i] * 24.0);      // kg/m2/h -> mm/day
                 if (m.T[i] < SNOW_T) c.snowMmDay[si] += (float)(m.rainStep[i] * 24.0);
                 c.rainProb[si] += m.rainStep[i] > 0.05 ? 1.0f : 0.0f;
@@ -1967,13 +2020,26 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         double n = std::max(s[13], 1.0);
         for (int k = 0; k < 13; k++) c.tropBud[k] = s[k] / n;
         c.tropBud[13] = s[13];
-        c.zonBud.assign(Climatology::NZB * H, 0.0);
-        for (int y = 0; y < H; y++) {
-            const double* z = &m.zonRow[Climatology::NZB * y];
-            double cnt = std::max(z[Climatology::NZB - 1], 1.0);
-            for (int k = 0; k < Climatology::NZB - 1; k++)
-                c.zonBud[Climatology::NZB * y + k] = z[k] / cnt;
-            c.zonBud[Climatology::NZB * y + Climatology::NZB - 1] = z[Climatology::NZB - 1];
+        {
+            const int NZ = Climatology::NZB;
+            c.zonBud.assign(NZ * H, 0.0);
+            c.zonBudS.assign(SEASONS * NZ * H, 0.0);
+            for (int y = 0; y < H; y++) {
+                double tot[Climatology::NZB] = {0};
+                for (int se = 0; se < SEASONS; se++) {
+                    const double* z = &m.zonRow[(se * H + y) * NZ];
+                    double cnt = std::max(z[NZ - 1], 1.0);
+                    for (int k = 0; k < NZ - 1; k++) {
+                        c.zonBudS[(se * H + y) * NZ + k] = z[k] / cnt;
+                        tot[k] += z[k];
+                    }
+                    c.zonBudS[(se * H + y) * NZ + NZ - 1] = z[NZ - 1];
+                    tot[NZ - 1] += z[NZ - 1];
+                }
+                double cnt = std::max(tot[NZ - 1], 1.0);
+                for (int k = 0; k < NZ - 1; k++) c.zonBud[NZ * y + k] = tot[k] / cnt;
+                c.zonBud[NZ * y + NZ - 1] = tot[NZ - 1];
+            }
         }
     }
     for (int s = 0; s < SEASONS; s++) {
@@ -1981,6 +2047,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         for (int i = 0; i < W * H; i++) {
             int si = s * W * H + i;
             c.meanT[si] /= (float)hours;
+            c.iceM[si] /= (float)hours;
             c.rainMmDay[si] /= (float)hours;
             c.snowMmDay[si] /= (float)hours;
             c.rainProb[si] /= (float)hours;

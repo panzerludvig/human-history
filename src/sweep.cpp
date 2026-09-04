@@ -340,6 +340,39 @@ int main(int argc, char** argv) {
                             "   e-columns are Earth. BLhor/FThor: horizontal heat into each layer.\n"
                             "   depos: subsiding air into the BL; entr: BL air detrained into the FT;\n"
                             "   pool: the upper branch's exchange; cond: latent heat released aloft.)\n");
+            // The same, by season, for the north: winter is where the
+            // calibration misses by 20 K, and an annual mean hides it.
+            static const char* SN[4] = {"DJF", "MAM", "JJA", "SON"};
+            for (int se : {0, 2}) {
+                fprintf(stderr, "\n  NORTH OF 45, %s (W/m2)\n", SN[se]);
+                fprintf(stderr, "  %5s | %6s %6s %6s | %6s %6s %6s %6s %6s | %6s | %6s %6s %6s %6s %6s %6s | %6s %6s\n",
+                        "lat", "absSW", "OLR", "net", "BLhor", "FThor", "depos", "entr", "pool",
+                        "cond", "sSW", "LWdn", "LWup", "sens", "latent", "snet", "Tb", "Tf");
+                for (int y0 = AH * 3 / 4; y0 < AH; y0 += 4) {
+                    double s[NZ] = {0}; double n = 0, tb = 0, tf = 0;
+                    double tSea = 0, nSea = 0, tLand = 0, nLand = 0, iceS = 0;
+                    for (int y = y0; y < std::min(y0 + 4, AH); y++) {
+                        const double* z = &c.zonBudS[(se * AH + y) * NZ];
+                        for (int k = 0; k < NZ - 1; k++) s[k] += z[k];
+                        for (int x = 0; x < AW; x++) {
+                            int j = se * AW * AH + y * AW + x;
+                            tb += c.airT[j];
+                            tf += c.airTf[j];
+                            if (c.elev[y * AW + x] <= 0.0f) { tSea += c.meanT[j]; nSea += 1; iceS += c.iceM[j]; }
+                            else { tLand += c.meanT[j]; nLand += 1; }
+                        }
+                        n += 1;
+                    }
+                    for (int k = 0; k < NZ - 1; k++) s[k] /= n;
+                    tb /= n * AW; tf /= n * AW;
+                    double lat = ((y0 + 2.0) / AH - 0.5) * 180.0;
+                    fprintf(stderr, "  %5.0f | %6.0f %6.0f %6.0f | %6.0f %6.0f %6.0f %6.0f %6.0f | %6.0f | %6.0f %6.0f %6.0f %6.0f %6.0f %6.0f | %6.1f %6.1f | sea %5.1f land %5.1f ice %4.2f m\n",
+                            lat, s[0], s[1], s[0] - s[1], s[7], s[8], s[9], s[10], s[11], s[12],
+                            s[2], s[3], s[4], s[5], s[6], s[2] + s[3] - s[4] - s[5] - s[6], tb, tf,
+                            nSea > 0 ? tSea / nSea : 0.0, nLand > 0 ? tLand / nLand : 0.0,
+                            nSea > 0 ? iceS / nSea : 0.0);
+                }
+            }
             fprintf(stderr, "\n  SURFACE, zonal: %5s %6s %6s %6s %6s %6s %6s\n", "lat", "SW", "LWdn",
                     "LWup", "sens", "latent", "net");
             for (int y0 = 0; y0 < AH; y0 += 8) {
