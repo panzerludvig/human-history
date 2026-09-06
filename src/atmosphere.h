@@ -552,14 +552,14 @@ inline double FRONT_SIDE_K = 4.0; // K above the neighbours for full lift, below
 // one -- covered the globe in cloud. A column is about half saturated in
 // life.
 inline double RAIN_FRAC = 0.55;    // sub-grid: part of a cell saturates first
-inline double RAIN_RATE = 0.15;    // fraction of that excess per hour
+inline double RAIN_RATE = 0.06;    // fraction of that excess per hour (0.15 let the first coast and the first ridge take everything: the Pacific NW rained 13 mm/day and the Midwest 0.4)
 constexpr double DIV_CAP_SCALE = 0.05;          // m/s of uplift for a ~46% capacity swing
 // Over land, moisture rains out progressively along its path (precipitation
 // is not withheld until a convergence line): an e-folding of ~3 days, i.e.
 // ~1300 km at typical winds. This is what makes coasts wetter than deep
 // continental interiors.
 // (LAND_RAINOUT_TAU, the 3-day e-folding, is no longer referenced anywhere.)
-inline double K_DIFF = 2.0e5;                // m^2/s eddy diffusion of moisture
+inline double K_DIFF = 2.0e5;                // m^2/s eddy diffusion of moisture (6e5 did nothing for the continental interiors and 2e6 conjured 14 mm/day of rain: this is not the lever)                // m^2/s eddy diffusion of moisture
 // Frontal-storm rain: mid-latitude rain on Earth is mostly baroclinic storms
 // riding the temperature gradient, which steady diagnostic winds cannot
 // produce. Parameterized as rain ~ |grad T| * moisture: strong on the winter
@@ -705,16 +705,28 @@ constexpr double PRE_CONT_KM = 500.0;      // e-folding of continentality with d
 // every subtropical east coast. A winter high is a shallow pool of cold air
 // under an inversion, and its outflow is a fraction of that: cut to the
 // same strength as the low it made every 45N west coast a desert.
-constexpr double PRE_P_PER_DEG = 100.0;    // Pa of thermal-anomaly pressure per K, warm anomalies (the summer low that pulls Gulf air over the plains)
+constexpr double PRE_P_PER_DEG = 140.0;    // Pa of thermal-anomaly pressure per K, warm anomalies (the summer low that pulls Gulf air over the plains)
 constexpr double PRE_COLD_SHARE = 0.25;    // of that, for cold ones
-constexpr double PRE_ANOM_WIND_MAX = 9.0;  // m/s, the most the anomaly may add
+constexpr double PRE_ANOM_WIND_MAX = 12.0; // m/s, the most the anomaly may add
 constexpr double PRE_FRICTION = 1.0 / (8.0 * 3600.0); // the Ekman balance's friction
-constexpr double PRE_ITCZ_SHIFT = 8.0;     // degrees the belts follow the sun
+constexpr double PRE_ITCZ_SHIFT = 8.0;     // degrees the belts follow the sun over the sea
+constexpr double PRE_ITCZ_LAND_SHIFT = 8.0;  // and this much further over a continent (12 put a monsoon on the Sahara)
+constexpr double PRE_MONSOON_KM = 1500.0;  // the continent scale that decides it
+// The subtropical highs sit over the OCEANS, and their flanks are the
+// asymmetry that makes a subtropical east coast wet and a west coast dry:
+// on the western flank of an ocean high the flow is poleward, warm and
+// moist off the sea (the US Southeast, south China, southern Brazil), on
+// the eastern flank equatorward and dry (California, the Sahara's coast,
+// the Atacama). Painted as a pressure anomaly over sea in the 20-40 band,
+// in the same units as the thermal anomaly.
+constexpr double PRE_SUBTROP_HIGH_K = 8.0;  // K-equivalent: about 8 hPa at PRE_P_PER_DEG
+constexpr double PRE_SUBTROP_LAT = 30.0, PRE_SUBTROP_WIDTH = 9.0;
 constexpr double PRE_DIURNAL_LAND = 5.0;   // K half-swing, deep interior; coasts less
 constexpr double PRE_DIURNAL_SEA = 0.5;
 constexpr double PRE_STORM_SAT = 0.4;      // how much sooner a storm-track cell rains (see BELT_STORM)
 struct Prescribed {
     std::vector<float> cont;    // continentality: 0 at sea, 1 deep in a continent
+    std::vector<float> wide;    // the same on the continent scale (see PRE_MONSOON_KM)
     std::vector<float> lonDeg, latDeg;
     // Zonal targets on |lat|, knots every 15 degrees from the equator to the
     // pole. Means are annual; amplitudes are the seasonal half-swing, the
@@ -777,6 +789,9 @@ struct Prescribed {
         }
         for (int i = 0; i < W * H; i++)
             cont[i] = water[i] ? 0.0f : (float)(1.0 - std::exp(-d[i] / PRE_CONT_KM));
+        wide.assign(W * H, 0.0f);
+        for (int i = 0; i < W * H; i++)
+            wide[i] = water[i] ? 0.0f : (float)(1.0 - std::exp(-d[i] / PRE_MONSOON_KM));
     }
     // The land's zonal temperature at a moderately continental coast: what
     // the air over a mid-latitude sea in winter has just blown off.
@@ -832,16 +847,25 @@ struct Prescribed {
     // it is lifted, but a cyclone lifts a strip of it to saturation.
     // Knots every 10 degrees from the shifted ITCZ, 0..1.
     static constexpr double BELT_STORM[10] = {0.0, 0.0, 0.0, 0.4, 1.0, 1.0, 0.6, 0.3, 0.0, 0.0};
+    // How far the ITCZ has followed the sun here: 8 degrees over the sea,
+    // and over a continent as far as 20, because the thermal equator goes
+    // where the heated land is. That is the monsoon -- India's rain, the
+    // Sahel's, northern Australia's -- and with a uniform 8 degrees India
+    // got no rain in any season.
+    double shiftAt(int i, double doy) const {
+        return (PRE_ITCZ_SHIFT + PRE_ITCZ_LAND_SHIFT * wide[i]) *
+               std::cos(2 * 3.14159265 * (doy - 200.0) / 365.0);
+    }
     double storminess(int i, double doy) const {
-        double shift = PRE_ITCZ_SHIFT * std::cos(2 * 3.14159265 * (doy - 200.0) / 365.0);
+        double shift = shiftAt(i, doy);
         return knots(BELT_STORM, 10, 10.0, std::fabs(latDeg[i] - shift));
     }
     double beltUplift(int i, double doy) const {
-        double shift = PRE_ITCZ_SHIFT * std::cos(2 * 3.14159265 * (doy - 200.0) / 365.0);
+        double shift = shiftAt(i, doy);
         return knots(BELT_W, 10, 10.0, std::fabs(latDeg[i] - shift));
     }
     void beltWind(int i, double doy, double& u, double& v) const {
-        double shift = PRE_ITCZ_SHIFT * std::cos(2 * 3.14159265 * (doy - 200.0) / 365.0);
+        double shift = shiftAt(i, doy);
         double p = latDeg[i] - shift;
         double a = std::fabs(p), sgn = p >= 0 ? 1.0 : -1.0;
         u = knots(BELT_U, 10, 10.0, a);
@@ -880,6 +904,8 @@ struct Climatology {
     std::vector<float> evapF, advF, difF, latF, advZF, advMF; // PROBE: the water budget
     std::vector<float> spdF, capSkinF, supplyF, affordF;     // PROBE: and the evaporation
     std::vector<float> iceM;                                 // sea ice, m, by season
+    std::vector<float> soilM;                                // PROBE: land water store, mm, by season
+    std::vector<unsigned char> isWater;                      // the model's own mask [cell]
     std::vector<float> elev; // [cell], the model's smoothed elevation (for lapse correction)
     // elev has one band; bilinearAt/annualAt want [season][cell]. A repeated
     // view is built eagerly at the end of build() -- the lazy path races when
@@ -897,7 +923,7 @@ struct Climatology {
         for (auto* v : {&meanT, &rainMmDay, &snowMmDay, &rainProb, &windU, &windV, &cloud,
                         &diurnal, &wv, &rh, &press, &airT, &airTf, &upConv, &upDiv, &upFront,
                         &upOrog, &capX, &evapF, &advF, &difF, &latF, &advZF, &advMF, &spdF,
-                        &capSkinF, &supplyF, &affordF, &iceM})
+                        &capSkinF, &supplyF, &affordF, &iceM, &soilM})
             v->assign(SEASONS * W * H, 0.0f);
     }
     static int seasonOfDay(int doy) { // DJF=0 starting Dec 1 (day 334)
@@ -997,17 +1023,28 @@ struct Model {
         heatC.assign(W * H, (float)C_LAND);
         latRad.assign(W * H, 0.0f);
         water.assign(W * H, 0);
-        int bx = hydrology::W / W, by = hydrology::H / H;
+        // Each cell covers its own slice of the hydrology raster, with the
+        // slice edges in exact proportion. This was `bx = hydrology::W / W`,
+        // an integer division: 2048/192 is 10, not 10.67, so every cell read
+        // the raster 6% too near the origin, the climate's whole map was the
+        // south-western 94% of the terrain stretched over the globe, and a
+        // cell's climate was applied up to 12 degrees of longitude and 6 of
+        // latitude away from the ground that had made it. On the Earth
+        // template the model's Georgia was the Gulf of Mexico. Every desert
+        // on a coast that made no sense was this.
         for (int y = 0; y < H; y++)
             for (int x = 0; x < W; x++) {
                 int i = idx(x, y);
-                double hsum = 0, land = 0;
-                for (int yy = 0; yy < by; yy++)
-                    for (int xx = 0; xx < bx; xx++) {
-                        float h = hy.heightM[(y * by + yy) * hydrology::W + (x * bx + xx)];
+                int x0 = (int)((long long)x * hydrology::W / W), x1 = (int)((long long)(x + 1) * hydrology::W / W);
+                int y0 = (int)((long long)y * hydrology::H / H), y1 = (int)((long long)(y + 1) * hydrology::H / H);
+                double hsum = 0, land = 0, cells = 0;
+                for (int yy = y0; yy < y1; yy++)
+                    for (int xx = x0; xx < x1; xx++) {
+                        float h = hy.heightM[yy * hydrology::W + xx];
                         if (h > 0) { land++; hsum += h; }
+                        cells++;
                     }
-                double landFrac = land / (bx * by);
+                double landFrac = land / std::max(cells, 1.0);
                 water[i] = landFrac < 0.5 ? 1 : 0;
                 elev[i] = water[i] ? 0.0f : (float)(hsum / std::max(land, 1.0));
                 float lat = (float)((((y + 0.5) / H) - 0.5) * 3.14159265);
@@ -1368,7 +1405,13 @@ struct Model {
             m /= W;
             for (int x = 0; x < W; x++) {
                 double a = anomA[y * W + x] - m;
-                anomA[y * W + x] = a > 0 ? a : a * PRE_COLD_SHARE;
+                a = a > 0 ? a : a * PRE_COLD_SHARE;
+                // and the ocean's subtropical high (see PRE_SUBTROP_HIGH_K)
+                if (water[y * W + x]) {
+                    double la = std::fabs(pre.latDeg[y * W + x]) - PRE_SUBTROP_LAT;
+                    a -= PRE_SUBTROP_HIGH_K * std::exp(-(la * la) / (PRE_SUBTROP_WIDTH * PRE_SUBTROP_WIDTH));
+                }
+                anomA[y * W + x] = a;
             }
         }
         for (int pass = 0; pass < 2; pass++) {
@@ -2196,6 +2239,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                 int si = season * W * H + i;
                 c.meanT[si] += (float)m.T[i];
                 c.iceM[si] += (float)m.ice[i];
+                c.soilM[si] += (float)m.soil[i];
                 c.rainMmDay[si] += (float)(m.rainStep[i] * 24.0);      // kg/m2/h -> mm/day
                 if (m.T[i] < SNOW_T) c.snowMmDay[si] += (float)(m.rainStep[i] * 24.0);
                 c.rainProb[si] += m.rainStep[i] > 0.05 ? 1.0f : 0.0f;
@@ -2297,6 +2341,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         c.dbgWind = wnd / wsum;   // instantaneous, at the end of the run
         c.dbgRH = rh / wsum;
     }
+    c.isWater.assign(m.water.begin(), m.water.end());
     {
         double s[14] = {};
         for (int y = 0; y < H; y++)
@@ -2344,6 +2389,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             int si = s * W * H + i;
             c.meanT[si] /= (float)hours;
             c.iceM[si] /= (float)hours;
+            c.soilM[si] /= (float)hours;
             c.rainMmDay[si] /= (float)hours;
             c.snowMmDay[si] /= (float)hours;
             c.rainProb[si] /= (float)hours;

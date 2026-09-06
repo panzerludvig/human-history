@@ -185,16 +185,21 @@ int main(int argc, char** argv) {
     // an approximation at all.
     {
         const int AW = atmosphere::W, AH = atmosphere::H;
-        const int bx = hydrology::W / AW, by = hydrology::H / AH;
         double hist[5] = {0}, wgt = 0, mixed = 0, landLost = 0, seaLost = 0, landAll = 0;
         for (int y = 0; y < AH; y++) {
             double cw = std::cos(((y + 0.5) / AH - 0.5) * 3.14159265);
             for (int x = 0; x < AW; x++) {
-                double land = 0;
-                for (int yy = 0; yy < by; yy++)
-                    for (int xx = 0; xx < bx; xx++)
-                        if (hy.heightM[(y * by + yy) * hydrology::W + (x * bx + xx)] > 0) land++;
-                double lf = land / (bx * by);
+                // Proportional slices, as the atmosphere now takes them (the
+                // integer division that stood here shrank the map by 6%).
+                int x0 = (int)((long long)x * hydrology::W / AW), x1 = (int)((long long)(x + 1) * hydrology::W / AW);
+                int y0 = (int)((long long)y * hydrology::H / AH), y1 = (int)((long long)(y + 1) * hydrology::H / AH);
+                double land = 0, cells = 0;
+                for (int yy = y0; yy < y1; yy++)
+                    for (int xx = x0; xx < x1; xx++) {
+                        if (hy.heightM[yy * hydrology::W + xx] > 0) land++;
+                        cells++;
+                    }
+                double lf = land / std::max(cells, 1.0);
                 int b = lf < 0.02 ? 0 : (lf < 0.25 ? 1 : (lf < 0.75 ? 2 : (lf < 0.98 ? 3 : 4)));
                 hist[b] += cw;
                 wgt += cw;
@@ -382,6 +387,60 @@ int main(int argc, char** argv) {
                             s[2], s[3], s[4], s[5], s[6], s[2] + s[3] - s[4] - s[5] - s[6], tb, tf,
                             nSea > 0 ? tSea / nSea : 0.0, nLand > 0 ? tLand / nLand : 0.0,
                             nSea > 0 ? iceS / nSea : 0.0);
+                }
+            }
+            // On the Earth template, named regions: the water budget and the
+            // wind of the places whose climate everyone knows, by season.
+            if (earth) {
+                struct Region { const char* name; double lon0, lon1, lat0, lat1; };
+                static const Region REG[] = {
+                    {"US Pacific NW", -125, -118, 42, 50},   {"Great Basin", -118, -110, 36, 42},
+                    {"Great Plains", -104, -95, 35, 50},     {"US Midwest", -95, -82, 38, 47},
+                    {"US Southeast", -92, -78, 30, 36},      {"Canada boreal", -115, -80, 52, 62},
+                    {"Amazon", -70, -50, -10, 2},            {"NE Brazil", -45, -37, -12, -4},
+                    {"Pampas", -62, -57, -38, -30},          {"Sahara", -5, 25, 18, 28},
+                    {"W Europe", -5, 15, 44, 54},            {"E Europe", 25, 45, 48, 56},
+                    {"C Siberia", 90, 120, 55, 65},          {"India", 74, 84, 18, 26},
+                    {"Australia int", 125, 140, -30, -22},   {"Congo", 15, 28, -5, 3},
+                };
+                static const char* SN2[4] = {"DJF", "MAM", "JJA", "SON"};
+                // PROBE: the cells around the US Southeast, elevation and
+                // the model's mask, to check the box against the map.
+                for (int y = 70; y >= 58; y--) {
+                    fprintf(stderr, "    y%2d lat %5.1f:", y, ((y + 0.5) / AH - 0.5) * 180.0);
+                    for (int x = 40; x < 62; x++) {
+                        int i = y * AW + x;
+                        fprintf(stderr, " %5.0f%c", c.elev[i], c.isWater[i] ? 'w' : 'L');
+                    }
+                    fprintf(stderr, "\n");
+                }
+                fprintf(stderr, "    x 40..61 = lon %.1f..%.1f\n", (40.5 / AW) * 360.0 - 180.0, (61.5 / AW) * 360.0 - 180.0);
+                fprintf(stderr, "\nREGIONS (Earth template; land cells; rain and evap mm/day, T degC, wind m/s u,v)\n");
+                fprintf(stderr, "  %-15s %-14s %-14s %-14s %-14s | %6s %6s %6s\n", "", "DJF rain/evap", "MAM", "JJA", "SON", "T ann", "u ann", "v ann");
+                for (const Region& r : REG) {
+                    double rn[4] = {0}, ev[4] = {0}, t = 0, uu = 0, vv = 0, n = 0, so = 0, nw = 0;
+                    for (int y = 0; y < AH; y++) {
+                        double lat = ((y + 0.5) / AH - 0.5) * 180.0;
+                        if (lat < r.lat0 || lat > r.lat1) continue;
+                        for (int x = 0; x < AW; x++) {
+                            double lon = ((x + 0.5) / AW) * 360.0 - 180.0;
+                            if (lon < r.lon0 || lon > r.lon1) continue;
+                            int i = y * AW + x;
+                            if (c.elev[i] <= 0.0f) continue;
+                            if (c.isWater[i]) nw += 1;
+                            for (int se = 0; se < 4; se++) {
+                                int j = se * AW * AH + i;
+                                rn[se] += c.rainMmDay[j]; ev[se] += c.evapF[j]; so += c.soilM[j] / 4;
+                                t += c.meanT[j] / 4; uu += c.windU[j] / 4; vv += c.windV[j] / 4;
+                            }
+                            n += 1;
+                        }
+                    }
+                    if (n < 1) continue;
+                    fprintf(stderr, "  %-15s", r.name);
+                    for (int se = 0; se < 4; se++) fprintf(stderr, " %5.2f / %5.2f ", rn[se] / n, ev[se] / n);
+                    fprintf(stderr, "| %6.1f %6.1f %6.1f  soil %5.1f mm  cells %.0f (%.0f water)\n", t / n, uu / n, vv / n, so / n, n, nw);
+                    (void)SN2;
                 }
             }
             // And the winter north split by surface: the sea and the land
@@ -1005,6 +1064,21 @@ int main(int argc, char** argv) {
                         wimg[o] = (unsigned char)std::clamp((128 + uu * 12.0) * sc, 0.0, 255.0);
                         wimg[o + 1] = (unsigned char)std::clamp((128 + vv * 12.0) * sc, 0.0, 255.0);
                         wimg[o + 2] = (unsigned char)(sea ? 90 : 40);
+                    }
+                    {
+                        // The two land masks: green where the climatology's
+                        // elevation is above zero, red where the model's own
+                        // mask says water; yellow is both, which is a cell
+                        // that disagrees with itself.
+                        std::vector<unsigned char> mimg(AW * AH * 3, 0);
+                        for (int i = 0; i < AW * AH; i++) {
+                            int x = i % AW, y = i / AW, o = ((AH - 1 - y) * AW + x) * 3;
+                            mimg[o] = c.isWater[i] ? 200 : 0;
+                            mimg[o + 1] = c.elev[i] > 0.0f ? 200 : 0;
+                            mimg[o + 2] = 40;
+                        }
+                        snprintf(name, sizeof name, "mask_seed%s.ppm", tag.c_str());
+                        if (FILE* f = fopen(name, "wb")) { fprintf(f, "P6\n%d %d\n255\n", AW, AH); fwrite(mimg.data(), 1, mimg.size(), f); fclose(f); }
                     }
                     snprintf(name, sizeof name, "rain_seed%s.ppm", tag.c_str());
                     if (FILE* f = fopen(name, "wb")) { fprintf(f, "P6\n%d %d\n255\n", AW, AH); fwrite(rimg.data(), 1, rimg.size(), f); fclose(f); }
