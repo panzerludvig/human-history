@@ -282,6 +282,7 @@ static void buildProgress(const char* stage);
 // offsets the terrain noise so every seed is a different globe.
 struct World {
     uint32_t seed = 0;
+    bool earth = false; // the seed was "earth": the template globe (see terrain::TEMPLATE)
     float landPercent = 30.0f;
     float concentration = 60.0f; // 0..100: island webs .. one continent
     std::string name;
@@ -311,7 +312,7 @@ struct World {
             for (int row = 0; row < 3; row++) rot[col * 3 + row] = (float)m[row][col];
         offset = {off(rng), off(rng), off(rng)};
         cp = terrain::paramsFor(concentration / 100.0f);
-        if (name.empty()) name = "world-" + std::to_string(seed);
+        if (name.empty()) name = earth ? "earth" : "world-" + std::to_string(seed);
     }
 
     // Everything derived from the seed, in dependency order:
@@ -319,6 +320,13 @@ struct World {
     void build() {
         derive();
         terrain::V3 off = {(float)offset.x, (float)offset.y, (float)offset.z};
+        terrain::TEMPLATE.active = earth;
+        if (earth && terrain::TEMPLATE.elev.empty() &&
+            !terrain::loadTemplate(exeDir() + "\\data\\earth.bin")) {
+            buildProgress("data\\earth.bin is missing: generating a random world instead");
+            earth = false;
+            terrain::TEMPLATE.active = false;
+        }
         buildProgress("Shaping tectonic plates...");
         plateField = plates::build(seed);
         buildProgress("Setting the sea level...");
@@ -361,6 +369,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     f.precision(17);
     f << "version 21\n";
     f << "seed " << w.seed << "\n";
+    f << "earth " << (w.earth ? 1 : 0) << "\n";
     f << "time " << w.simTime << "\n";
     f << "land " << w.landPercent << "\n";
     f << "concentration " << w.concentration << "\n";
@@ -452,6 +461,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     while (f >> key) {
         if (key == "version") f >> version;
         else if (key == "seed") f >> w.seed;
+        else if (key == "earth") { int e = 0; f >> e; w.earth = e != 0; }
         else if (key == "time") f >> savedTime;
         else if (key == "techrng") f >> savedTechRng;
         else if (key == "settlement") {
@@ -754,6 +764,7 @@ struct App {
     GLuint program = 0;
     GLuint hydroTex = 0;
     GLuint plateTex = 0;
+    GLuint earthTex = 0; // the Earth template, when the world is one
     GLuint popTex = 0;
     GLuint bandTex = 0;
     int bandRows = 0;
@@ -1507,7 +1518,28 @@ static void uploadClimatology() {
 }
 
 // Push the world's hydrology table to the GPU as one RGBA32F texel per cell.
+// The Earth template, when the world is one: metres in the red channel.
+static void uploadEarth() {
+    if (!app.world.earth || !terrain::TEMPLATE.active) return;
+    glActiveTexture(GL_TEXTURE0 + 8);
+    if (!app.earthTex) {
+        glGenTextures(1, &app.earthTex);
+        glBindTexture(GL_TEXTURE_2D, app.earthTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindTexture(GL_TEXTURE_2D, app.earthTex);
+    const terrain::Template& tp = terrain::TEMPLATE;
+    std::vector<float> d((size_t)tp.w * tp.h * 4, 0.0f);
+    for (size_t i = 0; i < (size_t)tp.w * tp.h; i++) d[i * 4] = tp.elev[i];
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, tp.w, tp.h, 0, GL_RGBA, GL_FLOAT, d.data());
+    glActiveTexture(GL_TEXTURE0);
+}
+
 static void uploadHydrology() {
+    uploadEarth();
     uploadPlates();
     uploadPopulation();
     uploadClimatology();
@@ -1739,7 +1771,8 @@ static double getEditNumber(int id) {
 }
 
 static void fillNewWorldFields(const World& w) {
-    setEditNumber(ID_GEN_SEED, (double)w.seed);
+    if (w.earth) SetWindowTextA(control(ID_GEN_SEED), "earth");
+    else setEditNumber(ID_GEN_SEED, (double)w.seed);
     setEditNumber(ID_GEN_LAND, w.landPercent);
     setEditNumber(ID_GEN_CONC, w.concentration);
 }
@@ -1773,7 +1806,15 @@ static void openNewWorldMenu() {
 
 static void generateWorld() {
     World w;
-    w.seed = (uint32_t)std::clamp(getEditNumber(ID_GEN_SEED), 0.0, 4294967295.0);
+    {
+        // A seed reading "earth", in any case, is the template globe.
+        char sb[64];
+        GetWindowTextA(control(ID_GEN_SEED), sb, sizeof sb);
+        std::string st = sb;
+        for (char& ch : st) ch = (char)tolower((unsigned char)ch);
+        w.earth = st.find("earth") != std::string::npos;
+        w.seed = w.earth ? 1u : (uint32_t)std::clamp(atof(sb), 0.0, 4294967295.0);
+    }
     w.landPercent = (float)std::clamp(getEditNumber(ID_GEN_LAND), 0.0, 100.0);
     w.concentration = (float)std::clamp(getEditNumber(ID_GEN_CONC), 0.0, 100.0);
     app.world = w;
@@ -3147,6 +3188,8 @@ int main(int argc, char** argv) {
     glUniform1i(glGetUniformLocation(app.program, "uBands"), 5);
     glUniform1i(glGetUniformLocation(app.program, "uSites"), 6);
     glUniform1i(glGetUniformLocation(app.program, "uOverlay"), 7);
+    glUniform1i(glGetUniformLocation(app.program, "uEarth"), 8);
+    GLint uUseEarth = glGetUniformLocation(app.program, "uUseEarth");
     GLint uDoy = glGetUniformLocation(app.program, "uDoy");
     GLint uClock = glGetUniformLocation(app.program, "uClock");
     GLint uAware = glGetUniformLocation(app.program, "uAware");
@@ -3165,7 +3208,8 @@ int main(int argc, char** argv) {
         bool loaded = argc >= 5 && argv[4][0] == '@' &&
                       loadWorld(argv[4] + 1, app.world, app.cam);
         if (!loaded) {
-            app.world.seed = argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0;
+            app.world.earth = argc >= 5 && _stricmp(argv[4], "earth") == 0;
+            app.world.seed = app.world.earth ? 1u : (argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0);
             if (argc >= 6) app.world.landPercent = (float)atof(argv[5]);
             if (argc >= 7) app.world.concentration = (float)atof(argv[6]);
             app.world.build();
@@ -3356,6 +3400,7 @@ int main(int argc, char** argv) {
             glUniform1f(uWebness, app.world.cp.webness);
             glUniform1f(uSeaLevel, app.world.seaLevel);
             glUniform1i(uHasHydro, app.world.hydro.cells.empty() ? 0 : 1);
+            glUniform1i(uUseEarth, app.world.earth && terrain::TEMPLATE.active ? 1 : 0);
             glUniform1i(uDebugMode, app.debugMode);
             if (app.screen == Screen::InGame) {
                 ScaleBar sb = chooseScale(kmpp);

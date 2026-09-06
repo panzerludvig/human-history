@@ -7,6 +7,9 @@
 #include <cstdint>
 #include <algorithm>
 #include <vector>
+#include <cstring>
+#include <cstdio>
+#include <string>
 #include "plates.h"
 
 namespace terrain {
@@ -178,12 +181,71 @@ inline V3 rotate(const float rot[9], V3 v) {
             rot[2] * v.x + rot[5] * v.y + rot[8] * v.z};
 }
 
+// THE EARTH TEMPLATE. A seed of "earth" (any case) generates a globe that
+// looks like Earth, so the climate can be judged against a map everyone
+// knows: Natural Earth coastlines with hand-drawn ranges, plateaus and ice
+// sheets, built by tools/make_earth.py into data/earth.bin as quarter-degree
+// metres. When the template is active it replaces the continent field, the
+// plates' uplift and the sea-level search: the height is the template's
+// metres with the same fine detail, hills and ridged peaks laid on top so it
+// still reads as terrain up close. Mirrored in globe.frag -- keep in sync.
+struct Template {
+    int w = 0, h = 0;
+    std::vector<float> elev; // metres, row 0 at -90, column 0 at -180, cell centres
+    bool active = false;
+    float sample(V3 n) const {
+        float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)), lon = std::atan2(n.y, n.x);
+        float fx = (lon + 3.14159265f) / 6.2831853f * w - 0.5f;
+        float fy = (lat + 1.5707963f) / 3.14159265f * h - 0.5f;
+        int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy);
+        float tx = fx - x0, ty = fy - y0;
+        auto at = [&](int x, int y) {
+            x = ((x % w) + w) % w;
+            y = std::clamp(y, 0, h - 1);
+            return elev[y * w + x];
+        };
+        return (at(x0, y0) * (1 - tx) + at(x0 + 1, y0) * tx) * (1 - ty) +
+               (at(x0, y0 + 1) * (1 - tx) + at(x0 + 1, y0 + 1) * tx) * ty;
+    }
+};
+inline Template TEMPLATE;
+inline bool loadTemplate(const std::string& path) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    char magic[8];
+    int32_t w = 0, h = 0;
+    bool ok = fread(magic, 1, 8, f) == 8 && std::memcmp(magic, "EARTHTPL", 8) == 0 &&
+              fread(&w, 4, 1, f) == 1 && fread(&h, 4, 1, f) == 1 && w > 0 && h > 0;
+    if (ok) {
+        std::vector<int16_t> raw((size_t)w * h);
+        ok = fread(raw.data(), 2, raw.size(), f) == raw.size();
+        if (ok) {
+            TEMPLATE.w = w; TEMPLATE.h = h;
+            TEMPLATE.elev.assign(raw.begin(), raw.end());
+        }
+    }
+    fclose(f);
+    return ok;
+}
+inline float smoothstep(float a, float b, float x);
+inline float templateHeight(V3 p, V3 n, int octaves) {
+    float e = TEMPLATE.sample(n);
+    float detail = fbm(p * 9.0f + 5.0f, std::max(octaves - 3, 1), 0.5f);
+    float peaks = ridged(p * 7.0f + 2.0f, std::max(octaves - 3, 1));
+    float hills = ridged(p * 4.0f + 2.0f, std::clamp(octaves - 2, 1, 6));
+    float landness = smoothstep(0.0f, 150.0f, e);
+    float mtn = smoothstep(700.0f, 2500.0f, e);
+    return e + landness * (detail * 200.0f + hills * 250.0f) + mtn * (peaks - 0.5f) * 1400.0f +
+           (1.0f - landness) * detail * 300.0f;
+}
+
 // Height in metres above sea level. `p` is the point in noise space, `n` the
 // unit surface normal in world space (the plate layer is indexed by it).
 // `octaves` is the shader's level-of-detail value; the hydrology grid uses
 // a fixed count matched to its cell size.
 inline float heightMeters(V3 p, V3 n, const ContinentParams& cp, float seaLevel, int octaves,
                           const plates::Field& pf, const float rot[9]) {
+    if (TEMPLATE.active) return templateHeight(p, n, octaves);
     plates::Cell pl = pf.sample({n.x, n.y, n.z});
     float continent = continentField(p, cp) + pl.crust * CRUST_WEIGHT - seaLevel;
     float detail = fbm(p * 9.0f + 5.0f, std::max(octaves - 3, 1), 0.5f);
@@ -223,6 +285,7 @@ inline float heightMeters(V3 p, V3 n, const ContinentParams& cp, float seaLevel,
 // sampling the field over a Fibonacci sphere in the world's noise space.
 inline float seaLevelFor(float landFraction, const ContinentParams& cp, const float rot[9], V3 offset,
                          const plates::Field& pf) {
+    if (TEMPLATE.active) return 0.0f; // the template is in metres already
     const int N = 40000;
     std::vector<float> v(N);
     const float golden = 2.39996323f;

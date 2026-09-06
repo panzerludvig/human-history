@@ -24,6 +24,8 @@ uniform float uSeaLevel; // field value at the coastline, chosen on the CPU
 uniform sampler2D uHydro; // per-cell lake level, drainage area, flow direction, height
 uniform int uHasHydro;
 uniform sampler2D uPlates; // uplift, crust, km to nearest plate boundary
+uniform sampler2D uEarth;  // the Earth template, metres in r (see terrain.h)
+uniform int uUseEarth;
 uniform sampler2D uPop;    // carrying capacity K, settlement index + 1, band index + 1
 uniform sampler2D uBands;  // one texel per band: position xyz on the unit sphere, headcount
 uniform sampler2D uSites;  // five texels per settlement: people/granaries/fields, then the
@@ -197,9 +199,25 @@ vec4 plateAt(vec3 n) {
     return sum;
 }
 
+// The Earth template's height: its metres with the same detail, hills and
+// peaks laid on top. Mirrored in src/terrain.h -- keep in sync.
+float templateHeight(vec3 p, vec3 n, int octaves) {
+    float lat = asin(clamp(n.z, -1.0, 1.0));
+    float lon = atan(n.y, n.x);
+    float e = texture(uEarth, vec2((lon + PI) / (2.0 * PI), (lat + PI / 2.0) / PI)).r;
+    float detail = fbm(p * 9.0 + 5.0, max(octaves - 3, 1), 0.5);
+    float peaks = ridged(p * 7.0 + 2.0, max(octaves - 3, 1));
+    float hills = ridged(p * 4.0 + 2.0, clamp(octaves - 2, 1, 6));
+    float landness = smoothstep(0.0, 150.0, e);
+    float mtn = smoothstep(700.0, 2500.0, e);
+    return e + landness * (detail * 200.0 + hills * 250.0) + mtn * (peaks - 0.5) * 1400.0 +
+           (1.0 - landness) * detail * 300.0;
+}
+
 // Height in metres above sea level. `p` is the point in noise space, `n` the
 // unit surface normal in world space. Mirrored in src/terrain.h — keep in sync.
 float terrainHeight(vec3 p, vec3 n, int octaves) {
+    if (uUseEarth == 1) return templateHeight(p, n, octaves);
     vec4 pl = plateAt(n);
     float continent = continentField(p) + pl.g * CRUST_WEIGHT - uSeaLevel;
     float detail = fbm(p * 9.0 + 5.0, max(octaves - 3, 1), 0.5);

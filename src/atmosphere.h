@@ -468,7 +468,7 @@ inline double W_OROG = 0.35;       // only the windward slope of a cell rises
 // nothing to lift it. The constant below was never the problem; the comment
 // above says it is scaled for a centimetre a second in the ITCZ, and with the
 // full flux (about 130 W/m2) it delivers exactly that.
-inline double W_CONV = 5.0e-5;     // m/s per W/m2 of turbulent heat into the air
+inline double W_CONV = 3.5e-5;     // m/s per W/m2 of turbulent heat into the air (5e-5 rained 9.7 mm/day on the Earth template's ITCZ; Earth peaks near 6)
 // But the flux is the FUEL, not the SWITCH. Every warm sea gives up a
 // hundred watts and more, and most of it goes into shallow cumulus that
 // never leaves the trade inversion. Deep convection -- the kind that
@@ -705,9 +705,9 @@ constexpr double PRE_CONT_KM = 500.0;      // e-folding of continentality with d
 // every subtropical east coast. A winter high is a shallow pool of cold air
 // under an inversion, and its outflow is a fraction of that: cut to the
 // same strength as the low it made every 45N west coast a desert.
-constexpr double PRE_P_PER_DEG = 70.0;     // Pa of thermal-anomaly pressure per K, warm anomalies
+constexpr double PRE_P_PER_DEG = 100.0;    // Pa of thermal-anomaly pressure per K, warm anomalies (the summer low that pulls Gulf air over the plains)
 constexpr double PRE_COLD_SHARE = 0.25;    // of that, for cold ones
-constexpr double PRE_ANOM_WIND_MAX = 7.0;  // m/s, the most the anomaly may add
+constexpr double PRE_ANOM_WIND_MAX = 9.0;  // m/s, the most the anomaly may add
 constexpr double PRE_FRICTION = 1.0 / (8.0 * 3600.0); // the Ekman balance's friction
 constexpr double PRE_ITCZ_SHIFT = 8.0;     // degrees the belts follow the sun
 constexpr double PRE_DIURNAL_LAND = 5.0;   // K half-swing, deep interior; coasts less
@@ -736,7 +736,7 @@ struct Prescribed {
     // seven tenths of them, so Earth's 6-7 m/s surface trades are 8.5
     // here and the 8 m/s surface westerlies 12.
     static constexpr double BELT_U[10] = {-3.0, -8.5, -8.5, -1.5, 8.0, 12.0, 10.0, 1.5, -4.0, -3.0};
-    static constexpr double BELT_VP[10] = {0.0, -3.5, -3.0, -0.7, 1.5, 2.0, 1.5, -0.7, -1.5, 0.0};
+    static constexpr double BELT_VP[10] = {0.0, -2.5, -2.2, -0.7, 1.5, 2.0, 1.5, -0.7, -1.5, 0.0};
     static double knots(const double* v, int n, double step, double a) {
         double p = std::clamp(a / step, 0.0, (double)(n - 1));
         int k = std::min((int)p, n - 2);

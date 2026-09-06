@@ -116,7 +116,17 @@ static Score judge(const atmosphere::Climatology& c) {
 }
 
 int main(int argc, char** argv) {
-    uint32_t seed = argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7;
+    // "earth" as the seed is the template globe (see terrain::TEMPLATE).
+    bool earth = argc >= 2 && _stricmp(argv[1], "earth") == 0;
+    uint32_t seed = earth ? 1u : (argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7);
+    if (earth) {
+        if (!terrain::loadTemplate("../data/earth.bin") && !terrain::loadTemplate("data/earth.bin")) {
+            fprintf(stderr, "data/earth.bin not found (run tools/make_earth.py)\n");
+            return 1;
+        }
+        terrain::TEMPLATE.active = true;
+    }
+    std::string tag = earth ? "earth" : std::to_string(seed);
     float landPct = 30.0f, conc = 50.0f;
 
     std::mt19937 rng(seed);
@@ -969,7 +979,7 @@ int main(int argc, char** argv) {
                 }
                 {
                     char name[64];
-                    snprintf(name, sizeof name, "map_seed%u.ppm", seed);
+                    snprintf(name, sizeof name, "map_seed%s.ppm", tag.c_str());
                     if (FILE* f = fopen(name, "wb")) {
                         fprintf(f, "P6\n%d %d\n255\n", AW, AH);
                         fwrite(img.data(), 1, img.size(), f);
@@ -996,9 +1006,9 @@ int main(int argc, char** argv) {
                         wimg[o + 1] = (unsigned char)std::clamp((128 + vv * 12.0) * sc, 0.0, 255.0);
                         wimg[o + 2] = (unsigned char)(sea ? 90 : 40);
                     }
-                    snprintf(name, sizeof name, "rain_seed%u.ppm", seed);
+                    snprintf(name, sizeof name, "rain_seed%s.ppm", tag.c_str());
                     if (FILE* f = fopen(name, "wb")) { fprintf(f, "P6\n%d %d\n255\n", AW, AH); fwrite(rimg.data(), 1, rimg.size(), f); fclose(f); }
-                    snprintf(name, sizeof name, "wind_seed%u.ppm", seed);
+                    snprintf(name, sizeof name, "wind_seed%s.ppm", tag.c_str());
                     if (FILE* f = fopen(name, "wb")) { fprintf(f, "P6\n%d %d\n255\n", AW, AH); fwrite(wimg.data(), 1, wimg.size(), f); fclose(f); }
                 }
                 fprintf(stderr, "\nWHAT COLOUR IS THE LAND, in the shader's own palette\n");
