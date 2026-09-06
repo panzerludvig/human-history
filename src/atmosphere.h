@@ -693,7 +693,21 @@ constexpr int DYN_SUBSTEPS = 18;    // 200 seconds each
 inline bool PRESCRIBED = true;
 constexpr double PRE_LAPSE = 6.5;          // K/km on the model's smoothed elevation
 constexpr double PRE_CONT_KM = 500.0;      // e-folding of continentality with distance from the sea: 500 km inland is already continental
-constexpr double PRE_P_PER_DEG = 120.0;    // Pa of thermal-anomaly pressure per K (the old diagnostic model's)
+// The old diagnostic model's 120 Pa/K was tuned on its own small land-sea
+// contrasts; on the painted climate's 20 K summer continents it made 10-30
+// m/s over every continent, diverging off winter land and converging onto
+// every summer coast -- a ring of coastal rain round dark interiors, and a
+// dry west coast at 45N where it overrode the westerlies. Earth's monsoon
+// low is about 10 hPa on a 20 K anomaly: 50 Pa/K, and the flow it drives
+// is a few metres a second.
+// And the two signs are not alike. A summer heat low is deep and draws the
+// sea's air a thousand kilometres inland -- the monsoon, and the rain on
+// every subtropical east coast. A winter high is a shallow pool of cold air
+// under an inversion, and its outflow is a fraction of that: cut to the
+// same strength as the low it made every 45N west coast a desert.
+constexpr double PRE_P_PER_DEG = 70.0;     // Pa of thermal-anomaly pressure per K, warm anomalies
+constexpr double PRE_COLD_SHARE = 0.25;    // of that, for cold ones
+constexpr double PRE_ANOM_WIND_MAX = 7.0;  // m/s, the most the anomaly may add
 constexpr double PRE_FRICTION = 1.0 / (8.0 * 3600.0); // the Ekman balance's friction
 constexpr double PRE_ITCZ_SHIFT = 8.0;     // degrees the belts follow the sun
 constexpr double PRE_DIURNAL_LAND = 5.0;   // K half-swing, deep interior; coasts less
@@ -1352,7 +1366,10 @@ struct Model {
             double m = 0;
             for (int x = 0; x < W; x++) m += anomA[y * W + x];
             m /= W;
-            for (int x = 0; x < W; x++) anomA[y * W + x] -= m;
+            for (int x = 0; x < W; x++) {
+                double a = anomA[y * W + x] - m;
+                anomA[y * W + x] = a > 0 ? a : a * PRE_COLD_SHARE;
+            }
         }
         for (int pass = 0; pass < 2; pass++) {
 #pragma omp parallel for
@@ -1379,8 +1396,11 @@ struct Model {
                 double r = PRE_FRICTION, den = r * r + f * f;
                 double bu, bv;
                 pre.beltWind(i, doy, bu, bv);
-                u[i] = bu + (r * X + f * Y) / den;
-                v[i] = bv + (-f * X + r * Y) / den;
+                double au = (r * X + f * Y) / den, av = (-f * X + r * Y) / den;
+                double am = std::sqrt(au * au + av * av);
+                if (am > PRE_ANOM_WIND_MAX) { au *= PRE_ANOM_WIND_MAX / am; av *= PRE_ANOM_WIND_MAX / am; }
+                u[i] = bu + au;
+                v[i] = bv + av;
             }
         }
         for (int x = 0; x < W; x++) u[idx(x, 0)] = v[idx(x, 0)] = u[idx(x, H - 1)] = v[idx(x, H - 1)] = 0.0;

@@ -976,6 +976,30 @@ int main(int argc, char** argv) {
                         fclose(f);
                         fprintf(stderr, "\n  (the map, in the shader's palette: %s)\n", name);
                     }
+                    // And the fields behind it: annual rain (dark = dry,
+                    // 6 mm/day = white), and the annual wind (red = east,
+                    // blue = west, green = north; sea darkened).
+                    std::vector<unsigned char> rimg(AW * AH * 3, 0), wimg(AW * AH * 3, 0);
+                    for (int i = 0; i < AW * AH; i++) {
+                        int x = i % AW, y = i / AW, o = ((AH - 1 - y) * AW + x) * 3;
+                        double rain = 0, uu = 0, vv = 0;
+                        for (int se = 0; se < atmosphere::SEASONS; se++) {
+                            rain += c.rainMmDay[se * AW * AH + i] / atmosphere::SEASONS;
+                            uu += c.windU[se * AW * AH + i] / atmosphere::SEASONS;
+                            vv += c.windV[se * AW * AH + i] / atmosphere::SEASONS;
+                        }
+                        bool sea = c.elev[i] <= 0.0f;
+                        unsigned char g = (unsigned char)std::clamp(rain / 6.0 * 255.0, 0.0, 255.0);
+                        rimg[o] = sea ? g / 2 : g; rimg[o + 1] = sea ? g / 2 : g; rimg[o + 2] = sea ? (unsigned char)std::min(255, g / 2 + 60) : g;
+                        double sc = sea ? 0.5 : 1.0;
+                        wimg[o] = (unsigned char)std::clamp((128 + uu * 12.0) * sc, 0.0, 255.0);
+                        wimg[o + 1] = (unsigned char)std::clamp((128 + vv * 12.0) * sc, 0.0, 255.0);
+                        wimg[o + 2] = (unsigned char)(sea ? 90 : 40);
+                    }
+                    snprintf(name, sizeof name, "rain_seed%u.ppm", seed);
+                    if (FILE* f = fopen(name, "wb")) { fprintf(f, "P6\n%d %d\n255\n", AW, AH); fwrite(rimg.data(), 1, rimg.size(), f); fclose(f); }
+                    snprintf(name, sizeof name, "wind_seed%u.ppm", seed);
+                    if (FILE* f = fopen(name, "wb")) { fprintf(f, "P6\n%d %d\n255\n", AW, AH); fwrite(wimg.data(), 1, wimg.size(), f); fclose(f); }
                 }
                 fprintf(stderr, "\nWHAT COLOUR IS THE LAND, in the shader's own palette\n");
                 fprintf(stderr, "  mean rendered land  %.2f %.2f %.2f\n", rSum / std::max(n2, 1.0),
