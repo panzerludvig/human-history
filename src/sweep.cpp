@@ -389,40 +389,69 @@ int main(int argc, char** argv) {
                             nSea > 0 ? iceS / nSea : 0.0);
                 }
             }
-            // On the Earth template, named regions: the water budget and the
-            // wind of the places whose climate everyone knows, by season.
+            // THE WORLD REVIEW, on the Earth template: named regions on every
+            // continent with what Earth measures there -- annual rain in
+            // mm/day, January and July surface temperature, and the biome --
+            // against what the model makes. The point is not to fit Earth
+            // but to find which rules hold and which fail, so that what
+            // survives can be trusted on any world. Earth figures are
+            // climatological means, rounded; the model's biome is the
+            // classifier's dominant cover at the region's mean fields.
             if (earth) {
-                struct Region { const char* name; double lon0, lon1, lat0, lat1; };
+                struct Region { const char* name; double lon0, lon1, lat0, lat1; double eRain, eJan, eJul; const char* eBiome; };
                 static const Region REG[] = {
-                    {"US Pacific NW", -125, -118, 42, 50},   {"Great Basin", -118, -110, 36, 42},
-                    {"Great Plains", -104, -95, 35, 50},     {"US Midwest", -95, -82, 38, 47},
-                    {"US Southeast", -92, -78, 30, 36},      {"Canada boreal", -115, -80, 52, 62},
-                    {"Amazon", -70, -50, -10, 2},            {"NE Brazil", -45, -37, -12, -4},
-                    {"Pampas", -62, -57, -38, -30},          {"Sahara", -5, 25, 18, 28},
-                    {"W Europe", -5, 15, 44, 54},            {"E Europe", 25, 45, 48, 56},
-                    {"C Siberia", 90, 120, 55, 65},          {"India", 74, 84, 18, 26},
-                    {"Australia int", 125, 140, -30, -22},   {"Congo", 15, 28, -5, 3},
-                    {"Spain", -8, 0, 37, 43},                {"C Europe", 5, 20, 46, 52},
-                    {"Iran", 50, 60, 28, 36},                {"N China", 105, 120, 32, 40},
-                    {"S China", 105, 120, 22, 30},           {"Peru coast", -80, -72, -25, -6},
-                    {"Sahel", -10, 20, 10, 17},              {"Scandinavia", 5, 25, 58, 66},
+                    // North America
+                    {"US Pacific NW", -125, -118, 42, 50, 3.5, 3, 17, "forest"},
+                    {"California", -123, -118, 34, 40, 1.2, 10, 20, "shrub"},
+                    {"Great Basin", -118, -110, 36, 42, 0.7, -1, 23, "steppe/desert"},
+                    {"Great Plains", -104, -95, 35, 50, 1.5, -6, 24, "grass"},
+                    {"US Midwest", -95, -82, 38, 47, 2.5, -5, 23, "forest"},
+                    {"US Southeast", -92, -78, 30, 36, 3.5, 8, 27, "forest"},
+                    {"Canada boreal", -115, -80, 52, 62, 1.2, -20, 16, "taiga"},
+                    {"Alaska int", -155, -145, 62, 67, 0.8, -22, 15, "taiga"},
+                    {"Mexico plateau", -106, -100, 20, 28, 1.2, 12, 24, "steppe"},
+                    // South America
+                    {"Amazon", -70, -50, -10, 2, 6.0, 26, 25, "rainforest"},
+                    {"NE Brazil", -45, -37, -12, -4, 2.0, 27, 25, "savanna"},
+                    {"Pampas", -62, -57, -38, -30, 2.5, 23, 9, "grass"},
+                    {"Patagonia", -72, -66, -50, -40, 0.6, 14, 2, "steppe"},
+                    {"Peru coast", -80, -72, -25, -6, 0.1, 22, 16, "desert"},
+                    // Europe
+                    {"W Europe", -5, 15, 44, 54, 2.2, 3, 18, "forest"},
+                    {"Spain", -8, 0, 37, 43, 1.5, 6, 25, "shrub"},
+                    {"E Europe", 25, 45, 48, 56, 1.6, -6, 19, "forest"},
+                    {"Scandinavia", 5, 25, 58, 66, 2.0, -6, 15, "taiga"},
+                    // Asia
+                    {"C Siberia", 90, 120, 55, 65, 1.2, -30, 17, "taiga"},
+                    {"Arabia", 42, 55, 18, 28, 0.2, 15, 35, "desert"},
+                    {"Iran", 50, 60, 28, 36, 0.6, 4, 28, "desert"},
+                    {"C Asia", 60, 75, 38, 46, 0.6, -5, 26, "steppe/desert"},
+                    {"India", 74, 84, 18, 26, 3.0, 20, 29, "savanna"},
+                    {"N China", 105, 120, 32, 40, 1.8, -2, 26, "forest"},
+                    {"S China", 105, 120, 22, 30, 4.5, 8, 28, "forest"},
+                    {"Mongolia", 95, 115, 42, 50, 0.6, -20, 18, "steppe"},
+                    {"SE Asia", 98, 108, 10, 20, 5.0, 24, 28, "rainforest"},
+                    {"Japan", 130, 142, 32, 40, 4.5, 4, 25, "forest"},
+                    // Africa
+                    {"NW Africa", -10, 5, 30, 36, 1.2, 10, 27, "shrub"},
+                    {"Sahara", -5, 25, 18, 28, 0.1, 13, 33, "desert"},
+                    {"Sahel", -10, 20, 10, 17, 1.5, 24, 29, "savanna"},
+                    {"Congo", 15, 28, -5, 3, 5.0, 25, 24, "rainforest"},
+                    {"E Africa", 34, 40, -5, 5, 2.0, 21, 19, "savanna"},
+                    {"S Africa", 18, 30, -32, -22, 1.4, 22, 11, "steppe"},
+                    // Australia
+                    {"Australia int", 125, 140, -30, -22, 0.6, 29, 13, "desert"},
+                    {"E Australia", 145, 153, -35, -25, 2.5, 24, 12, "forest"},
+                    {"N Australia", 125, 140, -18, -12, 2.5, 29, 24, "savanna"},
                 };
-                static const char* SN2[4] = {"DJF", "MAM", "JJA", "SON"};
-                // PROBE: the cells around the US Southeast, elevation and
-                // the model's mask, to check the box against the map.
-                for (int y = 70; y >= 58; y--) {
-                    fprintf(stderr, "    y%2d lat %5.1f:", y, ((y + 0.5) / AH - 0.5) * 180.0);
-                    for (int x = 40; x < 62; x++) {
-                        int i = y * AW + x;
-                        fprintf(stderr, " %5.0f%c", c.elev[i], c.isWater[i] ? 'w' : 'L');
-                    }
-                    fprintf(stderr, "\n");
-                }
-                fprintf(stderr, "    x 40..61 = lon %.1f..%.1f\n", (40.5 / AW) * 360.0 - 180.0, (61.5 / AW) * 360.0 - 180.0);
-                fprintf(stderr, "\nREGIONS (Earth template; land cells; rain and evap mm/day, T degC, wind m/s u,v)\n");
-                fprintf(stderr, "  %-15s %-14s %-14s %-14s %-14s | %6s %6s %6s\n", "", "DJF rain/evap", "MAM", "JJA", "SON", "T ann", "u ann", "v ann");
+                static const char* COVN[11] = {"bare", "tundra", "taiga", "forest", "rainforest", "grass",
+                                               "steppe", "savanna", "shrub", "marsh", "desert"};
+                fprintf(stderr, "\nTHE WORLD REVIEW (Earth template; model vs Earth; rain mm/day, T degC)\n");
+                fprintf(stderr, "  %-15s %5s %5s %5s %5s %5s | %5s %5s | %5s %5s | %-11s %-13s\n",
+                        "region", "rain", "earth", "DJF", "JJA", "evap", "Tjan", "earth", "Tjul", "earth", "model cover", "earth biome");
+                int rainOk = 0, tOk = 0, bioOk = 0, nReg = 0;
                 for (const Region& r : REG) {
-                    double rn[4] = {0}, ev[4] = {0}, t = 0, uu = 0, vv = 0, n = 0, so = 0, nw = 0;
+                    double rn[4] = {0}, ev = 0, tj = 0, tl = 0, t = 0, n = 0, el = 0;
                     for (int y = 0; y < AH; y++) {
                         double lat = ((y + 0.5) / AH - 0.5) * 180.0;
                         if (lat < r.lat0 || lat > r.lat1) continue;
@@ -430,22 +459,68 @@ int main(int argc, char** argv) {
                             double lon = ((x + 0.5) / AW) * 360.0 - 180.0;
                             if (lon < r.lon0 || lon > r.lon1) continue;
                             int i = y * AW + x;
-                            if (c.elev[i] <= 0.0f) continue;
-                            if (c.isWater[i]) nw += 1;
+                            if (c.isWater[i]) continue;
                             for (int se = 0; se < 4; se++) {
                                 int j = se * AW * AH + i;
-                                rn[se] += c.rainMmDay[j]; ev[se] += c.evapF[j]; so += c.soilM[j] / 4;
-                                t += c.meanT[j] / 4; uu += c.windU[j] / 4; vv += c.windV[j] / 4;
+                                rn[se] += c.rainMmDay[j]; ev += c.evapF[j] / 4; t += c.meanT[j] / 4;
                             }
+                            // January is the middle of DJF, July of JJA
+                            tj += c.meanT[0 * AW * AH + i]; tl += c.meanT[2 * AW * AH + i];
+                            el += c.elev[i];
                             n += 1;
                         }
                     }
                     if (n < 1) continue;
-                    fprintf(stderr, "  %-15s", r.name);
-                    for (int se = 0; se < 4; se++) fprintf(stderr, " %5.2f / %5.2f ", rn[se] / n, ev[se] / n);
-                    fprintf(stderr, "| %6.1f %6.1f %6.1f  soil %5.1f mm  cells %.0f (%.0f water)\n", t / n, uu / n, vv / n, so / n, n, nw);
-                    (void)SN2;
+                    double rain = (rn[0] + rn[1] + rn[2] + rn[3]) / 4 / n;
+                    double pet = std::max(0.4, 0.11 * (t / n + 8.0));
+                    float mo = (float)std::clamp(0.5 * rain / pet, 0.0, 1.0);
+                    // January is DJF in both hemispheres; the Earth figures are
+                    // January and July, not summer and winter.
+                    double jan = tj / n, jul = tl / n;
+                    (void)mo; (void)el;
+                    // The model's biome: the most common dominant cover over
+                    // the box's cells, each classified on its own fields (a
+                    // box mean would turn one wet corner into a forest).
+                    int best = 0;
+                    {
+                        int votes[11] = {0};
+                        for (int y = 0; y < AH; y++) {
+                            double lat = ((y + 0.5) / AH - 0.5) * 180.0;
+                            if (lat < r.lat0 || lat > r.lat1) continue;
+                            for (int x = 0; x < AW; x++) {
+                                double lon = ((x + 0.5) / AW) * 360.0 - 180.0;
+                                if (lon < r.lon0 || lon > r.lon1) continue;
+                                int i = y * AW + x;
+                                if (c.isWater[i]) continue;
+                                double rr = 0, tt = 0, tc = 1e9, tw = -1e9;
+                                for (int se = 0; se < 4; se++) {
+                                    int j = se * AW * AH + i;
+                                    rr += c.rainMmDay[j] / 4; tt += c.meanT[j] / 4;
+                                    tc = std::min(tc, (double)c.meanT[j]); tw = std::max(tw, (double)c.meanT[j]);
+                                }
+                                double pp = std::max(0.4, 0.11 * (tt + 8.0));
+                                float mm = (float)std::clamp(0.5 * rr / pp, 0.0, 1.0);
+                                terrain::Mixture mx = terrain::mixtureAt(c.elev[i], 0.0f, (float)tt, mm, 0.0f, false,
+                                                                         0.5f, 0.0f, (float)tc, (float)tw);
+                                int b2 = 0;
+                                for (int k = 1; k < 11; k++) if (mx.cov[k] > mx.cov[b2]) b2 = k;
+                                votes[b2]++;
+                            }
+                        }
+                        for (int k = 1; k < 11; k++) if (votes[k] > votes[best]) best = k;
+                    }
+                    bool rOk = rain > r.eRain / 1.6 && rain < r.eRain * 1.6 && std::fabs(rain - r.eRain) < 1.0 + 0.6 * r.eRain;
+                    if (r.eRain < 0.3) rOk = rain < 0.5;
+                    bool tOkHere = std::fabs(jan - r.eJan) <= 3.0 && std::fabs(jul - r.eJul) <= 3.0;
+                    bool bOk = std::string(r.eBiome).find(COVN[best]) != std::string::npos;
+                    rainOk += rOk; tOk += tOkHere; bioOk += bOk; nReg++;
+                    fprintf(stderr, "  %-15s %5.1f %5.1f %5.1f %5.1f %5.1f | %5.0f %5.0f | %5.0f %5.0f | %-11s %-13s %s%s%s\n",
+                            r.name, rain, r.eRain, rn[0] / n, rn[2] / n, ev / n, jan, r.eJan, jul, r.eJul,
+                            COVN[best], r.eBiome, rOk ? "" : "R", tOkHere ? "" : "T", bOk ? "" : "B");
                 }
+                fprintf(stderr, "  of %d regions: rain within reason %d, temperatures within 3 K %d, biome right %d\n"
+                                "  (flags: R rain off, T temperature off, B biome wrong; a region's evap is its own land's)\n",
+                        nReg, rainOk, tOk, bioOk);
             }
             // And the winter north split by surface: the sea and the land
             // at one latitude are different animals, and the mean of them

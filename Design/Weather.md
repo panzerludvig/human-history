@@ -15,6 +15,8 @@ The goal was never Earth. It is a climate realistic enough that any continent la
 - **Everything downstream is still derived** by the existing machinery on those fields: moisture transport, evaporation, convective, convergent, frontal and orographic uplift, rain, snow, humidity and cloud. Rain shadows, interior deserts, wet windward coasts and the seasonal migration of rain onto summer continents are consequences of transport, not of painting, and they are what makes a world feel like a world.
 - **Weather** is a layer above the climatology, designed alongside it: travelling systems born on the storm-track belts and carried east, monsoon onset and retreat on the seasonal swing, cyclones seeded over warm sea. Rule-based, coherent in space, persistent in time.
 
+Measured against Earth, region by region, in [[Technical/Climate Review]] (2026-09-07): the temperature framework holds, the rain's placement fails in three identifiable ways.
+
 Options considered and rejected: paint zonal targets alone (stripes on a sphere — no rain shadows, no monsoons); keep the physical temperature and prescribe only the wind (the calibration pain returns for ice and seasonal lag that the prescription gives for free). The physics stays in the tree behind a flag and on its branches; the moment a rule proves inadequate it can come back for that one thing. See [[Meta/Open Threads]] for what would reopen it.
 
 ---
