@@ -518,6 +518,31 @@ int main(int argc, char** argv) {
                             r.name, rain, r.eRain, rn[0] / n, rn[2] / n, ev / n, jan, r.eJan, jul, r.eJul,
                             COVN[best], r.eBiome, rOk ? "" : "R", tOkHere ? "" : "T", bOk ? "" : "B");
                 }
+                // TRANSECTS: where the water goes, cell by cell along a row.
+                // Annual means: land flag, elevation, column water, its
+                // saturation (against the lift-lowered ceiling), rain, evap,
+                // and the zonal wind.
+                struct Tr { const char* name; double lat, lon0, lon1; };
+                static const Tr TRS[] = {{"47N, Pacific to Atlantic", 47, -140, -60},
+                                         {"40N, Atlantic to China", 40, -20, 120},
+                                         {"20S, Pacific to Atlantic", -20, -85, -35}};
+                for (const Tr& tr : TRS) {
+                    int y = std::clamp((int)((tr.lat + 90.0) / 180.0 * AH), 0, AH - 1);
+                    fprintf(stderr, "\n  TRANSECT %s (row lat %.1f)\n", tr.name, ((y + 0.5) / AH - 0.5) * 180.0);
+                    fprintf(stderr, "  %7s %2s %5s %6s %5s %6s %6s %6s\n", "lon", "L", "elev", "Wv mm", "sat", "rain", "evap", "u");
+                    for (int x = 0; x < AW; x++) {
+                        double lon = ((x + 0.5) / AW) * 360.0 - 180.0;
+                        if (lon < tr.lon0 || lon > tr.lon1) continue;
+                        int i = y * AW + x;
+                        double wv = 0, rh = 0, rn = 0, ev = 0, uu = 0;
+                        for (int se = 0; se < 4; se++) {
+                            int j = se * AW * AH + i;
+                            wv += c.wv[j] / 4; rh += c.rh[j] / 4; rn += c.rainMmDay[j] / 4; ev += c.evapF[j] / 4; uu += c.windU[j] / 4;
+                        }
+                        fprintf(stderr, "  %7.1f %2s %5.0f %6.1f %5.2f %6.2f %6.2f %6.1f\n", lon,
+                                c.isWater[i] ? "~" : "L", c.elev[i], wv, rh, rn, ev, uu);
+                    }
+                }
                 fprintf(stderr, "  of %d regions: rain within reason %d, temperatures within 3 K %d, biome right %d\n"
                                 "  (flags: R rain off, T temperature off, B biome wrong; a region's evap is its own land's)\n",
                         nReg, rainOk, tOk, bioOk);

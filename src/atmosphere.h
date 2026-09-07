@@ -552,8 +552,23 @@ inline double FRONT_SIDE_K = 4.0; // K above the neighbours for full lift, below
 // world sat at 85% humidity, which -- since cloudiness was humidity, one for
 // one -- covered the globe in cloud. A column is about half saturated in
 // life.
-inline double RAIN_FRAC = 0.55;    // sub-grid: part of a cell saturates first
-inline double RAIN_RATE = 0.06;    // fraction of that excess per hour (0.15 let the first coast and the first ridge take everything: the Pacific NW rained 13 mm/day and the Midwest 0.4)
+// THE RATE FOLLOWS THE SATURATION. Rain used to begin at a threshold and
+// drain the excess at one fixed fraction per hour: a switch with one speed
+// on its far side, so a coast's ridge and a gentle inland cooling made the
+// same kind of rain, and the coast, reaching the switch first, took
+// everything -- 10-20 mm/day on every windward coast, nothing behind it,
+// and water resident in the air 3.5 days against Earth's 9. Earth's rain
+// intensity rises steeply with how near the air is to saturation: a column
+// at 60% drizzles or does nothing, one pushed to 90% by a mountain dumps.
+// So: the rain per hour is RAIN_RATE_MAX of the (lowered) ceiling times the
+// square of how far above the onset the column is, as a fraction of the way
+// to saturation. At 70% it rains at a sixteenth of the maximum and carries
+// the rest on; at full saturation it empties as fast as it did before.
+// Calibrated against the residence time the sweep prints, not against any
+// place.
+inline double RAIN_ONSET = 0.60;      // of the lowered ceiling: below this, no rain
+inline double RAIN_RATE_MAX = 0.03;   // of the ceiling per hour, at full saturation (0.10 emptied the Pacific column on the first three coastal cells: 13 mm to 3 in 600 km)
+inline double RAIN_FRAC = RAIN_ONSET; // (the old name; the storm-track factor still lowers it)
 constexpr double DIV_CAP_SCALE = 0.05;          // m/s of uplift for a ~46% capacity swing
 // Over land, moisture rains out progressively along its path (precipitation
 // is not withheld until a convergence line): an e-folding of ~3 days, i.e.
@@ -744,7 +759,7 @@ constexpr double PRE_SUBTROP_HIGH_K = 8.0;  // K-equivalent: about 8 hPa at PRE_
 constexpr double PRE_SUBTROP_LAT = 30.0, PRE_SUBTROP_WIDTH = 9.0;
 constexpr double PRE_DIURNAL_LAND = 5.0;   // K half-swing, deep interior; coasts less
 constexpr double PRE_DIURNAL_SEA = 0.5;
-constexpr double PRE_STORM_SAT = 0.25;     // how much sooner a storm-track cell rains (see BELT_STORM; 0.4 gave Spain 8 mm/day)
+constexpr double PRE_STORM_SAT = 0.12;     // how much sooner a storm-track cell rains (see BELT_STORM; with a soft rate it needs less)
 struct Prescribed {
     std::vector<float> cont;    // continentality: 0 at sea, 1 deep in a continent
     std::vector<float> wide;    // the same on the continent scale (see PRE_MONSOON_KM)
@@ -2120,8 +2135,10 @@ struct Model {
                 double capLift =
                     std::min(cap, cap * std::exp(-LAPSE_MOIST * dz / CAP_SCALE));
                 capEff[i] = std::max(capLift, 0.05);
-                double fracHere = RAIN_FRAC * (PRESCRIBED ? 1.0 - PRE_STORM_SAT * pre.storminess(i, doy) : 1.0);
-                double rain = std::max(Wv[i] - fracHere * capLift, 0.0) * RAIN_RATE;
+                double onset = RAIN_ONSET * (PRESCRIBED ? 1.0 - PRE_STORM_SAT * pre.storminess(i, doy) : 1.0);
+                double sat = Wv[i] / std::max(capLift, 0.05);
+                double sx = std::clamp((sat - onset) / std::max(1.0 - onset, 0.05), 0.0, 1.0);
+                double rain = RAIN_RATE_MAX * capLift * sx * sx; // see RAIN_ONSET
                 double fe = fluxE[i], fw = fluxE[xw], fn = fluxN[i], fs = fluxN[ys];
                 // Flux form with per-face CFL limiting still lets four faces
                 // between them export more than the cell contains, and the
@@ -2173,9 +2190,18 @@ struct Model {
                 // relative humidity of 112%, which is not a calibration error
                 // but water sitting in air that physically cannot contain it,
                 // radiating like a greenhouse that is not there.
-                if (raw > capLift) {
-                    rain += raw - capLift;
-                    raw = capLift;
+                // The bound is saturation at the air's OWN temperature, not
+                // the lift-lowered ceiling. That ceiling is a day's ascent
+                // assumed to have happened already -- the right driver for
+                // the RATE above, and the wrong thing to enforce in one hour:
+                // applied here it rained out every drop above it at once,
+                // 25 mm/day on the first coastal cell whatever the rate was
+                // set to, and the Pacific column crossed the Rockies with
+                // 3 mm of its 15. Above true saturation the excess still
+                // falls at once.
+                if (raw > cap) {
+                    rain += raw - cap;
+                    raw = cap;
                 }
                 // Cloud is what condensed: the saturated share of the cell,
                 // reckoned against the capacity the ascent has left it. This
