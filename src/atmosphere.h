@@ -10,6 +10,7 @@
 #include "terrain.h"
 #include "hydrology.h"
 #include "dynamics2.h"
+#include "qg2.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -716,6 +717,12 @@ inline bool PRESCRIBED = true;
 // Temperatures stay painted; only the circulation is computed. Judged on
 // its wind and pressure fields first, before it is trusted with the rain.
 inline bool DYN2 = false;
+// THE TWO-LAYER QUASI-GEOSTROPHIC WEATHER (qg2.h): when on, the wind the
+// water rides on poleward of the tropics is the lower layer of a two-layer
+// QG model relaxed toward the painted climate, and the belts stay painted
+// equatorward, blended across the channel's edge.
+inline bool QG2 = false;
+constexpr double QG2_BLEND_DEG = 6.0;   // degrees over which the QG wind fades into the painted belts
 constexpr int DYN2_SUBSTEPS = 30;   // of dyn2::DT, per hour
 constexpr double PRE_LAPSE = 6.5;          // K/km on the model's smoothed elevation
 constexpr double PRE_CONT_KM = 500.0;      // e-folding of continentality with distance from the sea: 500 km inland is already continental
@@ -1086,6 +1093,8 @@ struct Model {
     Prescribed pre;                    // the painted climate (see PRESCRIBED)
     std::vector<double> anomA, anomB;  // its thermal-anomaly pressure, smoothed
     dyn2::Model d2;                    // the two-level dynamics (see DYN2)
+    qg2::Model qg;                     // the two-layer QG weather (see QG2)
+    bool qgInit = false;
     bool d2init = false;
     std::vector<double> tnsBuf;
     static void d2Filter(std::vector<double>& f, void* ctx) { ((Model*)ctx)->polarFilter(f, false); }
@@ -1592,6 +1601,50 @@ struct Model {
             for (int i = 0; i < W * H; i++) { u[i] = d2.u1[i]; v[i] = d2.v1[i]; }
             d2.bank();
             d2.bankEddy();
+        }
+        if (QG2) {
+            // The QG weather makes the wind poleward of the tropics (see
+            // QG2). Its thickness target is the painted near-surface air,
+            // reduced to sea level; its lower layer's wind replaces the
+            // painted belts inside the channels, fading into them over
+            // QG2_BLEND_DEG at the equatorward wall.
+            if (tnsBuf.empty()) tnsBuf.assign(W * H, 0.0);
+            for (int i = 0; i < W * H; i++)
+                tnsBuf[i] = T[i] - (water[i] ? 1.5 : 2.0) + (water[i] ? 0.0 : 6.5 * std::max((double)elev[i], 0.0) / 1000.0);
+            if (!qgInit) {
+                qg.init(W, H, elev, latRad, water);
+                qg.setTargets(tnsBuf, true);
+                // a seed for the eddies
+                for (int y = 0; y < H; y++)
+                    if (qg.inChannel(y))
+                        for (int x = 0; x < W; x++) qg.q2[idx(x, y)] += 1e-6 * std::sin(5.0 * 2 * 3.14159265 * (x + 0.5) / W + 0.7 * y);
+                qgInit = true;
+            } else {
+                qg.setTargets(tnsBuf, false);
+            }
+            for (int k = 0; k < (int)(DT / qg2::DT); k++) qg.step(qg2::DT);
+            if (std::getenv("HH_QG_DEBUG")) {
+                static int qgHours = 0; qgHours++;
+                double m1 = 0, m2 = 0; int bad = -1, i1 = 0, i2 = 0;
+                for (int i = 0; i < W * H; i++) {
+                    if (!std::isfinite(qg.u2[i]) || !std::isfinite(qg.u1[i])) { bad = i; break; }
+                    double a1 = std::fabs(qg.u1[i]) + std::fabs(qg.v1[i]), a2 = std::fabs(qg.u2[i]) + std::fabs(qg.v2[i]);
+                    if (a1 > m1) { m1 = a1; i1 = i; }
+                    if (a2 > m2) { m2 = a2; i2 = i; }
+                }
+                if (bad >= 0) { fprintf(stderr, "QG non-finite at hour %d, cell %d (x %d y %d)\n", qgHours, bad, bad % W, bad / W); std::exit(1); }
+                if (qgHours % 24 == 0 || qgHours > 2690)
+                    fprintf(stderr, "QG day %d h %d |u up| %.1f at (%d, %.0f)  |u low| %.1f at (%d, %.0f)\n", qgHours / 24, qgHours, m1, i1 % W,
+                            latRad[i1] * 180 / 3.14159265, m2, i2 % W, latRad[i2] * 180 / 3.14159265);
+            }
+            for (int i = 0; i < W * H; i++) {
+                double la = std::fabs(latRad[i] * 180.0 / 3.14159265);
+                double w = std::clamp((la - qg2::QG_EQ) / QG2_BLEND_DEG, 0.0, 1.0) *
+                           std::clamp((qg2::QG_CAP - la) / QG2_BLEND_DEG, 0.0, 1.0);
+                u[i] = (1 - w) * u[i] + w * qg.u2[i];
+                v[i] = (1 - w) * v[i] + w * qg.v2[i];
+            }
+            qg.bank();
         }
     }
 
@@ -2517,6 +2570,17 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         c.dbgRH = rh / wsum;
     }
     c.isWater.assign(m.water.begin(), m.water.end());
+    if (QG2 && m.qg.hoursBanked > 0) {
+        double n = m.qg.hoursBanked;
+        c.d2u1.assign(W * H, 0.0f); c.d2u2.assign(W * H, 0.0f); c.d2ps.assign(W * H, 0.0f);
+        c.d2psSd.assign(W * H, 0.0f); c.d2eke.assign(W * H, 0.0f);
+        for (int i = 0; i < W * H; i++) {
+            c.d2u1[i] = (float)(m.qg.u2Acc[i] / n);   // "low": the QG lower layer
+            c.d2u2[i] = (float)(m.qg.u1Acc[i] / n);   // "up": the upper
+            c.d2ps[i] = (float)(m.qg.psiAcc[i] / n * 1e-4 + 1e5); // the lower streamfunction, scaled into hPa-like units
+            c.d2eke[i] = (float)(m.qg.ekeAcc[i] / n);
+        }
+    }
     if (DYN2 && m.d2.hoursBanked > 0) {
         double n = m.d2.hoursBanked;
         c.d2u1.assign(W * H, 0.0f); c.d2u2.assign(W * H, 0.0f); c.d2ps.assign(W * H, 0.0f);

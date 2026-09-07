@@ -235,6 +235,7 @@ int main(int argc, char** argv) {
         if (argc >= 3) atmosphere::SPINUP_DAYS = atoi(argv[2]) * 365;
         if (argc >= 4 && std::string(argv[3]) == "phys") atmosphere::PRESCRIBED = false;
         if (argc >= 4 && std::string(argv[3]) == "dyn") atmosphere::DYN2 = true;
+        if (argc >= 4 && std::string(argv[3]) == "qg") atmosphere::QG2 = true;
         if (argc >= 5) atmosphere::STAT_YEARS = std::max(1, atoi(argv[4]));
         fprintf(stderr, "spin-up %d days\n", atmosphere::SPINUP_DAYS);
         atmosphere::Climatology c = atmosphere::build(cp, seaLevel, rot, offset, pf, hy, false);
@@ -398,7 +399,7 @@ int main(int argc, char** argv) {
             // westerlies 5-8 m/s at 45-55, the jet 25-35 m/s aloft at 30-40,
             // trades -5 to -7, pressure deviation 8-12 hPa on the storm tracks
             // and 2-3 in the tropics, EKE 30-60 m2/s2 on the storm tracks.
-            if (atmosphere::DYN2 && !c.d2u1.empty()) {
+            if ((atmosphere::DYN2 || atmosphere::QG2) && !c.d2u1.empty()) {
                 fprintf(stderr, "\nTWO-LEVEL DYNAMICS (annual, zonal means)\n");
                 fprintf(stderr, "  %5s %7s %7s %8s %7s %7s\n", "lat", "u low", "u up", "ps hPa", "sd hPa", "EKE");
                 for (int y0 = 1; y0 < AH - 1; y0 += 4) {
