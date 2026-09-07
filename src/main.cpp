@@ -1613,7 +1613,7 @@ static void createControls() {
     addControl(ID_MAIN_MENU, "BUTTON", "Main Menu", BS_PUSHBUTTON);
     addControl(ID_PAUSE_QUIT, "BUTTON", "Quit Game", BS_PUSHBUTTON);
     addControl(ID_GEN_SEED_LABEL, "STATIC", "Seed", SS_RIGHT);
-    addControl(ID_GEN_SEED, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER);
+    addControl(ID_GEN_SEED, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL); // not ES_NUMBER: "earth" is a seed
     addControl(ID_GEN_RANDOM, "BUTTON", "Random", BS_PUSHBUTTON);
     addControl(ID_GEN_LAND_LABEL, "STATIC", "Land %", SS_RIGHT);
     addControl(ID_GEN_LAND, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER);
