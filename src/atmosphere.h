@@ -9,9 +9,12 @@
 #pragma once
 #include "terrain.h"
 #include "hydrology.h"
+#include "dynamics2.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <numeric>
+#include <algorithm>
 #include <vector>
 
 namespace atmosphere {
@@ -21,7 +24,7 @@ constexpr int SEASONS = 4;       // DJF, MAM, JJA, SON
 
 constexpr double DT = 3600.0;            // s, one step per sim hour
 inline int SPINUP_DAYS = 365;         // discarded first year
-constexpr int STAT_YEARS = 2;            // averaged years after spin-up
+inline int STAT_YEARS = 2;               // averaged years after spin-up
 constexpr double R_EARTH = 6371000.0;    // m
 constexpr double OMEGA = 7.292e-5;       // rad/s
 
@@ -707,6 +710,13 @@ constexpr int DYN_SUBSTEPS = 18;    // 200 seconds each
 // are consequences of transport on a bounded temperature field, not of
 // painting. Set PRESCRIBED false to run the physics instead.
 inline bool PRESCRIBED = true;
+// THE TWO-LEVEL DYNAMICS (dynamics2.h): when on, the wind the water rides
+// on is made by a two-level primitive-equation atmosphere whose levels
+// relax toward the painted temperatures, instead of by the belt tables.
+// Temperatures stay painted; only the circulation is computed. Judged on
+// its wind and pressure fields first, before it is trusted with the rain.
+inline bool DYN2 = false;
+constexpr int DYN2_SUBSTEPS = 30;   // of dyn2::DT, per hour
 constexpr double PRE_LAPSE = 6.5;          // K/km on the model's smoothed elevation
 constexpr double PRE_CONT_KM = 500.0;      // e-folding of continentality with distance from the sea: 500 km inland is already continental
 // The old diagnostic model's 120 Pa/K was tuned on its own small land-sea
@@ -984,6 +994,7 @@ struct Climatology {
     // column, how near saturation it is, the height field that is the
     // pressure map, and the air's own temperature.
     std::vector<float> wv, rh, press, airT, airTf;
+    std::vector<float> d2u1, d2u2, d2ps, d2psSd, d2eke; // [cell] annual: the two-level dynamics' probes (see DYN2)
     std::vector<float> upConv, upDiv, upFront, upOrog, capX; // PROBE: what lifts the air
     std::vector<float> evapF, advF, difF, latF, advZF, advMF; // PROBE: the water budget
     std::vector<float> spdF, capSkinF, supplyF, affordF;     // PROBE: and the evaporation
@@ -1074,6 +1085,10 @@ struct Model {
     std::vector<double> ice, nIce;     // sea ice, m of thickness (see L_ICE)
     Prescribed pre;                    // the painted climate (see PRESCRIBED)
     std::vector<double> anomA, anomB;  // its thermal-anomaly pressure, smoothed
+    dyn2::Model d2;                    // the two-level dynamics (see DYN2)
+    bool d2init = false;
+    std::vector<double> tnsBuf;
+    static void d2Filter(std::vector<double>& f, void* ctx) { ((Model*)ctx)->polarFilter(f, false); }
     std::vector<double> evapAcc, rainAcc, madeAcc; // PROBE, one cell per thread: no atomics
     std::vector<double> advAcc, difAcc, advZ, advM; // PROBE: and what the wind and eddies bring
     std::vector<double> pSpd, pCapSkin, pSupply, pAfford; // PROBE: the evaporation, term by term
@@ -1531,6 +1546,53 @@ struct Model {
             }
         }
         for (int x = 0; x < W; x++) u[idx(x, 0)] = v[idx(x, 0)] = u[idx(x, H - 1)] = v[idx(x, H - 1)] = 0.0;
+        if (DYN2) {
+            // The two-level atmosphere makes the wind instead (see DYN2):
+            // its levels are relaxed toward the painted near-surface air,
+            // and its lower level's wind is what the water rides on.
+            if (tnsBuf.empty()) tnsBuf.assign(W * H, 0.0);
+            // the near-surface air, reduced to sea level: a plateau's cold
+            // surface is not a cold column at 2.5 km beside the lowland's
+            for (int i = 0; i < W * H; i++)
+                tnsBuf[i] = T[i] - (water[i] ? 1.5 : 2.0) + (water[i] ? 0.0 : 6.5 * std::max((double)elev[i], 0.0) / 1000.0);
+            if (!d2init) {
+                d2.init(W, H, elev, latRad, water);
+                d2.setTargets(tnsBuf, true);
+                d2init = true;
+            } else {
+                d2.setTargets(tnsBuf, false);
+            }
+            d2.refreshExner();
+            static int dbgHours = 0;
+            bool dbg = std::getenv("HH_DYN_DEBUG") && dbgHours < 36;
+            if (dbg) {
+                double tmn = 1e9, tmx = -1e9, thmn = 1e9, thmx = -1e9;
+                for (int i = 0; i < W * H; i++) {
+                    tmn = std::min(tmn, tnsBuf[i]); tmx = std::max(tmx, tnsBuf[i]);
+                    thmn = std::min(thmn, d2.th1t[i]); thmx = std::max(thmx, d2.th1t[i]);
+                }
+                fprintf(stderr, "DYN hour %d: tns [%.1f, %.1f]  th1t [%.1f, %.1f]\n", dbgHours, tmn, tmx, thmn, thmx);
+            }
+            for (int k = 0; k < DYN2_SUBSTEPS; k++) {
+                d2.step(dyn2::DT, &Model::d2Filter, this);
+                if (dbg && k == DYN2_SUBSTEPS - 1) {
+                    double pmn = 1e9, pmx = -1e9, umx = 0; int iu = 0;
+                    for (int i = 0; i < W * H; i++) {
+                        pmn = std::min(pmn, d2.ps[i]); pmx = std::max(pmx, d2.ps[i]);
+                        double sp = std::fabs(d2.u1[i]) + std::fabs(d2.v1[i]);
+                        if (sp > umx) { umx = sp; iu = i; }
+                    }
+                    fprintf(stderr, "  hour %2d: ps [%.1f, %.1f] hPa  |u1| max %.2f at x %d y %d (lon %.0f lat %.0f)  th1 [%.0f, %.0f]\n",
+                            dbgHours, pmn / 100, pmx / 100, umx, iu % W, iu / W, ((iu % W) + 0.5) / W * 360.0 - 180.0,
+                            ((iu / W) + 0.5) / (double)H * 180.0 - 90.0,
+                            *std::min_element(d2.th1.begin(), d2.th1.end()), *std::max_element(d2.th1.begin(), d2.th1.end()));
+                }
+            }
+            if (dbg) { dbgHours++; if (dbgHours >= 36 && std::getenv("HH_DYN_STOP")) std::exit(0); }
+            for (int i = 0; i < W * H; i++) { u[i] = d2.u1[i]; v[i] = d2.v1[i]; }
+            d2.bank();
+            d2.bankEddy();
+        }
     }
 
     void step(double doy, double hour) {
@@ -2411,6 +2473,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             fprintf(stderr, "atmo: day %d/%d  T [%.0f, %.0f]  |u|max %.0f  Wmax %.0f\n",
                     day, totalDays, tmin, tmax, umax, wmax);
         }
+        if (day % 30 == 0 && DYN2) fprintf(stderr, "dyn2: day %d, ps [%.0f, %.0f] hPa, u1 rms %.1f\n", day, *std::min_element(m.d2.ps.begin(), m.d2.ps.end()) / 100.0, *std::max_element(m.d2.ps.begin(), m.d2.ps.end()) / 100.0, std::sqrt(std::inner_product(m.d2.u1.begin(), m.d2.u1.end(), m.d2.u1.begin(), 0.0) / (W * H)));
         if (day % 30 == 0 && !PRESCRIBED) { // PROBE: the leak is the point (painted air conserves nothing)
             fprintf(stderr, "  air heat, 30-day mean W/m2: changed %+.2f  given %+.2f  leak %+.2f"
                             "  mass-mismatch %+.2f\n",
@@ -2454,6 +2517,19 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         c.dbgRH = rh / wsum;
     }
     c.isWater.assign(m.water.begin(), m.water.end());
+    if (DYN2 && m.d2.hoursBanked > 0) {
+        double n = m.d2.hoursBanked;
+        c.d2u1.assign(W * H, 0.0f); c.d2u2.assign(W * H, 0.0f); c.d2ps.assign(W * H, 0.0f);
+        c.d2psSd.assign(W * H, 0.0f); c.d2eke.assign(W * H, 0.0f);
+        for (int i = 0; i < W * H; i++) {
+            double mp = m.d2.psAcc[i] / n;
+            c.d2u1[i] = (float)(m.d2.u1Acc[i] / n);
+            c.d2u2[i] = (float)(m.d2.u2Acc[i] / n);
+            c.d2ps[i] = (float)mp;
+            c.d2psSd[i] = (float)std::sqrt(std::max(m.d2.ps2Acc[i] / n - mp * mp, 0.0));
+            c.d2eke[i] = (float)(m.d2.ekeAcc[i] / n);
+        }
+    }
     {
         double s[14] = {};
         for (int y = 0; y < H; y++)

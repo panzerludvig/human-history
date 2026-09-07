@@ -234,6 +234,8 @@ int main(int argc, char** argv) {
     {
         if (argc >= 3) atmosphere::SPINUP_DAYS = atoi(argv[2]) * 365;
         if (argc >= 4 && std::string(argv[3]) == "phys") atmosphere::PRESCRIBED = false;
+        if (argc >= 4 && std::string(argv[3]) == "dyn") atmosphere::DYN2 = true;
+        if (argc >= 5) atmosphere::STAT_YEARS = std::max(1, atoi(argv[4]));
         fprintf(stderr, "spin-up %d days\n", atmosphere::SPINUP_DAYS);
         atmosphere::Climatology c = atmosphere::build(cp, seaLevel, rot, offset, pf, hy, false);
         Score s = judge(c);
@@ -388,6 +390,49 @@ int main(int argc, char** argv) {
                             nSea > 0 ? tSea / nSea : 0.0, nLand > 0 ? tLand / nLand : 0.0,
                             nSea > 0 ? iceS / nSea : 0.0);
                 }
+            }
+            // THE TWO-LEVEL DYNAMICS, judged on wind and pressure: zonal means
+            // of both levels' zonal wind, the surface pressure, its standing
+            // deviation in time (where the weather is), and the eddy kinetic
+            // energy of the lower level against its zonal mean. Earth: surface
+            // westerlies 5-8 m/s at 45-55, the jet 25-35 m/s aloft at 30-40,
+            // trades -5 to -7, pressure deviation 8-12 hPa on the storm tracks
+            // and 2-3 in the tropics, EKE 30-60 m2/s2 on the storm tracks.
+            if (atmosphere::DYN2 && !c.d2u1.empty()) {
+                fprintf(stderr, "\nTWO-LEVEL DYNAMICS (annual, zonal means)\n");
+                fprintf(stderr, "  %5s %7s %7s %8s %7s %7s\n", "lat", "u low", "u up", "ps hPa", "sd hPa", "EKE");
+                for (int y0 = 1; y0 < AH - 1; y0 += 4) {
+                    double u1 = 0, u2 = 0, ps = 0, sd = 0, ek = 0, n = 0;
+                    for (int y = y0; y < std::min(y0 + 4, AH - 1); y++)
+                        for (int x = 0; x < AW; x++) {
+                            int i = y * AW + x;
+                            u1 += c.d2u1[i]; u2 += c.d2u2[i]; ps += c.d2ps[i]; sd += c.d2psSd[i]; ek += c.d2eke[i]; n += 1;
+                        }
+                    double lat = ((y0 + 2.0) / AH - 0.5) * 180.0;
+                    fprintf(stderr, "  %5.0f %7.1f %7.1f %8.1f %7.1f %7.1f\n", lat, u1 / n, u2 / n, ps / n / 100.0, sd / n / 100.0, ek / n);
+                }
+                // and the pictures: mean pressure against its zonal mean (red
+                // high, blue low, +-15 hPa), and the pressure's deviation
+                // (white = 15 hPa)
+                std::vector<unsigned char> pimg(AW * AH * 3, 0), simg(AW * AH * 3, 0);
+                for (int y = 0; y < AH; y++) {
+                    double zm = 0;
+                    for (int x = 0; x < AW; x++) zm += c.d2ps[y * AW + x] / AW;
+                    for (int x = 0; x < AW; x++) {
+                        int i = y * AW + x, o = ((AH - 1 - y) * AW + x) * 3;
+                        double a = (c.d2ps[i] - zm) / 1500.0; // +-1 at 15 hPa
+                        pimg[o] = (unsigned char)std::clamp(128 + a * 127, 0.0, 255.0);
+                        pimg[o + 1] = (unsigned char)(c.isWater[i] ? 100 : 128);
+                        pimg[o + 2] = (unsigned char)std::clamp(128 - a * 127, 0.0, 255.0);
+                        unsigned char g = (unsigned char)std::clamp(c.d2psSd[i] / 1500.0 * 255.0, 0.0, 255.0);
+                        simg[o] = g; simg[o + 1] = g; simg[o + 2] = (unsigned char)(c.isWater[i] ? std::min(255, g + 50) : g);
+                    }
+                }
+                char nm[64];
+                snprintf(nm, sizeof nm, "dynps_seed%s.ppm", tag.c_str());
+                if (FILE* f = fopen(nm, "wb")) { fprintf(f, "P6\n%d %d\n255\n", AW, AH); fwrite(pimg.data(), 1, pimg.size(), f); fclose(f); }
+                snprintf(nm, sizeof nm, "dynsd_seed%s.ppm", tag.c_str());
+                if (FILE* f = fopen(nm, "wb")) { fprintf(f, "P6\n%d %d\n255\n", AW, AH); fwrite(simg.data(), 1, simg.size(), f); fclose(f); }
             }
             // THE WORLD REVIEW, on the Earth template: named regions on every
             // continent with what Earth measures there -- annual rain in
