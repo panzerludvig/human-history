@@ -11,6 +11,7 @@
 #include "hydrology.h"
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace atmosphere {
@@ -710,7 +711,27 @@ constexpr double PRE_COLD_SHARE = 0.25;    // of that, for cold ones
 constexpr double PRE_ANOM_WIND_MAX = 12.0; // m/s, the most the anomaly may add
 constexpr double PRE_FRICTION = 1.0 / (8.0 * 3600.0); // the Ekman balance's friction
 constexpr double PRE_ITCZ_SHIFT = 8.0;     // degrees the belts follow the sun over the sea
-constexpr double PRE_ITCZ_LAND_SHIFT = 8.0;  // and this much further over a continent (12 put a monsoon on the Sahara)
+constexpr double PRE_ITCZ_LAND_SHIFT = 4.0;  // and this much further over a continent (8 put the monsoon on Iran and the Sahara)
+// THE SEA HAS CURRENTS, painted. Under the equatorward flow on the eastern
+// flank of every subtropical high the surface water is upwelled and cold
+// -- Peru, Namibia, California, the Canaries, western Australia -- and the
+// coast beside it is a desert with fog. On the western flank a warm current
+// runs poleward along the continent's east coast -- the Gulf Stream, the
+// Kuroshio, the Brazil and Agulhas currents -- and then drifts across the
+// ocean to warm the far shore in the 45-65 band: this is why Europe is 8 K
+// warmer than its latitude and Vancouver mild. Without them the painted
+// Peru coast sat on 27 degC water and rained 12 mm/day in summer, and
+// central Europe was 0 degC and taiga.
+constexpr double PRE_UPWELL_K = -6.0;      // K on the sea with land to its east, 8-32 degrees
+constexpr double PRE_UPWELL_KM = 700.0;
+constexpr double PRE_WBC_K = 3.0;          // K on the sea with land to its west, 25-45 degrees
+constexpr double PRE_WBC_KM = 600.0;
+constexpr double PRE_DRIFT_K = 5.0;        // K on the sea with land to its east, 45-65 degrees
+constexpr double PRE_DRIFT_KM = 1800.0;
+// And the land's mean follows the sea UPWIND of it, not the nearest sea:
+// in the westerlies a west coast's mildness reaches a thousand kilometres
+// inland (Europe), an east coast's does not (New York at Lisbon's latitude).
+constexpr double PRE_UPWIND_KM = 2500.0;
 constexpr double PRE_MONSOON_KM = 1500.0;  // the continent scale that decides it
 // The subtropical highs sit over the OCEANS, and their flanks are the
 // asymmetry that makes a subtropical east coast wet and a west coast dry:
@@ -723,10 +744,12 @@ constexpr double PRE_SUBTROP_HIGH_K = 8.0;  // K-equivalent: about 8 hPa at PRE_
 constexpr double PRE_SUBTROP_LAT = 30.0, PRE_SUBTROP_WIDTH = 9.0;
 constexpr double PRE_DIURNAL_LAND = 5.0;   // K half-swing, deep interior; coasts less
 constexpr double PRE_DIURNAL_SEA = 0.5;
-constexpr double PRE_STORM_SAT = 0.4;      // how much sooner a storm-track cell rains (see BELT_STORM)
+constexpr double PRE_STORM_SAT = 0.25;     // how much sooner a storm-track cell rains (see BELT_STORM; 0.4 gave Spain 8 mm/day)
 struct Prescribed {
     std::vector<float> cont;    // continentality: 0 at sea, 1 deep in a continent
     std::vector<float> wide;    // the same on the continent scale (see PRE_MONSOON_KM)
+    std::vector<float> dEast, dWest;  // sea cells: km to the nearest land eastward / westward along the row
+    std::vector<float> dUpwind;       // land cells: km to the sea upwind (west in the westerlies, east in the trades)
     std::vector<float> lonDeg, latDeg;
     // Zonal targets on |lat|, knots every 15 degrees from the equator to the
     // pole. Means are annual; amplitudes are the seasonal half-swing, the
@@ -738,8 +761,8 @@ struct Prescribed {
     // climate, and continentality mixes between them -- mean and swing
     // both, since a maritime coast is warmer than the interior in the
     // annual mean as well as flatter through the year.
-    static constexpr double LAND_MEAN[7] = {26.0, 25.0, 20.0, 8.0, -8.0, -24.0, -36.0};
-    static constexpr double LAND_AMP[7] = {1.5, 5.0, 12.0, 19.0, 28.0, 24.0, 16.0};
+    static constexpr double LAND_MEAN[7] = {26.0, 25.0, 21.0, 13.0, -4.0, -22.0, -36.0};
+    static constexpr double LAND_AMP[7] = {1.5, 5.0, 12.0, 15.0, 24.0, 24.0, 16.0};
     static constexpr double SEA_MEAN[7] = {27.5, 26.5, 21.0, 13.0, 3.0, -10.0, -18.0};
     static constexpr double SEA_AMP[7] = {1.0, 1.5, 4.0, 5.5, 6.0, 12.0, 16.0};
     // The belts on latitude relative to the shifted ITCZ, knots every 10
@@ -789,6 +812,35 @@ struct Prescribed {
         }
         for (int i = 0; i < W * H; i++)
             cont[i] = water[i] ? 0.0f : (float)(1.0 - std::exp(-d[i] / PRE_CONT_KM));
+        // Along each row: how far a sea cell is from land to its east and
+        // west, and how far a land cell is from the sea upwind of it.
+        dEast.assign(W * H, 1e9f); dWest.assign(W * H, 1e9f); dUpwind.assign(W * H, 1e9f);
+        for (int y = 0; y < H; y++) {
+            double dxKm = dyKm * 2.0 * std::max(std::cos((double)latRad[y * W]), 0.05);
+            double alat = std::fabs(latRad[y * W] * 180.0 / 3.14159265);
+            // westerlies above 32 degrees, trades below 28, a blend between
+            double west = std::clamp((alat - 28.0) / 4.0, 0.0, 1.0);
+            for (int x = 0; x < W; x++) {
+                int i = y * W + x;
+                if (water[i]) {
+                    for (int k = 1; k < W; k++) {
+                        if (!water[y * W + (x + k) % W]) { dEast[i] = (float)(k * dxKm); break; }
+                    }
+                    for (int k = 1; k < W; k++) {
+                        if (!water[y * W + (x - k + W) % W]) { dWest[i] = (float)(k * dxKm); break; }
+                    }
+                } else {
+                    double dw = 1e9, de = 1e9;
+                    for (int k = 1; k < W; k++) {
+                        if (water[y * W + (x - k + W) % W]) { dw = k * dxKm; break; }
+                    }
+                    for (int k = 1; k < W; k++) {
+                        if (water[y * W + (x + k) % W]) { de = k * dxKm; break; }
+                    }
+                    dUpwind[i] = (float)(west * dw + (1.0 - west) * de);
+                }
+            }
+        }
         wide.assign(W * H, 0.0f);
         for (int i = 0; i < W * H; i++)
             wide[i] = water[i] ? 0.0f : (float)(1.0 - std::exp(-d[i] / PRE_MONSOON_KM));
@@ -812,13 +864,30 @@ struct Prescribed {
         double peak = (water ? 230.0 : 200.0) + (lat < 0 ? 182.5 : 0.0);
         double phase = std::cos(2 * 3.14159265 * (doy - peak) / 365.0);
         double mean, amp;
+        auto band = [](double a, double lo, double hi) { // 1 inside lo..hi, fading over 5 degrees
+            return std::clamp((a - lo) / 5.0 + 1.0, 0.0, 1.0) * std::clamp((hi - a) / 5.0 + 1.0, 0.0, 1.0);
+        };
         if (water) {
             mean = knots(SEA_MEAN, 7, 15.0, alat);
             amp = knots(SEA_AMP, 7, 15.0, alat);
+            // the currents (see PRE_UPWELL_K)
+            mean += PRE_UPWELL_K * std::exp(-dEast[i] / PRE_UPWELL_KM) * band(alat, 8, 32) +
+                    PRE_WBC_K * std::exp(-dWest[i] / PRE_WBC_KM) * band(alat, 25, 45) +
+                    PRE_DRIFT_K * std::exp(-dEast[i] / PRE_DRIFT_KM) * band(alat, 45, 65);
         } else {
             double c = cont[i];
-            mean = (1 - c) * knots(SEA_MEAN, 7, 15.0, alat) + c * knots(LAND_MEAN, 7, 15.0, alat);
-            amp = (1 - c) * (knots(SEA_AMP, 7, 15.0, alat) + 2.0) + c * knots(LAND_AMP, 7, 15.0, alat);
+            // the mean follows the sea upwind (see PRE_UPWIND_KM), the
+            // swing the nearest sea
+            double cm = 1.0 - std::exp(-dUpwind[i] / PRE_UPWIND_KM);
+            double seaMean = knots(SEA_MEAN, 7, 15.0, alat);
+            // and a west coast in the westerlies gets the drift's warmth too
+            double west = std::clamp((alat - 28.0) / 4.0, 0.0, 1.0);
+            seaMean += west * PRE_DRIFT_K * band(alat, 45, 65);
+            mean = (1 - cm) * seaMean + cm * knots(LAND_MEAN, 7, 15.0, alat);
+            // the swing too: maritime damping comes with air that has been
+            // over the sea, and New York's air has not
+            amp = (1 - cm) * (knots(SEA_AMP, 7, 15.0, alat) + 1.0) + cm * knots(LAND_AMP, 7, 15.0, alat);
+            (void)c;
         }
         double T = mean + amp * phase;
         if (!water) T -= PRE_LAPSE * std::max(elevM, 0.0) / 1000.0;
@@ -838,7 +907,7 @@ struct Prescribed {
     // 0.005 m/s here and make 6 mm/day: the storm tracks lift as hard.
     // Earth's mean storm track is at 45; put at 50-60 the rain landed on
     // the taiga and the 30-45 band stayed tan.
-    static constexpr double BELT_W[10] = {0.0, 0.0, -0.002, -0.002, 0.004, 0.006, 0.003, 0.001, 0.0, -0.001};
+    static constexpr double BELT_W[10] = {0.0, 0.0, -0.002, -0.002, 0.003, 0.004, 0.002, 0.001, 0.0, -0.001};
     // Storminess: how much of a cell the eddies saturate ahead of the
     // mean. The rain rule lets part of a cell rain before the whole is
     // saturated (RAIN_FRAC); along the storm tracks that part is bigger,
@@ -2199,6 +2268,23 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                          bool verbose = false, void (*progress)(int day, int totalDays) = nullptr) {
     Model m;
     m.init(cp, seaLevel, rot, offset, pf, hy);
+    // PROBE: the painted climate's ingredients at named places, when asked
+    // (HH_DEBUG_PRE in the environment), for checking the rules by hand.
+    if (PRESCRIBED && std::getenv("HH_DEBUG_PRE")) {
+        struct Place { const char* name; double lat, lon; };
+        static const Place PL[] = {{"Berlin", 52.5, 13.4}, {"Madrid", 40.4, -3.7}, {"Lima", -12.0, -77.0},
+                                   {"Delhi", 28.6, 77.2}, {"Kansas", 38.5, -98.0}, {"Bergen", 60.4, 5.3},
+                                   {"Chicago", 41.9, -87.6}, {"Tehran", 35.7, 51.4}, {"Beijing", 39.9, 116.4},
+                                   {"Lisbon", 38.7, -9.1}, {"New York", 40.7, -74.0}};
+        for (const Place& q : PL) {
+            int x = (int)((q.lon + 180.0) / 360.0 * W) % W, y = std::clamp((int)((q.lat + 90.0) / 180.0 * H), 0, H - 1);
+            int i = y * W + x;
+            fprintf(stderr, "PRE %-9s water %d elev %5.0f cont %.2f wide %.2f dUpwind %6.0f dEast %6.0f dWest %6.0f | T jan %5.1f jul %5.1f\n",
+                    q.name, (int)m.water[i], m.elev[i], m.pre.cont[i], m.pre.wide[i], m.pre.dUpwind[i],
+                    m.pre.dEast[i], m.pre.dWest[i], m.pre.surfaceT(i, m.water[i] != 0, m.elev[i], 15.0, 12.0),
+                    m.pre.surfaceT(i, m.water[i] != 0, m.elev[i], 200.0, 12.0));
+        }
+    }
     Climatology c;
     c.elev.assign(m.elev.begin(), m.elev.end());
     std::vector<double> dayMin(W * H), dayMax(W * H);

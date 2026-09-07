@@ -402,6 +402,10 @@ int main(int argc, char** argv) {
                     {"W Europe", -5, 15, 44, 54},            {"E Europe", 25, 45, 48, 56},
                     {"C Siberia", 90, 120, 55, 65},          {"India", 74, 84, 18, 26},
                     {"Australia int", 125, 140, -30, -22},   {"Congo", 15, 28, -5, 3},
+                    {"Spain", -8, 0, 37, 43},                {"C Europe", 5, 20, 46, 52},
+                    {"Iran", 50, 60, 28, 36},                {"N China", 105, 120, 32, 40},
+                    {"S China", 105, 120, 22, 30},           {"Peru coast", -80, -72, -25, -6},
+                    {"Sahel", -10, 20, 10, 17},              {"Scandinavia", 5, 25, 58, 66},
                 };
                 static const char* SN2[4] = {"DJF", "MAM", "JJA", "SON"};
                 // PROBE: the cells around the US Southeast, elevation and
