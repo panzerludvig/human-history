@@ -736,6 +736,13 @@ inline bool QG2GEO = false;
 // computed here from the mirrored column, the rain and the vapour come
 // back by nearest mesh cell.
 inline bool WATER2 = false;
+// NOTHING PAINTED BUT THE LAND (decision of 2026-09-08): with PRESCRIBED
+// off, the painted climate may set the state once, at the first hour, as
+// the initial guess every climate model starts from, and after that no
+// climate field is set by anything but the equations. The physics path
+// (see PRESCRIBED for what it is), the mesh weather for the wind, the
+// two-layer water on the mesh. sweep.exe earth 0 physgeo 1.
+inline bool PAINT_INIT = true;
 constexpr int DYN2_SUBSTEPS = 30;   // of dyn2::DT, per hour
 constexpr double PRE_LAPSE = 6.5;          // K/km on the model's smoothed elevation
 constexpr double PRE_CONT_KM = 500.0;      // e-folding of continentality with distance from the sea: 500 km inland is already continental
@@ -1110,13 +1117,14 @@ struct Model {
     bool qgInit = false;
     qg2geo::Model qgg;                 // the same on the geodesic grid (see QG2GEO)
     bool qggInit = false;
+    bool painted = false;              // the initial state has been painted (see PAINT_INIT)
     std::vector<int> meshOfCell;       // nearest mesh cell for each cell here
     std::vector<int> cellOfMesh;       // and the cell here under each mesh cell
     std::vector<double> qggT;          // the mesh's near-surface temperature
     water2::Model w2;                  // the two-layer water on the mesh (see WATER2)
     std::vector<float> qggElev; std::vector<unsigned char> qggWater;
-    std::vector<double> evapBuf, wUpBuf;   // this grid's evaporation and painted ascent, for the mesh
-    std::vector<double> w2Evap, w2Wup;     // the same averaged onto the mesh
+    std::vector<double> evapBuf, wUpBuf, wConvBuf;   // this grid's evaporation, large-scale and convective ascent, for the mesh
+    std::vector<double> w2Evap, w2Wup, w2Conv;         // the same averaged onto the mesh
     std::vector<int> meshCount;
     bool d2init = false;
     std::vector<double> tnsBuf;
@@ -1241,7 +1249,7 @@ struct Model {
         nIce.assign(W * H, 0.0);
         anomA.assign(W * H, 0.0);
         anomB.assign(W * H, 0.0);
-        if (PRESCRIBED) pre.init(water, latRad);
+        if (PRESCRIBED || PAINT_INIT) pre.init(water, latRad);
         evapAcc.assign(W * H, 0.0);
         rainAcc.assign(W * H, 0.0);
         madeAcc.assign(W * H, 0.0);
@@ -1497,6 +1505,18 @@ struct Model {
         }
         std::swap(u, nu2);
         std::swap(v, nv2);
+        if (QG2GEO && qggInit) {
+            // The mesh weather's wind is the wind poleward of the tropics
+            // (see QG2GEO): this layer's own momentum stands only where the
+            // QG approximation does not, and the heat rides the storms.
+            for (int i = 0; i < W * H; i++) {
+                double la = std::fabs(latRad[i] * 180.0 / 3.14159265);
+                double w = std::clamp((la - qg2geo::QG_EQ) / QG2_BLEND_DEG, 0.0, 1.0);
+                int j = meshOfCell[i];
+                u[i] = (1 - w) * u[i] + w * qgg.u2[j];
+                v[i] = (1 - w) * v[i] + w * qgg.v2[j];
+            }
+        }
         std::swap(hP, nhP);
         std::swap(hT, nhT);
         polarFilter(u, true);
@@ -1515,6 +1535,11 @@ struct Model {
     void prescribeHour(double doy, double hour) {
         double dx0 = 2 * 3.14159265 * R_EARTH / W;
         double dy = 3.14159265 * R_EARTH / H;
+        // The painting: every hour when PRESCRIBED, once as the initial
+        // state otherwise (see PAINT_INIT). The dynamics hooks below run
+        // either way.
+        if (PRESCRIBED || (PAINT_INIT && !painted)) {
+        painted = true;
 #pragma omp parallel for
         for (int i = 0; i < W * H; i++) {
             T[i] = pre.surfaceT(i, water[i] != 0, elev[i], doy, hour);
@@ -1578,6 +1603,7 @@ struct Model {
             }
         }
         for (int x = 0; x < W; x++) u[idx(x, 0)] = v[idx(x, 0)] = u[idx(x, H - 1)] = v[idx(x, H - 1)] = 0.0;
+        } // the painting
         if (DYN2) {
             // The two-level atmosphere makes the wind instead (see DYN2):
             // its levels are relaxed toward the painted near-surface air,
@@ -1718,18 +1744,18 @@ struct Model {
             }
             if (WATER2) {
                 int M = qgg.N;
-                if (evapBuf.empty()) { evapBuf.assign(W * H, 0.0); wUpBuf.assign(W * H, 0.0); w2Evap.assign(M, 0.0); w2Wup.assign(M, 0.0); }
+                if (evapBuf.empty()) { evapBuf.assign(W * H, 0.0); wUpBuf.assign(W * H, 0.0); wConvBuf.assign(W * H, 0.0); w2Evap.assign(M, 0.0); w2Wup.assign(M, 0.0); w2Conv.assign(M, 0.0); }
                 if (!w2.started) w2.init(qgg, qggElev, qggWater);
                 // last hour's evaporation and painted ascent, averaged over
                 // the cells under each mesh cell
-                std::fill(w2Evap.begin(), w2Evap.end(), 0.0); std::fill(w2Wup.begin(), w2Wup.end(), 0.0);
-                for (int i = 0; i < W * H; i++) { int j = meshOfCell[i]; w2Evap[j] += evapBuf[i]; w2Wup[j] += wUpBuf[i]; }
+                std::fill(w2Evap.begin(), w2Evap.end(), 0.0); std::fill(w2Wup.begin(), w2Wup.end(), 0.0); std::fill(w2Conv.begin(), w2Conv.end(), 0.0);
+                for (int i = 0; i < W * H; i++) { int j = meshOfCell[i]; w2Evap[j] += evapBuf[i]; w2Wup[j] += wUpBuf[i]; w2Conv[j] += wConvBuf[i]; }
                 for (int j = 0; j < M; j++) {
-                    if (meshCount[j] > 0) { w2Evap[j] /= meshCount[j]; w2Wup[j] /= meshCount[j]; }
-                    else { w2Evap[j] = evapBuf[cellOfMesh[j]]; w2Wup[j] = wUpBuf[cellOfMesh[j]]; }
+                    if (meshCount[j] > 0) { w2Evap[j] /= meshCount[j]; w2Wup[j] /= meshCount[j]; w2Conv[j] /= meshCount[j]; }
+                    else { w2Evap[j] = evapBuf[cellOfMesh[j]]; w2Wup[j] = wUpBuf[cellOfMesh[j]]; w2Conv[j] = wConvBuf[cellOfMesh[j]]; }
                 }
                 for (int j = 0; j < M; j++) qggT[j] = Tb[cellOfMesh[j]];
-                w2.setInputs(qggT, w2Evap, w2Wup);
+                w2.setInputs(qggT, w2Evap, w2Wup, w2Conv);
                 for (int k = 0; k < (int)(DT / qg2geo::DT); k++) { w2.beginStep(); qgg.step(qg2geo::DT); w2.step(qg2geo::DT); }
             } else {
                 for (int k = 0; k < (int)(DT / qg2geo::DT); k++) qgg.step(qg2geo::DT);
@@ -1778,8 +1804,8 @@ struct Model {
     }
 
     void step(double doy, double hour) {
-        if (PRESCRIBED) prescribeHour(doy, hour);
-        double dec = 23.5 * 3.14159265 / 180.0 * std::cos(2 * 3.14159265 * (doy - 171.0) / 365.0);
+        if (PRESCRIBED || PAINT_INIT || DYN2 || QG2 || QG2GEO) prescribeHour(doy, hour);
+        double dec =23.5 * 3.14159265 / 180.0 * std::cos(2 * 3.14159265 * (doy - 171.0) / 365.0);
         double dx0 = 2 * 3.14159265 * R_EARTH / W;   // m at equator
         double dy = 3.14159265 * R_EARTH / H;
 
@@ -2380,7 +2406,7 @@ struct Model {
                     // mirrors its mesh cell: the column for radiation and
                     // humidity, the hour's rain, and the evaporation and
                     // painted ascent it computed go to the mesh next hour.
-                    evapBuf[i] = evap; wUpBuf[i] = wUp;
+                    evapBuf[i] = evap; wUpBuf[i] = wUp - wConv; wConvBuf[i] = wConv;
                     int j = meshOfCell[i];
                     double rain = w2.rainHour[j];
                     double col = w2.wl[j] + w2.wu[j];

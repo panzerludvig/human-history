@@ -70,7 +70,8 @@ struct Model {
     std::vector<double> wl, wu;                 // mm, the two layers' vapour
     std::vector<double> capL, capU;             // mm
     std::vector<double> evapIn;                 // mm per hour, into the lower layer
-    std::vector<double> wPaint;                 // m/s, the painted ascent for the tropics
+    std::vector<double> wPaint;                 // m/s, the large-scale ascent this grid computed, used inside the tropics
+    std::vector<double> wConvIn;                // m/s, the convective ascent from surface heating, used everywhere
     std::vector<double> elev;                   // m, the real terrain
     std::vector<unsigned char> water;
     std::vector<double> psicPrev, wIface, rainHour, rainLHour, rainUHour, liftHour, tmpL, tmpU;
@@ -78,19 +79,20 @@ struct Model {
 
     void init(const qg2geo::Model& model, const std::vector<float>& elevMesh, const std::vector<unsigned char>& waterMesh) {
         qg = &model; N = qg->N;
-        for (auto* v : {&wl, &wu, &capL, &capU, &evapIn, &wPaint, &elev, &psicPrev, &wIface, &rainHour, &rainLHour, &rainUHour, &liftHour, &tmpL, &tmpU})
+        for (auto* v : {&wl, &wu, &capL, &capU, &evapIn, &wPaint, &wConvIn, &elev, &psicPrev, &wIface, &rainHour, &rainLHour, &rainUHour, &liftHour, &tmpL, &tmpU})
             v->assign(N, 0.0);
         water = waterMesh;
         for (int i = 0; i < N; i++) elev[i] = std::max((double)elevMesh[i], 0.0);
     }
 
     // once an hour, from the painted fields
-    void setInputs(const std::vector<double>& tbMesh, const std::vector<double>& evapMesh, const std::vector<double>& wUpMesh) {
+    void setInputs(const std::vector<double>& tbMesh, const std::vector<double>& evapMesh, const std::vector<double>& wUpMesh, const std::vector<double>& wConvMesh) {
         for (int i = 0; i < N; i++) {
             capL[i] = LOWER_SHARE * capOf(tbMesh[i] + BL_LAPSE);
             capU[i] = UPPER_SHARE * capOf(tbMesh[i] + BL_LAPSE - UPPER_DT);
             evapIn[i] = evapMesh[i];
             wPaint[i] = wUpMesh[i];
+            wConvIn[i] = wConvMesh[i];
         }
         if (!started) {
             for (int i = 0; i < N; i++) { wl[i] = 0.5 * capL[i]; wu[i] = 0.3 * capU[i]; }
@@ -119,7 +121,12 @@ struct Model {
             geodesic::D3 gz = geodesic::grad(g, elev, i, R);
             double wt = std::clamp(geodesic::dot(qg->V2[i], gz), -W_TERRAIN_MAX, W_TERRAIN_MAX);
             double t = qg->trop[i];
-            wIface[i] = (1.0 - t) * wq + t * wPaint[i] + wt;
+            // Convection from the surface's heating lifts everywhere -- it
+            // is what rains on a summer continent, and confined to the
+            // tropics it left every northern continent 10-15 K too hot with
+            // 0.1-0.4 mm/day of summer rain. The QG lift is the large-scale
+            // ascent outside the tropics; inside, this grid's own.
+            wIface[i] = wConvIn[i] + wt + (1.0 - t) * wq + t * wPaint[i];
         }
         // advection, upwind on the corner flux
 #pragma omp parallel for
