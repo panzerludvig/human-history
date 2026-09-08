@@ -11,6 +11,7 @@
 #include "hydrology.h"
 #include "dynamics2.h"
 #include "qg2.h"
+#include "qg2geo.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -723,6 +724,11 @@ inline bool DYN2 = false;
 // equatorward, blended across the channel's edge.
 inline bool QG2 = false;
 constexpr double QG2_BLEND_DEG = 6.0;   // degrees over which the QG wind fades into the painted belts
+// THE SAME WEATHER ON THE GEODESIC GRID (qg2geo.h): one global domain,
+// sampled onto the mesh from this grid's painted fields each hour and
+// sampled back by nearest cell for the water. The lat-lon QG2 stays as
+// the comparison until this one beats it.
+inline bool QG2GEO = false;
 constexpr int DYN2_SUBSTEPS = 30;   // of dyn2::DT, per hour
 constexpr double PRE_LAPSE = 6.5;          // K/km on the model's smoothed elevation
 constexpr double PRE_CONT_KM = 500.0;      // e-folding of continentality with distance from the sea: 500 km inland is already continental
@@ -1095,6 +1101,11 @@ struct Model {
     dyn2::Model d2;                    // the two-level dynamics (see DYN2)
     qg2::Model qg;                     // the two-layer QG weather (see QG2)
     bool qgInit = false;
+    qg2geo::Model qgg;                 // the same on the geodesic grid (see QG2GEO)
+    bool qggInit = false;
+    std::vector<int> meshOfCell;       // nearest mesh cell for each cell here
+    std::vector<int> cellOfMesh;       // and the cell here under each mesh cell
+    std::vector<double> qggT;          // the mesh's near-surface temperature
     bool d2init = false;
     std::vector<double> tnsBuf;
     static void d2Filter(std::vector<double>& f, void* ctx) { ((Model*)ctx)->polarFilter(f, false); }
@@ -1645,6 +1656,82 @@ struct Model {
                 v[i] = (1 - w) * v[i] + w * qg.v2[i];
             }
             qg.bank();
+        }
+        if (QG2GEO) {
+            // The mesh weather (see QG2GEO): the painted near-surface air,
+            // reduced to sea level, goes onto the mesh by the cell under
+            // each mesh cell; the lower layer's wind comes back by the
+            // nearest mesh cell and replaces the belts poleward of the
+            // tropics, fading in over QG2_BLEND_DEG.
+            if (tnsBuf.empty()) tnsBuf.assign(W * H, 0.0);
+            for (int i = 0; i < W * H; i++)
+                tnsBuf[i] = T[i] - (water[i] ? 1.5 : 2.0) + (water[i] ? 0.0 : 6.5 * std::max((double)elev[i], 0.0) / 1000.0);
+            auto dirOf = [&](int i) {
+                double la = latRad[i], lo = ((i % W) + 0.5) / W * 2 * 3.14159265 - 3.14159265;
+                return geodesic::D3{std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la)};
+            };
+            if (!qggInit) {
+                geodesic::Grid probe = geodesic::build(qg2geo::LEVEL);
+                int M = probe.size();
+                cellOfMesh.assign(M, 0);
+                std::vector<float> mElev(M, 0.0f); std::vector<unsigned char> mWater(M, 1);
+                for (int j = 0; j < M; j++) {
+                    const geodesic::D3& c = probe.c[j];
+                    double la = std::asin(std::clamp(c.z, -1.0, 1.0)), lo = std::atan2(c.y, c.x);
+                    int x = std::clamp((int)((lo + 3.14159265) / (2 * 3.14159265) * W), 0, W - 1);
+                    int y = std::clamp((int)((la / 3.14159265 + 0.5) * H), 0, H - 1);
+                    cellOfMesh[j] = idx(x, y);
+                    mElev[j] = elev[cellOfMesh[j]]; mWater[j] = water[cellOfMesh[j]];
+                }
+                meshOfCell.assign(W * H, 0);
+#pragma omp parallel for
+                for (int i = 0; i < W * H; i++) {
+                    geodesic::D3 d = dirOf(i);
+                    int best = 0; double bd = -2;
+                    for (int j = 0; j < M; j++) { double t = geodesic::dot(d, probe.c[j]); if (t > bd) { bd = t; best = j; } }
+                    meshOfCell[i] = best;
+                }
+                qgg.init(mElev, mWater);
+                qggT.assign(M, 0.0);
+                for (int j = 0; j < M; j++) qggT[j] = tnsBuf[cellOfMesh[j]];
+                qgg.setTargets(qggT, true);
+                for (int j = 0; j < M; j++) qgg.q2[j] += 1e-6 * std::sin(5.0 * qgg.lon[j] + 0.7 * qgg.lat[j] * 180 / 3.14159265);
+                qggInit = true;
+            } else {
+                for (int j = 0; j < qgg.N; j++) qggT[j] = tnsBuf[cellOfMesh[j]];
+                qgg.setTargets(qggT, false);
+            }
+            for (int k = 0; k < (int)(DT / qg2geo::DT); k++) qgg.step(qg2geo::DT);
+            if (std::getenv("HH_QG_DEBUG")) {
+                static int qgHours = 0; qgHours++;
+                double m1 = 0, m2 = 0; int bad = -1, i1 = 0, i2 = 0;
+                for (int j = 0; j < qgg.N; j++) {
+                    if (!std::isfinite(qgg.u2[j]) || !std::isfinite(qgg.u1[j])) { bad = j; break; }
+                    double a1 = geodesic::len(qgg.V1[j]), a2 = geodesic::len(qgg.V2[j]);
+                    if (a1 > m1) { m1 = a1; i1 = j; }
+                    if (a2 > m2) { m2 = a2; i2 = j; }
+                }
+                if (bad >= 0) { fprintf(stderr, "QG non-finite at hour %d, mesh cell %d (lat %.0f)\n", qgHours, bad, qgg.lat[bad] * 180 / 3.14159265); std::exit(1); }
+                if (qgHours % 24 == 0) {
+                    double zn = 0, zs = 0, an = 0, as = 0, en = 0, es = 0;
+                    for (int j = 0; j < qgg.N; j++) {
+                        double la = qgg.lat[j] * 180 / 3.14159265;
+                        if (la > 40 && la < 55) { zn += qgg.u2[j] * qgg.g.area[j]; en += qgg.u1[j] * qgg.g.area[j]; an += qgg.g.area[j]; }
+                        if (la < -40 && la > -55) { zs += qgg.u2[j] * qgg.g.area[j]; es += qgg.u1[j] * qgg.g.area[j]; as += qgg.g.area[j]; }
+                    }
+                    fprintf(stderr, "QG day %d |V up| %.1f at lat %.0f  |V low| %.1f at lat %.0f  %d iterations  u 40-55N low %.1f up %.1f  S low %.1f up %.1f\n",
+                            qgHours / 24, m1, qgg.lat[i1] * 180 / 3.14159265, m2, qgg.lat[i2] * 180 / 3.14159265, qgg.solveIterations,
+                            zn / an, en / an, zs / as, es / as);
+                }
+            }
+            for (int i = 0; i < W * H; i++) {
+                double la = std::fabs(latRad[i] * 180.0 / 3.14159265);
+                double w = std::clamp((la - qg2geo::QG_EQ) / QG2_BLEND_DEG, 0.0, 1.0);
+                int j = meshOfCell[i];
+                u[i] = (1 - w) * u[i] + w * qgg.u2[j];
+                v[i] = (1 - w) * v[i] + w * qgg.v2[j];
+            }
+            qgg.bank();
         }
     }
 
@@ -2570,6 +2657,18 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         c.dbgRH = rh / wsum;
     }
     c.isWater.assign(m.water.begin(), m.water.end());
+    if (QG2GEO && m.qgg.hoursBanked > 0) {
+        double n = m.qgg.hoursBanked;
+        c.d2u1.assign(W * H, 0.0f); c.d2u2.assign(W * H, 0.0f); c.d2ps.assign(W * H, 0.0f);
+        c.d2psSd.assign(W * H, 0.0f); c.d2eke.assign(W * H, 0.0f);
+        for (int i = 0; i < W * H; i++) {
+            int j = m.meshOfCell[i];
+            c.d2u1[i] = (float)(m.qgg.u2Acc[j] / n);
+            c.d2u2[i] = (float)(m.qgg.u1Acc[j] / n);
+            c.d2ps[i] = (float)(m.qgg.psiAcc[j] / n * 1e-4 + 1e5);
+            c.d2eke[i] = (float)(m.qgg.ekeAcc[j] / n);
+        }
+    }
     if (QG2 && m.qg.hoursBanked > 0) {
         double n = m.qg.hoursBanked;
         c.d2u1.assign(W * H, 0.0f); c.d2u2.assign(W * H, 0.0f); c.d2ps.assign(W * H, 0.0f);
