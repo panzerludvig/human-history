@@ -10,6 +10,9 @@ Found that the geodesic grid built on 2026-09-02 (`src/geodesic.h`, an icosahedr
 **The atmosphere is redone on the geodesic grid**
 Decided by the user on seeing the history. The lat-lon grid's polar singularity has cost a fix per week since the model began, and the QG model's channels, walls, taper and polar filter are all consequences of it. What has to be rebuilt is the discretisation, not the physics: the painted fields do not depend on the grid, the water transport is advection, and the QG model needs a mesh elliptic solver in place of its Fourier-and-tridiagonal inversion.
 
+**The port, the same day**
+The elliptic solver (conjugate gradient with a coarse level) and the QG core went onto the mesh and ran a coupled Earth year stable at the first attempt. Four Earth years of target work followed; the one that mattered was replacing the single f0 in the thermal wind with the local f. Details and the open items in [[Technical/Geodesic Grid]].
+
 **One working branch, listed in the vault**
 Work that is neither on the working branch nor in the vault does not exist. Any branch ahead of `main` is now listed with what it holds and whether it is merged, and that list is checked before forking.
 
