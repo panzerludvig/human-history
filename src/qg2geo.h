@@ -8,9 +8,10 @@
 // no row taper, no polar filter. The sphere is one domain.
 //
 // What stays hard is the equator, where the approximation itself fails.
-// The thermal-wind factor 1/f0 is taken as sin(lat)/sin(45) up to 45
-// degrees, so the thickness target passes through zero at the equator
-// instead of flipping sign across it, and inside the tropics the drag and
+// The thickness target is referenced to the equator's column temperature,
+// so it is zero there and the hemisphere's sign on 1/f0 flips nothing (a
+// latitude factor on 1/f0 instead had a gradient of its own that confined
+// the storms poleward of 45 degrees), and inside the tropics the drag and
 // the relaxation are strengthened so the flow there stays small and
 // bounded; the water does not use it there anyway (the belts stay painted
 // equatorward of QG_EQ, blended as before).
@@ -56,7 +57,6 @@ inline double DT = 1800.0;                  // s
 inline double TERRAIN_SCALE = 1.0;
 inline double TERRAIN_CAP = 2000.0;         // m
 inline double ANOM_SHARE = 0.6;
-inline double LAPSE_MAX = 6.5, LAPSE_PEAK_T = 15.0, LAPSE_WARM = 0.35, LAPSE_COLD = 0.18, COLUMN_MID = 2.5;
 inline double TARGET_GAIN = 1.5;
 inline double SOLVE_TOL = 1e-5;
 inline int SMOOTH_PASSES = 6;
@@ -80,9 +80,25 @@ struct Model {
     double hoursBanked = 0;
     int solveIterations = 0;
 
+    // The column's mean temperature from the near-surface air, as Earth's
+    // 1000-500 hPa thickness climatology has it (winter zonal means, the
+    // thickness divided by R ln2 / g = 20.3 m per kelvin): the tropical
+    // column is nearly uniform whatever the local surface, because deep
+    // convection sets it from the warmest sea, and the polar column is
+    // warmer than its surface under the inversion. The slope peaks near
+    // one between 3 and 15 degrees and is 0.55-0.67 either side, which is
+    // what puts the thickness gradient, and the storms, at 30-50 degrees.
+    // A lapse-rate model with a strong moist-adiabatic slope put the
+    // gradient at the polar front instead and the storm track at 60-88.
     static double columnT(double ts) {
-        double lapse = LAPSE_MAX - LAPSE_WARM * std::max(ts - LAPSE_PEAK_T, 0.0) - LAPSE_COLD * std::max(LAPSE_PEAK_T - ts, 0.0);
-        return ts - COLUMN_MID * std::max(lapse, 0.0);
+        static const double TS[] = {-40, -30, -12, 3, 15, 26, 32};
+        static const double TC[] = {-33, -27, -17, -7, 5.3, 12.7, 14.5};
+        const int n = 7;
+        if (ts <= TS[0]) return TC[0] + (ts - TS[0]) * 0.6;
+        if (ts >= TS[n - 1]) return TC[n - 1] + (ts - TS[n - 1]) * 0.3;
+        for (int k = 0; k < n - 1; k++)
+            if (ts <= TS[k + 1]) return TC[k] + (TC[k + 1] - TC[k]) * (ts - TS[k]) / (TS[k + 1] - TS[k]);
+        return TC[n - 1];
     }
 
     // elev and water per mesh cell (empty: a water world)
@@ -105,7 +121,13 @@ struct Model {
             lat[i] = std::asin(std::clamp(c.z, -1.0, 1.0));
             lon[i] = std::atan2(c.y, c.x);
             f[i] = 2 * OMEGA * c.z;
-            invF0[i] = std::clamp(c.z / s45, -1.0, 1.0) / f0;
+            // The hemisphere's sign on 1/f0. The target vanishes at the
+            // equator because its column temperature is referenced to the
+            // equator's (see setTargets), so nothing flips there; a latitude
+            // factor here instead (sin, then sin cubed) had a gradient of
+            // its own that, times a warm subtropical column, made easterly
+            // shear from 10 to 45 degrees and confined the storms poleward.
+            invF0[i] = (c.z >= 0 ? 1.0 : -1.0) / f0;
             double la = std::fabs(lat[i]) * 180.0 / PI;
             trop[i] = std::clamp((QG_EQ - la) / TROP_RAMP + 1.0, 0.0, 1.0);   // 1 inside QG_EQ - TROP_RAMP, 0 beyond QG_EQ
             geodesic::D3 z{0, 0, 1};
@@ -165,9 +187,33 @@ struct Model {
     void setTargets(const std::vector<double>& tNearSurfaceC, bool first) {
         for (int i = 0; i < N; i++) tmpB[i] = columnT(tNearSurfaceC[i]);
         zonalMean(tmpB, rhs);
+        // The thermal wind divides the temperature gradient by the local f,
+        // not the column by one f0: psi_c(lat) is the integral from the
+        // equator of (R ln2 / 2f) dT, band by band, with |f| held at its
+        // 20-degree value inside the tropics. One f0 at 45 degrees gave
+        // the subtropics 0.7 of their shear and the polar cap 1.3 times
+        // its own, and put the surface westerlies 15 degrees too far
+        // poleward. The target is zero at the equator by construction.
+        std::vector<double> zmBand(nBands, 0.0), cum(nBands, 0.0);
+        for (int b = 0; b < nBands; b++) zmBand[b] = bandN[b] > 0 ? bandSum[b] / bandN[b] : 0.0;
+        double fMin = 2 * OMEGA * std::sin(QG_EQ * PI / 180.0);
+        double coef = 0.5 * R_GAS * 0.6931 * TARGET_GAIN;
+        int eq = nBands / 2;   // the first band north of the equator
+        for (int b = eq; b < nBands; b++) {
+            double la = (-90.0 + (b + 0.5) * ZONAL_BAND) * PI / 180.0;
+            double fb = std::max(2 * OMEGA * std::sin(la), fMin);
+            double dT = b == eq ? 0.0 : zmBand[b] - zmBand[b - 1];
+            cum[b] = (b == eq ? 0.0 : cum[b - 1]) + coef * dT / fb;
+        }
+        for (int b = eq - 1; b >= 0; b--) {
+            double la = (-90.0 + (b + 0.5) * ZONAL_BAND) * PI / 180.0;
+            double fb = std::min(2 * OMEGA * std::sin(la), -fMin);
+            double dT = zmBand[b] - zmBand[b + 1];
+            cum[b] = cum[b + 1] + coef * dT / fb;
+        }
         for (int i = 0; i < N; i++) {
-            double t = rhs[i] + ANOM_SHARE * (tmpB[i] - rhs[i]);
-            psicT[i] = 0.5 * R_GAS * 0.6931 * TARGET_GAIN * t * invF0[i];
+            double fl = f[i] >= 0 ? std::max(f[i], fMin) : std::min(f[i], -fMin);
+            psicT[i] = cum[band[i]] + coef * ANOM_SHARE * (tmpB[i] - rhs[i]) * (1.0 - trop[i]) / fl;
         }
         smooth(psicT, SMOOTH_PASSES);
         if (first) {
@@ -180,18 +226,18 @@ struct Model {
     void computeQ() {
         for (int i = 0; i < N; i++) {
             q1[i] = geodesic::lap(g, psi1, i, A_EARTH) + f[i] + F * (psi2[i] - psi1[i]);
-            q2[i] = geodesic::lap(g, psi2, i, A_EARTH) + f[i] + F * (psi1[i] - psi2[i]) + invF0[i] * f0 * f0 * topo[i] / H_LAYER;
+            q2[i] = geodesic::lap(g, psi2, i, A_EARTH) + f[i] + F * (psi1[i] - psi2[i]) + (1.0 - trop[i]) * invF0[i] * f0 * f0 * topo[i] / H_LAYER;
         }
     }
 
     void invert() {
         for (int i = 0; i < N; i++) {
-            double tp = invF0[i] * f0 * f0 * topo[i] / H_LAYER;
+            double tp = (1.0 - trop[i]) * invF0[i] * f0 * f0 * topo[i] / H_LAYER;
             rhs[i] = 0.5 * (q1[i] + q2[i]) - f[i] - 0.5 * tp;
         }
         solveIterations = solver.solve(rhs, 0.0, psib, SOLVE_TOL);
         for (int i = 0; i < N; i++) {
-            double tp = invF0[i] * f0 * f0 * topo[i] / H_LAYER;
+            double tp = (1.0 - trop[i]) * invF0[i] * f0 * f0 * topo[i] / H_LAYER;
             rhs[i] = 0.5 * (q1[i] - q2[i]) - 0.5 * tp;
         }
         solveIterations += solver.solve(rhs, 2 * F, psic, SOLVE_TOL);
