@@ -4,7 +4,17 @@
 
 ---
 
-## Decision (2026-09-04): prescribe the climate, derive the rain, build weather on top
+## Decision (2026-09-08): nothing painted but the land
+
+The decision below is reversed. The terrain, generated from the plates or drawn for the Earth seed, is the only input; the painted climate may set the state once, at the first hour, as the initial guess every climate model starts from, and after that no climate field is set by anything but the equations. What changed since September 4th is the one thing the prognostic model lacked: the eddies. The quasi-geostrophic weather on the geodesic grid ([[Technical/Geodesic Grid]]) produces the storms, so the energy balance has the transport it needs.
+
+What runs (`sweep.exe earth 0 physgeo 1`): the two-band radiation, the surface balance, sea ice as a mass and the boundary layer of the prognostic rebuild; the mesh QG weather for the wind, relaxed toward the model's own temperature; the water in two layers on the mesh, lifted between them by the QG model's interface velocity, the terrain, and convection carrying surface air; the boundary layer's heat riding the mesh wind poleward of the tropics. The tropics' large-scale ascent is still the grid's own convergence and fronts, since the QG flow is not believed there.
+
+What it gives on Earth after three years of it (rain mm/day, model against Earth): the dry world right where the painting never was — Australia's interior 1.9 against 0.6 after convection was let in (0.5 before), Iran 1.7 against 0.6, Northwest Africa 2.0 against 1.2; the Midwest 2.5 against 2.5, Eastern Europe 1.3 against 1.6, the boreal belt 1.3 against 1.2, India 2.6 against 3.0; the Pacific Northwest 1.4 against 3.5 and Southeast Asia 3.2 against 5.0. Temperature is the model's own now and it is the open problem: northern summers 4 to 9 K too warm over land (the Midwest 25 against 23, Canada 25 against 16, Siberia 24 against 17), northern winters too mild inland (Canada −9 against −20, Siberia −18 against −30, the Midwest 5 against −5), the column at 92 percent humidity against Earth's 60 to 70, and the top of the atmosphere still taking in 2.5 W/m² after the spin-up year. Every one of those is an energy balance or a mixing question, which is what the model is for.
+
+---
+
+## Decision (2026-09-04, reversed above): prescribe the climate, derive the rain, build weather on top
 
 The prognostic rebuild (branch `climate-rebuild`, then `conserving-atmosphere`) is parked. What it bought: radiation in two layers and two bands, sea ice as a mass, a conserving energy budget, and a zonal probe that matches Earth's top-of-atmosphere budget at every latitude. What it could not buy: the mid-latitudes. Winter continents, storm tracks and westerlies are made by baroclinic eddies — travelling lows that grow on the temperature gradient, lift warm air poleward over the oceans and sink cold air over the winter continents. This model has no eddies, and every proxy for them traded a cold winter continent against the westerlies or the Antarctic. Eddies need a second dynamic layer and a timestep an order of magnitude shorter. That is months of work whose product is weather that would still need to be made legible.
 

@@ -13,6 +13,9 @@ Decided by the user on seeing the history. The lat-lon grid's polar singularity 
 **The port, the same day**
 The elliptic solver (conjugate gradient with a coarse level) and the QG core went onto the mesh and ran a coupled Earth year stable at the first attempt. Four Earth years of target work followed; the one that mattered was replacing the single f0 in the thermal wind with the local f. Details and the open items in [[Technical/Geodesic Grid]].
 
+**Nothing painted but the land**
+Decided by the user on learning that the prescribed mode paints the surface and air temperatures, the ice and the belt wind again every hour, and that the QG model relaxed toward a thickness made from that hour's painting. The painted climate may set the state once, at hour zero, as the initial guess every climate model starts from; after that only the equations. The tectonic plates stay, being land formation. Implemented the same day as `PAINT_INIT`: the physics path's radiation, surface balance, ice and boundary layer; the mesh QG weather with its target taken from the model's own temperature; the water in two layers on the mesh, with the boundary layer's heat riding the mesh wind. Three Earth years of it followed. The first ran stable and had the deserts right where the painting never did (Australia's interior 0.5 mm/day against 0.6) and every northern continent 10-15 K too hot in summer; the cause was convection, first confined to the tropics, then judged by the layer's column saturation where a 33-degree column holds 120 mm. Convection now lifts surface air into the upper layer everywhere. The state after that is in [[Design/Weather]].
+
 **One working branch, listed in the vault**
 Work that is neither on the working branch nor in the vault does not exist. Any branch ahead of `main` is now listed with what it holds and whether it is merged, and that list is checked before forking.
 
