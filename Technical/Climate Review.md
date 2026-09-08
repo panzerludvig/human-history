@@ -2,7 +2,92 @@
 
 **Status:** Implemented (the probe) — see [[Meta/Status Vocabulary]]
 
-The painted climate ([[Design/Weather]], decision of 2026-09-04) measured on the Earth template against what Earth records, region by region. The point is not to fit Earth: it is to find which rules hold and which fail, so that what survives can be trusted on any world. The probe is `sweep.exe earth`, section `THE WORLD REVIEW`; the reference figures are climatological means, rounded, from memory of standard climate atlases. The game and the sweep were confirmed to compute the same world (screenshot of the game in vegetation mode against the sweep's map, 2026-09-07), so this table is what the player sees.
+The climate measured on the Earth template against what Earth records, region by region: first the painted climate ([[Design/Weather]], decision of 2026-09-04, the survey of 2026-09-07 at the bottom), then the equations alone (decision of 2026-09-08, the survey below). The point is not to fit Earth: it is to find which rules hold and which fail, so that what survives can be trusted on any world. The probe is `sweep.exe earth`, section `THE WORLD REVIEW`; the reference figures are climatological means, rounded, from memory of standard climate atlases. The game and the sweep were confirmed to compute the same world (screenshot of the game in vegetation mode against the sweep's map, 2026-09-07), so this table is what the player sees.
+
+## Survey of 2026-09-08: the equations alone
+
+The all-physics mode ([[Design/Weather]], decision of 2026-09-08): painted once at hour zero, then radiation, surface balance, ice, the boundary layer, the mesh QG weather and the two-layer water, with no ocean transport. `sweep.exe earth 0 physgeo 1`, commit `b12302b`, one spin-up year and one measured. Reference figures as in the table below.
+
+### The world review
+
+| Region | Rain | Earth | DJF | JJA | Jan | Earth | Jul | Earth | Cover | Earth |
+|---|---|---|---|---|---|---|---|---|---|---|
+| US Pacific NW | 1.3 | 3.5 | 1.9 | 1.3 | −1 | 3 | 26 | 17 | steppe | forest |
+| California | 1.4 | 1.2 | 2.1 | 1.0 | 8 | 10 | 28 | 20 | steppe | shrub |
+| Great Basin | 1.8 | 0.7 | 2.2 | 2.1 | 5 | −1 | 27 | 23 | steppe | steppe/desert |
+| Great Plains | 3.4 | 1.5 | 3.0 | 4.9 | 1 | −6 | 25 | 24 | forest | grass |
+| US Midwest | 2.5 | 2.5 | 3.0 | 3.5 | 5 | −5 | 26 | 23 | forest | forest |
+| US Southeast | 3.2 | 3.5 | 3.8 | 4.0 | 13 | 8 | 25 | 27 | forest | forest |
+| Canada boreal | 1.4 | 1.2 | 1.3 | 1.2 | −14 | −20 | 25 | 16 | taiga | taiga |
+| Alaska interior | 0.9 | 0.8 | 0.8 | 1.1 | −20 | −22 | 16 | 15 | taiga | taiga |
+| Mexico plateau | 3.7 | 1.2 | 3.9 | 4.1 | 15 | 12 | 24 | 24 | forest | steppe |
+| Amazon | 3.2 | 6.0 | 2.9 | 2.9 | 26 | 26 | 25 | 25 | forest | rainforest |
+| NE Brazil | 3.2 | 2.0 | 3.3 | 2.7 | 26 | 27 | 24 | 25 | forest | savanna |
+| Pampas | 3.4 | 2.5 | 4.2 | 3.1 | 25 | 23 | 14 | 9 | forest | grass |
+| Patagonia | 4.4 | 0.6 | 4.0 | 5.4 | 20 | 14 | 8 | 2 | forest | steppe |
+| Peru coast | 6.3 | 0.1 | 6.8 | 5.0 | 21 | 22 | 19 | 16 | forest | desert |
+| W Europe | 1.3 | 2.2 | 1.9 | 0.7 | −1 | 3 | 24 | 18 | steppe | forest |
+| Spain | 1.4 | 1.5 | 1.6 | 1.7 | 6 | 6 | 26 | 25 | steppe | shrub |
+| E Europe | 1.3 | 1.6 | 1.5 | 1.3 | −15 | −6 | 24 | 19 | taiga | forest |
+| Scandinavia | 0.9 | 2.0 | 1.2 | 0.5 | −14 | −6 | 13 | 15 | taiga | taiga |
+| C Siberia | 1.3 | 1.2 | 0.8 | 1.4 | −21 | −30 | 24 | 17 | taiga | taiga |
+| Arabia | 2.2 | 0.2 | 1.7 | 3.6 | 12 | 15 | 25 | 35 | savanna | desert |
+| Iran | 1.7 | 0.6 | 1.3 | 3.0 | 2 | 4 | 26 | 28 | grass | desert |
+| C Asia | 1.6 | 0.6 | 1.3 | 2.2 | −11 | −5 | 27 | 26 | grass | steppe/desert |
+| India | 2.6 | 3.0 | 2.3 | 3.9 | 14 | 20 | 26 | 29 | savanna | savanna |
+| N China | 2.8 | 1.8 | 2.3 | 4.1 | 2 | −2 | 26 | 26 | forest | forest |
+| S China | 3.1 | 4.5 | 3.9 | 3.3 | 11 | 8 | 25 | 28 | forest | forest |
+| Mongolia | 1.8 | 0.6 | 1.2 | 2.4 | −8 | −20 | 26 | 18 | taiga | steppe |
+| SE Asia | 3.4 | 5.0 | 3.3 | 4.1 | 20 | 24 | 26 | 28 | forest | rainforest |
+| Japan | 2.8 | 4.5 | 2.4 | 3.4 | 13 | 4 | 24 | 25 | forest | forest |
+| NW Africa | 2.0 | 1.2 | 1.9 | 2.9 | 7 | 10 | 26 | 27 | forest | shrub |
+| Sahara | 1.9 | 0.1 | 1.2 | 3.3 | 11 | 13 | 25 | 33 | steppe | desert |
+| Sahel | 2.5 | 1.5 | 0.9 | 3.8 | 20 | 24 | 26 | 29 | savanna | savanna |
+| Congo | 3.0 | 5.0 | 2.5 | 2.9 | 24 | 25 | 25 | 24 | savanna | rainforest |
+| E Africa | 4.5 | 2.0 | 5.1 | 4.0 | 23 | 21 | 24 | 19 | forest | savanna |
+| S Africa | 2.5 | 1.4 | 3.4 | 1.8 | 24 | 22 | 16 | 11 | shrub | steppe |
+| Australia interior | 2.0 | 0.6 | 3.2 | 1.2 | 26 | 29 | 18 | 13 | steppe | desert |
+| E Australia | 3.7 | 2.5 | 5.2 | 2.3 | 26 | 24 | 17 | 12 | steppe | forest |
+| N Australia | 2.9 | 2.5 | 3.7 | 1.7 | 26 | 29 | 24 | 24 | savanna | savanna |
+
+### The globe
+
+| Quantity | Model | Earth |
+|---|---|---|
+| Evaporation, rain (mm/day) | 2.59, 2.56 | 2.7 |
+| Column water, residence | 24.4 mm, 9.5 d | 25 mm, 9 d |
+| Column relative humidity | 90 % | 60 to 70 % |
+| Top of atmosphere, net | +2.4 W/m² | 0 |
+| Absorbed sunlight, tropics / poles | 270 / 65 W/m² | 312 / 92 |
+| Outgoing longwave, tropics / poles | 235 / 151 W/m² | 255 / 185 |
+| Poleward heat transport, peak N / S | 5.3 / 3.1 PW | 5.3 / 5.1 |
+| Surface westerlies, N / S | 1.4 to 5.3 at 51–81° / 0.5 to 1.7 at 54–62° | 3 to 6 at 40–60° / 5 to 8 at 45–60° |
+| Trades | −4 to −5 | −5 to −6 |
+| Eddy energy, N / S storm track | 20 to 24 / 5 to 8 | 30 to 60 / 30 to 60 |
+| Subtropical subsidence at 28° | −0.0005 m/s | about −0.005 |
+| Convective ascent on the equator | 0.003 m/s | 0.005 to 0.01 |
+
+### What holds
+
+- **The global water cycle.** Evaporation, rain, column water and residence time are all within five percent of Earth's, with no constant chosen to make them so.
+- **The northern storm track.** Surface westerlies, trades, eddy energy and the subtropical high are Earth-like in kind and within a few degrees in place; the northern poleward heat transport peaks at Earth's 5.3 PW.
+- **The dry places that are dry.** Alaska 0.9 against 0.8, the boreal belt 1.4 against 1.2, Siberia 1.3 against 1.2, the Midwest 2.5 against 2.5, India 2.6 against 3.0, N Australia 2.9 against 2.5, the Sahel 2.5 against 1.5. The taiga, the savannas and the Midwest's forest come out as themselves.
+- **Tropical temperature.** The Amazon, Congo and Southeast Asia sit within one degree of Earth in both seasons.
+
+### What fails, and why
+
+1. **Rain is spread too evenly: the deserts are wet and the wet places dry.** Every desert on Earth's map gets 1.5 to 2.5 mm/day here (Sahara 1.9 against 0.1, Arabia 2.2 against 0.2, the Peru coast 6.3 against 0.1, Patagonia 4.4 against 0.6, Australia's interior 2.0 against 0.6) and comes out as steppe, savanna or forest, while the wettest places get half of Earth's (Amazon 3.2 against 6.0, Congo 3.0 against 5.0, Southeast Asia 3.4 against 5.0, the Pacific Northwest 1.3 against 3.5). The lift table says why: the subtropical subsidence that makes deserts is a tenth of Earth's, because the model has no Hadley cell (the QG flow is nondivergent and the tropics' large-scale ascent is the grid's own weak convergence), and the convective ascent on the equator is half. Without descent, convection over a warm dry surface still finds the layer's mean vapour and rains it. The Peru coast adds the missing upwelling.
+2. **The southern hemisphere's storm track is weak.** Eddy energy 5 to 8 against the north's 20 to 24 and Earth's 30 to 60 in the south; surface westerlies under 2 m/s where Earth's roaring forties are 5 to 8; southern heat transport 3.1 PW against 5.1. The southern baroclinicity is made by the ocean's temperature gradient, and a slab ocean without transport has too little of it, on top of the missing subtropical jet.
+3. **Land is warm, sea is cold.** Northern land runs 4 to 9 K hot in summer (Canada 25 against 16, Siberia 24 against 17, W Europe 24 against 18) and 7 to 12 K mild in winter inland (Canada −14 against −20, Siberia −21 against −30, Mongolia −8 against −20, the Midwest 5 against −5), southern land 5 K warm in its winter; the sea's coasts are cold in winter (W Europe −1 against 3, Scandinavia −14 against −6, E Europe −15 against −6). The winter interior's warmth is the uniform subsidence deposit, 44 to 78 W/m² of free-troposphere air brought down at the dry-adiabatic gap; the coasts' cold is the absent ocean drift; the summer heat is the deserts' rain in reverse, land that rains too little for its evaporation to cool it, plus a boundary layer with no cloud shading it. The Sahara and Arabia are 8 to 10 K too cool in summer for the opposite reason: they rain.
+4. **The tropics absorb too little sunlight and emit too little.** Absorbed 270 against 312 W/m² and outgoing 235 against 255 on the equator: too much cloud or albedo in the tropics, offset by too strong a greenhouse (the column sits at 90 percent humidity). The two errors cancel in the net, which is why the tropical surplus is only 35 percent short and the northern transport still matches. The planet is still taking in 2.4 W/m² after the spin-up year, so the equilibrium is warmer than this.
+5. **Rain shadows and plateaus.** The Rockies at 47 north take 1.8 to 2.4 mm/day across both slopes and the Great Basin 1.8 against 0.7; the 47N transect shows the moisture and the rain nearly flat from the Pacific to the Atlantic. The mountains neither wring the westerlies out on their windward side nor shadow their lee, because the flow over them is 1.5 m/s in the mean and the lift the terrain makes is small against the eddies.
+
+### What to change, and in what order
+
+- **A divergent tropical circulation.** The Hadley cell is the single largest absence: it makes the deserts by subsidence, the ITCZ by convergence, the subtropical jet, and half the southern baroclinicity. The QG model cannot supply it; the two-layer shallow-water core on the mesh can, and it was the next step of the plan of 2026-09-08 before the painting came out.
+- **The ocean drift.** Wind-driven Ekman transport of the slab's heat along the mesh, with coastal upwelling: the cold eastern boundaries and their deserts, the warm western boundaries and Europe's winter, and the southern ocean's gradient.
+- **The subsidence deposit.** Let the free-troposphere air come down where the dynamics bring it down, at the rate they do, instead of everywhere at the global mean.
+- **Cloud and humidity in the tropics.** Where the 90 percent column and the 42 W/m² of missing absorbed sunlight come from, once the circulation is there to dry the subtropics.
 
 Run of 2026-09-07, branch `prescribed-climate` at the currents commit.
 
