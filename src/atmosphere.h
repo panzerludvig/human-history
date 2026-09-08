@@ -594,6 +594,7 @@ constexpr double SNOW_T = 0.5;                  // degC: colder precipitation is
 // eddy diffusivity stands in for the whole poleward heat transport, as in
 // Budyko-style energy-balance models.
 inline double KT_DIFF = 1.5e6;               // m^2/s eddy diffusion of heat
+inline double KT_BL_SHARE = 0.0;             // of KT_DIFF the boundary layer keeps when the mesh weather carries its heat (see QG2GEO)
 
 // ---------------------------------------------------------- the moving air
 //
@@ -2191,7 +2192,12 @@ struct Model {
                 // the physics and the eddies, against the mass that is
                 // actually there.
                 double hb0 = H_LAYER + hP[i];
-                double kxa = ktx, kya = kty;
+                // With the mesh weather carrying this layer's heat on its
+                // storms, the Budyko diffusion that stood in for the storms
+                // would count them twice (measured on the geodesic branch,
+                // 2026-09-02): the layer keeps KT_BL_SHARE of it.
+                double kShare = (QG2GEO && qggInit) ? KT_BL_SHARE : 1.0;
+                double kxa = ktx * kShare, kya = kty * kShare;
                 double difT = kxa * (Tb[xe] + Tb[xw] - 2 * Tb[i]) +
                               kya * (fN * (Tb[yn] - Tb[i]) + fS * (Tb[ys] - Tb[i]));
                 // The free troposphere has no wind of its own here, so the
