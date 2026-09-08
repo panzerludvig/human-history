@@ -37,6 +37,13 @@ inline double LOWER_SHARE = 0.9;     // of the saturated column that sits below 
 inline double UPPER_DT = 30.0;       // K, the upper layer's base is this much colder than the surface air
 inline double UPPER_SHARE = 0.9;     // of a column started at that temperature that sits in the layer
 inline double LIFT_SHARE = 0.26;     // vapour density at the interface over the lower layer's mean
+// Deep convection lifts SURFACE air, the moistest in the layer: 2.5 times
+// the layer's mean vapour density (the same 2.2 km scale height), ten
+// times what the interface carries. Judged by the layer's column
+// saturation instead, a 33-degree summer continent whose column could
+// hold 120 mm never rained, dried its soil, and baked: buoyancy 0.9, a
+// convective lift of 4 mm/s, and 0.3 mm/day.
+inline double SURFACE_SHARE = 2.5;
 inline double W_TERRAIN_MAX = 1.0;   // m/s, cap on the slope lift
 inline double RAIN_ONSET = 0.6;      // the sub-grid onset, as a share of saturation
 inline double RAIN_RATE = 0.03;      // per hour, of the capacity, at full excess
@@ -126,7 +133,7 @@ struct Model {
             // tropics it left every northern continent 10-15 K too hot with
             // 0.1-0.4 mm/day of summer rain. The QG lift is the large-scale
             // ascent outside the tropics; inside, this grid's own.
-            wIface[i] = wConvIn[i] + wt + (1.0 - t) * wq + t * wPaint[i];
+            wIface[i] = wt + (1.0 - t) * wq + t * wPaint[i];   // the large-scale lift; convection is carried separately
         }
         // advection, upwind on the corner flux
 #pragma omp parallel for
@@ -151,6 +158,11 @@ struct Model {
             double frac = std::min(std::fabs(w) * dt / qg2geo::H_LAYER, 1.0);
             if (w > 0) { double x = l * LIFT_SHARE * frac; l -= x; u += x; liftHour[i] += x; }
             else { double x = u * frac; u -= x; l += x; liftHour[i] -= x; }
+            // convection: surface air into the upper layer, which condenses it
+            if (wConvIn[i] > 0) {
+                double xc = std::min(l * SURFACE_SHARE * wConvIn[i] * dt / qg2geo::H_LAYER, 0.5 * l);
+                l -= xc; u += xc; liftHour[i] += xc;
+            }
             // evaporation
             l += evapIn[i] * hours;
             // condensation, each layer against its own saturation

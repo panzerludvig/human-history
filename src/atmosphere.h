@@ -1126,6 +1126,7 @@ struct Model {
     std::vector<double> evapBuf, wUpBuf, wConvBuf;   // this grid's evaporation, large-scale and convective ascent, for the mesh
     std::vector<double> w2Evap, w2Wup, w2Conv;         // the same averaged onto the mesh
     std::vector<int> meshCount;
+    std::vector<double> dbgBuoy, dbgSens, dbgTfmT;   // PROBE: the convection gate over land
     bool d2init = false;
     std::vector<double> tnsBuf;
     static void d2Filter(std::vector<double>& f, void* ctx) { ((Model*)ctx)->polarFilter(f, false); }
@@ -1772,6 +1773,16 @@ struct Model {
                     }
                     fprintf(stderr, "W2 day %d  30-60N: wl %.1f wu %.1f mm, rain low %.2f up %.2f mm/h, lift %.3f mm/h | global wl %.1f wu %.1f\n",
                             qgHours / 24, zw[0] / za, zw[1] / za, zw[2] / za, zw[3] / za, zw[4] / za, lw / la2, lu / la2);
+                    if (!dbgBuoy.empty()) {
+                        double b = 0, sh = 0, tf = 0, wc = 0, tt = 0, ev = 0; int n = 0;
+                        for (int i = 0; i < W * H; i++) {
+                            double la = latRad[i] * 180 / 3.14159265;
+                            if (water[i] || la < 40 || la > 60) continue;
+                            b += dbgBuoy[i]; sh += dbgSens[i]; tf += dbgTfmT[i]; wc += wConvBuf[i]; tt += T[i]; ev += evapBuf[i]; n++;
+                        }
+                        if (n) fprintf(stderr, "CONV day %d land 40-60N: T %.1f  Tf-T %.1f  sens+lat %.0f W/m2  buoy %.2f  wConv %.4f m/s  evap %.3f mm/h\n",
+                                       qgHours / 24, tt / n, tf / n, sh / n, b / n, wc / n, ev / n);
+                    }
                 }
                 for (int j = 0; j < qgg.N; j++) {
                     if (!std::isfinite(qgg.u2[j]) || !std::isfinite(qgg.u1[j])) { bad = j; break; }
@@ -2407,6 +2418,8 @@ struct Model {
                     // humidity, the hour's rain, and the evaporation and
                     // painted ascent it computed go to the mesh next hour.
                     evapBuf[i] = evap; wUpBuf[i] = wUp - wConv; wConvBuf[i] = wConv;
+                    if (dbgBuoy.empty()) { dbgBuoy.assign(W * H, 0.0); dbgSens.assign(W * H, 0.0); dbgTfmT.assign(W * H, 0.0); }
+                    dbgBuoy[i] = buoy; dbgSens[i] = sens + lFlux; dbgTfmT[i] = Tf[i] - T[i];
                     int j = meshOfCell[i];
                     double rain = w2.rainHour[j];
                     double col = w2.wl[j] + w2.wu[j];
