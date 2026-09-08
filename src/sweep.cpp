@@ -237,6 +237,7 @@ int main(int argc, char** argv) {
         if (argc >= 4 && std::string(argv[3]) == "dyn") atmosphere::DYN2 = true;
         if (argc >= 4 && std::string(argv[3]) == "qg") atmosphere::QG2 = true;
         if (argc >= 4 && std::string(argv[3]) == "geo") atmosphere::QG2GEO = true;
+        if (argc >= 4 && std::string(argv[3]) == "geow") { atmosphere::QG2GEO = true; atmosphere::WATER2 = true; }
         if (argc >= 5) atmosphere::STAT_YEARS = std::max(1, atoi(argv[4]));
         fprintf(stderr, "spin-up %d days\n", atmosphere::SPINUP_DAYS);
         atmosphere::Climatology c = atmosphere::build(cp, seaLevel, rot, offset, pf, hy, false);

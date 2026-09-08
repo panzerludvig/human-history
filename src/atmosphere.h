@@ -12,6 +12,7 @@
 #include "dynamics2.h"
 #include "qg2.h"
 #include "qg2geo.h"
+#include "water2geo.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -729,6 +730,12 @@ constexpr double QG2_BLEND_DEG = 6.0;   // degrees over which the QG wind fades 
 // sampled back by nearest cell for the water. The lat-lon QG2 stays as
 // the comparison until this one beats it.
 inline bool QG2GEO = false;
+// THE WATER IN TWO LAYERS ON THE MESH (water2geo.h), riding the two QG
+// winds, with the lift between them from the dynamics. Needs QG2GEO. The
+// lat-lon column below is then only a mirror: evaporation is still
+// computed here from the mirrored column, the rain and the vapour come
+// back by nearest mesh cell.
+inline bool WATER2 = false;
 constexpr int DYN2_SUBSTEPS = 30;   // of dyn2::DT, per hour
 constexpr double PRE_LAPSE = 6.5;          // K/km on the model's smoothed elevation
 constexpr double PRE_CONT_KM = 500.0;      // e-folding of continentality with distance from the sea: 500 km inland is already continental
@@ -1106,6 +1113,11 @@ struct Model {
     std::vector<int> meshOfCell;       // nearest mesh cell for each cell here
     std::vector<int> cellOfMesh;       // and the cell here under each mesh cell
     std::vector<double> qggT;          // the mesh's near-surface temperature
+    water2::Model w2;                  // the two-layer water on the mesh (see WATER2)
+    std::vector<float> qggElev; std::vector<unsigned char> qggWater;
+    std::vector<double> evapBuf, wUpBuf;   // this grid's evaporation and painted ascent, for the mesh
+    std::vector<double> w2Evap, w2Wup;     // the same averaged onto the mesh
+    std::vector<int> meshCount;
     bool d2init = false;
     std::vector<double> tnsBuf;
     static void d2Filter(std::vector<double>& f, void* ctx) { ((Model*)ctx)->polarFilter(f, false); }
@@ -1692,6 +1704,9 @@ struct Model {
                     meshOfCell[i] = best;
                 }
                 qgg.init(mElev, mWater);
+                qggElev = mElev; qggWater = mWater;
+                meshCount.assign(M, 0);
+                for (int i = 0; i < W * H; i++) meshCount[meshOfCell[i]]++;
                 qggT.assign(M, 0.0);
                 for (int j = 0; j < M; j++) qggT[j] = tnsBuf[cellOfMesh[j]];
                 qgg.setTargets(qggT, true);
@@ -1701,10 +1716,37 @@ struct Model {
                 for (int j = 0; j < qgg.N; j++) qggT[j] = tnsBuf[cellOfMesh[j]];
                 qgg.setTargets(qggT, false);
             }
-            for (int k = 0; k < (int)(DT / qg2geo::DT); k++) qgg.step(qg2geo::DT);
+            if (WATER2) {
+                int M = qgg.N;
+                if (evapBuf.empty()) { evapBuf.assign(W * H, 0.0); wUpBuf.assign(W * H, 0.0); w2Evap.assign(M, 0.0); w2Wup.assign(M, 0.0); }
+                if (!w2.started) w2.init(qgg, qggElev, qggWater);
+                // last hour's evaporation and painted ascent, averaged over
+                // the cells under each mesh cell
+                std::fill(w2Evap.begin(), w2Evap.end(), 0.0); std::fill(w2Wup.begin(), w2Wup.end(), 0.0);
+                for (int i = 0; i < W * H; i++) { int j = meshOfCell[i]; w2Evap[j] += evapBuf[i]; w2Wup[j] += wUpBuf[i]; }
+                for (int j = 0; j < M; j++) {
+                    if (meshCount[j] > 0) { w2Evap[j] /= meshCount[j]; w2Wup[j] /= meshCount[j]; }
+                    else { w2Evap[j] = evapBuf[cellOfMesh[j]]; w2Wup[j] = wUpBuf[cellOfMesh[j]]; }
+                }
+                for (int j = 0; j < M; j++) qggT[j] = Tb[cellOfMesh[j]];
+                w2.setInputs(qggT, w2Evap, w2Wup);
+                for (int k = 0; k < (int)(DT / qg2geo::DT); k++) { w2.beginStep(); qgg.step(qg2geo::DT); w2.step(qg2geo::DT); }
+            } else {
+                for (int k = 0; k < (int)(DT / qg2geo::DT); k++) qgg.step(qg2geo::DT);
+            }
             if (std::getenv("HH_QG_DEBUG")) {
                 static int qgHours = 0; qgHours++;
                 double m1 = 0, m2 = 0; int bad = -1, i1 = 0, i2 = 0;
+                if (WATER2 && qgHours % 24 == 0) {
+                    double zw[6] = {0, 0, 0, 0, 0, 0}, za = 0, lw = 0, lu = 0, la2 = 0;   // 30-60N: wl, wu, rainL, rainU, lift
+                    for (int j = 0; j < qgg.N; j++) {
+                        double la = qgg.lat[j] * 180 / 3.14159265, a = qgg.g.area[j];
+                        if (la > 30 && la < 60) { zw[0] += w2.wl[j] * a; zw[1] += w2.wu[j] * a; zw[2] += w2.rainLHour[j] * a; zw[3] += w2.rainUHour[j] * a; zw[4] += w2.liftHour[j] * a; za += a; }
+                        lw += w2.wl[j] * a; lu += w2.wu[j] * a; la2 += a;
+                    }
+                    fprintf(stderr, "W2 day %d  30-60N: wl %.1f wu %.1f mm, rain low %.2f up %.2f mm/h, lift %.3f mm/h | global wl %.1f wu %.1f\n",
+                            qgHours / 24, zw[0] / za, zw[1] / za, zw[2] / za, zw[3] / za, zw[4] / za, lw / la2, lu / la2);
+                }
                 for (int j = 0; j < qgg.N; j++) {
                     if (!std::isfinite(qgg.u2[j]) || !std::isfinite(qgg.u1[j])) { bad = j; break; }
                     double a1 = geodesic::len(qgg.V1[j]), a2 = geodesic::len(qgg.V2[j]);
@@ -2333,6 +2375,23 @@ struct Model {
                 //
                 // So the ceiling is saturation at the air's own temperature,
                 // and only ascent may lower it.
+                if (WATER2 && w2.started) {
+                    // The water lives on the mesh (see WATER2). This cell
+                    // mirrors its mesh cell: the column for radiation and
+                    // humidity, the hour's rain, and the evaporation and
+                    // painted ascent it computed go to the mesh next hour.
+                    evapBuf[i] = evap; wUpBuf[i] = wUp;
+                    int j = meshOfCell[i];
+                    double rain = w2.rainHour[j];
+                    double col = w2.wl[j] + w2.wu[j];
+                    capEff[i] = std::max(cap, 0.05);
+                    cloudF[i] = cloudOf(std::max(w2.wl[j] / std::max(w2.capL[j], 0.02), w2.wu[j] / std::max(w2.capU[j], 0.02)));
+                    evapAcc[i] += evap; wvAcc[i] += col; rainAcc[i] += rain;
+                    nW[i] = col;
+                    if (!water[i]) soil[i] = std::clamp(soil[i] + rain - evap, 0.0, SOIL_CAP_MM);
+                    rainStep[i] = rain;
+                    continue;
+                }
                 double dz = std::clamp(wUp * UPLIFT_TAU, -H_LIFT_MAX, H_LIFT_MAX);
                 double capLift =
                     std::min(cap, cap * std::exp(-LAPSE_MOIST * dz / CAP_SCALE));
