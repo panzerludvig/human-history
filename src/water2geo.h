@@ -82,11 +82,12 @@ struct Model {
     std::vector<double> elev;                   // m, the real terrain
     std::vector<unsigned char> water;
     std::vector<double> psicPrev, wIface, rainHour, rainLHour, rainUHour, liftHour, tmpL, tmpU;
+    std::vector<double> satL;                   // the lower layer's saturation against its lift-lowered capacity: the cloud
     bool started = false;
 
     void init(const qg2geo::Model& model, const std::vector<float>& elevMesh, const std::vector<unsigned char>& waterMesh) {
         qg = &model; N = qg->N;
-        for (auto* v : {&wl, &wu, &capL, &capU, &evapIn, &wPaint, &wConvIn, &elev, &psicPrev, &wIface, &rainHour, &rainLHour, &rainUHour, &liftHour, &tmpL, &tmpU})
+        for (auto* v : {&wl, &wu, &capL, &capU, &evapIn, &wPaint, &wConvIn, &elev, &psicPrev, &wIface, &rainHour, &rainLHour, &rainUHour, &liftHour, &tmpL, &tmpU, &satL})
             v->assign(N, 0.0);
         water = waterMesh;
         for (int i = 0; i < N; i++) elev[i] = std::max((double)elevMesh[i], 0.0);
@@ -182,6 +183,7 @@ struct Model {
             };
             double rl = condense(l, capL[i]);
             double ru = condense(u, capU[i]);
+            satL[i] = l / std::max(std::min(capL[i], capL[i] * liftFactor), 0.02);
             wl[i] = l; wu[i] = u;
             rainLHour[i] += rl; rainUHour[i] += ru; rainHour[i] += rl + ru;
         }

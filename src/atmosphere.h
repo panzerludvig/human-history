@@ -332,7 +332,23 @@ constexpr double CLOUD_LW = 0.75;   // share of the remaining window a full deck
 // THREE percent. Clouds were reflecting 0.009 of the sunlight instead of
 // 0.21, the planet was absorbing some 68 W/m2 too much, and that was the
 // whole of a six-degree warm bias.
-constexpr double RH_CLOUD = 0.58;
+// And the exponential that replaced it, 1 - exp(-(rh/0.58)^2), read a
+// layer at 80 percent saturation as 85 percent cloud. That was tolerable
+// while the column ran at 60 percent; with the water in two layers the
+// lower layer sits at 80-90 percent like Earth's marine boundary layer,
+// which carries 40-60 percent cloud, and the rule turned the tropics into
+// a 0.95 overcast: 35 W/m2 of sunlight reflected, the column 6-8 K cold,
+// and colder air more saturated still. Sundqvist's relation (no cloud
+// below a critical humidity of 0.7, full cover at saturation, the square
+// root between) fixed the tropical column to the watt and cleared the
+// extratropics to 10-20 percent cloud against 70 observed, +13 W/m2 on
+// the planet and 35-degree summers. Earth's cloud depends on saturation
+// more weakly than either form: 50-60 percent at 80 percent saturation,
+// 70 in the storm tracks at 70. The exponential stays, with its scale
+// re-derived for the two-layer saturation so that 85 percent saturation
+// gives 60 percent cloud; the fronts' cloud and the anvils are added
+// where the water model makes them (see WATER2's cloud).
+constexpr double RH_CLOUD = 0.89;
 inline double cloudOf(double rh) {
     double r = std::max(rh, 0.0) / RH_CLOUD;
     return 1.0 - std::exp(-r * r);
@@ -744,6 +760,8 @@ inline bool WATER2 = false;
 // (see PRESCRIBED for what it is), the mesh weather for the wind, the
 // two-layer water on the mesh. sweep.exe earth 0 physgeo 1.
 inline bool PAINT_INIT = true;
+inline double W_CLOUD = 0.02;   // m/s of large-scale ascent at which the rising air's cloud covers the cell
+inline double ANVIL_MM = 0.1;   // mm/h of upper-layer rain at which the anvil covers 63 percent of the cell
 constexpr int DYN2_SUBSTEPS = 30;   // of dyn2::DT, per hour
 constexpr double PRE_LAPSE = 6.5;          // K/km on the model's smoothed elevation
 constexpr double PRE_CONT_KM = 500.0;      // e-folding of continentality with distance from the sea: 500 km inland is already continental
@@ -1003,7 +1021,8 @@ struct Climatology {
     // tropical SST is set by this column's balance and almost nothing
     // else, so each term can face its measured Earth value no matter what
     // the continents are doing.
-    double tropBud[14] = {};
+    static constexpr int NTB = 24;
+    double tropBud[NTB] = {};
     // PROBE: the zonal energy budget, every cell, every hour after spin-up,
     // as W/m2 means per row. Order: absorbed SW (TOA), OLR, surface SW,
     // LW down, LW up, sensible, latent, BL horizontal (wind+eddies), FT
@@ -1242,7 +1261,7 @@ struct Model {
         stabArr.assign(W * H, 1.0);
         hbNew.assign(W * H, H_LAYER);
         physRow.assign(H, 0.0);
-        budRow.assign(14 * H, 0.0);
+        budRow.assign(Climatology::NTB * H, 0.0);
         zonRow.assign(SEASONS * 2 * Climatology::NZB * H, 0.0);
         nu2.assign(W * H, 0.0);
         nv2.assign(W * H, 0.0);
@@ -2252,7 +2271,7 @@ struct Model {
                 // what escapes the top: the window through the greenhouse
                 // plus the air's own upward face.
                 if (recordBudget && water[i] && std::fabs(latRad[i]) < 0.2618) {
-                    double* b = &budRow[14 * y];
+                    double* b = &budRow[Climatology::NTB * y];
                     b[0] += sw;    b[1] += swAir;  b[2] += lwUp;
                     b[3] += lwDown; b[4] += sens;  b[5] += lFlux;
                     b[6] += olr;
@@ -2315,6 +2334,19 @@ struct Model {
                                             C_FT * DT,
                                     -95.0, 70.0);
                 // PROBE: the zonal budget, every term as W/m2 (see zonBud).
+                if (recordBudget && water[i] && std::fabs(latRad[i]) < 0.2618) {
+                    // PROBE, the layers' own budgets (see TROPICAL OCEAN COLUMN)
+                    double* b = &budRow[Climatology::NTB * y];
+                    b[14] += swB;  b[15] += absB;  b[16] += eBup + eBdn;
+                    b[17] += swF;  b[18] += absF;  b[19] += eFup + eFdn;
+                    b[20] += condense * C_FT / DT;
+                    b[21] += (difT + advT) * C_BL / DT;
+                    b[22] += difTf * C_FT / DT +
+                             xch * (std::max(wTop[i], 0.0) * (Tb[i] - GAP_BF - Tf[i]) +
+                                    std::max(wTopMean, 0.0) * (tfPool - Tf[i]) +
+                                    (1.0 - stab) * std::max(wTopMean, 0.0) * (Tf[i] + GAP_BF - Tb[i]));
+                    b[23] += stab * xch * std::max(wTopMean, 0.0) * (Tf[i] + GAP_BF - Tb[i]);
+                }
                 if (recordBudget) {
                     double* z = &zonRow[((curSeason * 2 + (water[i] ? 0 : 1)) * H + y) * Climatology::NZB];
                     z[0] += sw + swAir;   z[1] += olr;     z[2] += sw;
@@ -2430,7 +2462,25 @@ struct Model {
                     double rain = w2.rainHour[j];
                     double col = w2.wl[j] + w2.wu[j];
                     capEff[i] = std::max(cap, 0.05);
-                    cloudF[i] = cloudOf(std::max(w2.wl[j] / std::max(w2.capL[j], 0.02), w2.wu[j] / std::max(w2.capU[j], 0.02)));
+                    // Cloud: the lower layer's saturation against the capacity
+                    // the lift has left it (as the column had), and an anvil
+                    // where the upper layer rained this hour. The upper layer's
+                    // own saturation is not cloud cover: it sits at saturation
+                    // whenever it has just condensed, which under convection is
+                    // always, and the whole tropics read 0.95 overcast -- a
+                    // boundary layer radiating as a black body, 6 K cold, and 42
+                    // W/m2 of sunlight reflected that Earth absorbs.
+                    // And stratiform cloud where the air is rising: the
+                    // saturation alone, with Sundqvist's relation, left the
+                    // storm tracks at 10-20 percent cloud against 70 observed,
+                    // because a layer at 60-80 percent saturation reads as
+                    // clear while the fronts inside it are overcast. Lifting
+                    // air is the front; its cloud covers the share of the cell
+                    // that rises at W_CLOUD or faster.
+                    double cfLow = cloudOf(w2.satL[j]);
+                    double cfHigh = 1.0 - std::exp(-w2.rainUHour[j] / ANVIL_MM);
+                    double cfLift = std::clamp(w2.wIface[j] / W_CLOUD, 0.0, 1.0);
+                    cloudF[i] = 1.0 - (1.0 - cfLow) * (1.0 - cfHigh) * (1.0 - cfLift);
                     evapAcc[i] += evap; wvAcc[i] += col; rainAcc[i] += rain;
                     nW[i] = col;
                     if (!water[i]) soil[i] = std::clamp(soil[i] + rain - evap, 0.0, SOIL_CAP_MM);
@@ -2798,11 +2848,11 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         }
     }
     {
-        double s[14] = {};
+        double s[Climatology::NTB] = {};
         for (int y = 0; y < H; y++)
-            for (int k = 0; k < 14; k++) s[k] += m.budRow[14 * y + k];
+            for (int k = 0; k < Climatology::NTB; k++) s[k] += m.budRow[Climatology::NTB * y + k];
         double n = std::max(s[13], 1.0);
-        for (int k = 0; k < 13; k++) c.tropBud[k] = s[k] / n;
+        for (int k = 0; k < Climatology::NTB; k++) c.tropBud[k] = k == 13 ? s[k] : s[k] / n;
         c.tropBud[13] = s[13];
         {
             const int NZ = Climatology::NZB;
