@@ -1,5 +1,19 @@
 # Dev Log
 
+## 2026-09-08 — The geodesic grid was on another branch
+
+### What was done
+Found that the geodesic grid built on 2026-09-02 (`src/geodesic.h`, an icosahedral mesh of 10242 uniform cells with proven operators, and an atmosphere ported to it) lived only on branch `climate-wind`, which the working line had forked from the day before. Every piece of atmosphere since — two layers, the prescribed climate, the Earth template, the sigma core, the quasi-geostrophic model — was built on the latitude-longitude grid, and yesterday's polar filter and wall fixes in the QG model were solving exactly what the mesh had removed. The grid files were copied onto `prescribed-climate`; the grid's self-test builds and passes; the ported atmosphere does not compile against today's physics and is kept as the reference. Written up in [[Technical/Geodesic Grid]]; the branch map and the rule in [[Meta/Git]].
+
+### Decisions and reasoning
+
+**The atmosphere is redone on the geodesic grid**
+Decided by the user on seeing the history. The lat-lon grid's polar singularity has cost a fix per week since the model began, and the QG model's channels, walls, taper and polar filter are all consequences of it. What has to be rebuilt is the discretisation, not the physics: the painted fields do not depend on the grid, the water transport is advection, and the QG model needs a mesh elliptic solver in place of its Fourier-and-tridiagonal inversion.
+
+**One working branch, listed in the vault**
+Work that is neither on the working branch nor in the vault does not exist. Any branch ahead of `main` is now listed with what it holds and whether it is merged, and that list is checked before forking.
+
+
 ## 2026-08-28 — Renamed to Human History
 
 ### What was done

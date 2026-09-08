@@ -7,6 +7,7 @@
 - [[Design/Overview]] — Concept, pillars, core loop
 - [[Design/Core Concepts]] — The concepts the game is built from
 - [[Technical/Architecture]] — Tech stack, systems
+- [[Technical/Geodesic Grid]] — The icosahedral mesh the atmosphere is being moved to
 - [[Dev Log/Log]] — Progress and reasoning
 - [[Meta/Open Threads]] — Undecided questions
 
