@@ -1013,6 +1013,184 @@ struct Prescribed {
     }
 };
 
+// THE CLIMATE AS RULES OF THUMB (decision of 2026-09-09). The textbook
+// "hypothetical continent" in code: a zonal rain by latitude that follows
+// the sun, and on land the rules every physical-geography course teaches
+// to explain the Koppen map -- interiors dry in proportion to their
+// distance upwind from the sea; subtropical west coasts deserts under the
+// high and the cold current; subtropical east coasts humid, and monsoonal
+// when the continent behind them is large; Mediterranean west coasts at
+// 30-42 with their winter rain; temperate west coasts the wettest places;
+// windward slopes wet and the lee dry; continental interiors with their
+// summer rain. Temperature stays the painted one, which the review found
+// right. Nothing is transported, so nothing leaks, accumulates or floods.
+// Judged, like everything, by THE WORLD REVIEW.
+inline bool RULES = false;
+constexpr double RUL_INTERIOR_KM = 4000.0;   // the e-folding of the coast's rain inland, along the wind
+constexpr double RUL_EAST_KM = 2800.0;       // and from the east coast, on the subtropical high's western flank
+constexpr double RUL_MONSOON_KM = 1200.0;    // and from the sea equatorward, in the monsoon
+constexpr double RUL_MONSOON_PLATEAU_KM = 2600.0;   // its reach with a high plateau poleward, whose summer heat low pulls it on (India against Africa)
+constexpr double RUL_PLATEAU_M = 2000.0, RUL_PLATEAU_REACH_KM = 1500.0;
+constexpr double RUL_MONSOON = 2.2;          // the monsoon coast's multiple
+constexpr double RUL_SUBTROPICAL_DRY = 0.35;  // land under the subtropical high's share, 18-32 degrees, unless a coast rule reaches it
+constexpr double RUL_TROPICS = 1.3;          // the tropical land's multiple: recycling and convergence, no interior decay
+constexpr double RUL_INTERIOR_FLOOR = 0.4;   // the interior keeps this share of the belt's rain, as summer convection
+constexpr double RUL_WEST_DESERT = 0.15;     // the subtropical west coast's share of the belt's rain
+constexpr double RUL_EAST_HUMID = 2.2;       // the subtropical east coast's multiple
+constexpr double RUL_TEMPERATE_WEST = 1.5;   // the temperate west coast's multiple
+constexpr double RUL_LIFT_M = 700.0;         // metres of rise along the wind that doubles the rain
+constexpr double RUL_SHADOW_M = 600.0;       // a ridge this much above the cell, upwind, starts the shadow
+constexpr double RUL_SHADOW_FLOOR = 0.3;     // the deepest shadow's share
+constexpr double RUL_SHADOW_KM = 500.0;      // how far upwind a ridge casts it
+constexpr double RUL_MEDITERRANEAN = 0.7;    // the Mediterranean coast's share: half a year under the high
+constexpr double RUL_PLATEAU = 0.45;         // a high interior plateau's share
+constexpr double RUL_TRADE_COAST = 1.5;      // the trade-wind east coast's multiple, within RUL_TRADE_KM
+constexpr double RUL_TRADE_KM = 400.0;
+constexpr double RUL_OROGRAPHIC_KM = 800.0;  // the lift needs sea air: it acts within this distance of the sea
+constexpr double RUL_ITCZ_SHIFT = 8.0, RUL_ITCZ_LAND_SHIFT = 4.0;   // degrees the belts follow the sun; more over land
+struct Rules {
+    int W = 0, H = 0;
+    std::vector<float> base;      // land: the geographic multiple on the belt's rain
+    std::vector<float> dSeaW, dSeaE, dSea;   // km
+    std::vector<float> dLandE;               // sea cells: km to land eastward (the upwelling coast's sea)
+    std::vector<float> dSeaEq, dSeaPole;     // land: km to the sea equatorward and poleward along the column
+    std::vector<unsigned char> water;
+    std::vector<float> latDeg, elev;
+    std::vector<float> cont, wide;
+    std::vector<unsigned char> kind;   // 0 sea, 1 interior, 2 west desert, 3 east humid, 4 mediterranean, 5 temperate west, 6 monsoon, 7 tropics
+    // Earth's zonal-mean rain by latitude, mm/day, every 10 degrees from the equator
+    static constexpr double R0[10] = {4.5, 3.8, 2.0, 1.2, 2.2, 3.0, 2.6, 1.2, 0.5, 0.3};
+    static double knots(const double* v, int n, double step, double a) {
+        double p = std::clamp(a / step, 0.0, (double)(n - 1));
+        int k = std::min((int)p, n - 2);
+        return v[k] + (p - k) * (v[k + 1] - v[k]);
+    }
+    static double season(double doy, double latDegSigned) {   // +1 at midsummer, -1 at midwinter, for this hemisphere
+        double s = std::cos(2 * 3.14159265 * (doy - 202.0) / 365.0);
+        return latDegSigned >= 0 ? s : -s;
+    }
+    void init(int w, int h, const std::vector<float>& elevM, const std::vector<unsigned char>& wat,
+              const std::vector<float>& latRad, const Prescribed& pre) {
+        W = w; H = h; water = wat; elev = elevM; cont = pre.cont; wide = pre.wide; dLandE = pre.dEast;
+        latDeg.assign(W * H, 0.0f); base.assign(W * H, 1.0f); kind.assign(W * H, 0);
+        dSeaW.assign(W * H, 1e9f); dSeaE.assign(W * H, 1e9f); dSea.assign(W * H, 0.0f); dSeaEq.assign(W * H, 1e9f); dSeaPole.assign(W * H, 1e9f);
+        const double dyKm = 3.14159265 * R_EARTH / H / 1000.0;
+        for (int y = 0; y < H; y++) {
+            double dxKm = dyKm * 2.0 * std::max(std::cos((double)latRad[y * W]), 0.05);
+            for (int x = 0; x < W; x++) {
+                int i = y * W + x;
+                latDeg[i] = (float)(latRad[i] * 180.0 / 3.14159265);
+                if (water[i]) continue;
+                for (int k = 1; k < W; k++) if (water[y * W + (x - k + W) % W]) { dSeaW[i] = (float)(k * dxKm); break; }
+                for (int k = 1; k < W; k++) if (water[y * W + (x + k) % W]) { dSeaE[i] = (float)(k * dxKm); break; }
+                dSea[i] = (float)(-PRE_CONT_KM * std::log(std::max(1.0 - cont[i], 1e-6)));
+                int dir = latDeg[i] >= 0 ? -1 : 1;   // toward the equator
+                for (int k = 1; k < H / 2; k++) {
+                    int yy = y + dir * k;
+                    if (yy < 0 || yy >= H) break;
+                    if (water[yy * W + x]) { dSeaEq[i] = (float)(k * dyKm); break; }
+                }
+                for (int k = 1; k < H / 2; k++) {
+                    int yy = y - dir * k;
+                    if (yy < 0 || yy >= H) { dSeaPole[i] = (float)(k * dyKm); break; }
+                    if (water[yy * W + x]) { dSeaPole[i] = (float)(k * dyKm); break; }
+                }
+            }
+        }
+        for (int y = 0; y < H; y++) {
+            double dxKm = dyKm * 2.0 * std::max(std::cos((double)latRad[y * W]), 0.05);
+            for (int x = 0; x < W; x++) {
+                int i = y * W + x;
+                if (water[i]) continue;
+                double a = std::fabs(latDeg[i]);
+                double west = std::clamp((a - 28.0) / 4.0, 0.0, 1.0);   // 1: the wind comes from the west
+                double dUp = west * dSeaW[i] + (1.0 - west) * dSeaE[i];
+                // the interior: the coast's rain decays along the wind, to a floor of summer
+                // convection that the cold high latitudes do not have
+                double floorHere = RUL_INTERIOR_FLOOR * std::clamp((75.0 - a) / 25.0, 0.3, 1.0);
+                double f = std::max(std::exp(-dUp / RUL_INTERIOR_KM), floorHere);
+                unsigned char k = 1;
+                // the subtropical high: the belt's land is desert unless a coast rule below reaches it
+                {
+                    double under = std::clamp((a - 15.0) / 3.0, 0.0, 1.0) * std::clamp((35.0 - a) / 3.0, 0.0, 1.0);
+                    f *= 1.0 - (1.0 - RUL_SUBTROPICAL_DRY) * under;
+                }
+                // the subtropical high's western flank pushes sea air poleward and inland
+                // from the east coast: the humid subtropics, decaying from THAT coast
+                if (a >= 25 && a <= 50) {
+                    double fe = RUL_EAST_HUMID * std::exp(-dSeaE[i] / RUL_EAST_KM);
+                    if (fe > f) { f = fe; k = 3; }
+                }
+                // the trade-wind coast: wet where the trades come ashore, and only there
+                if (a >= 8 && a < 25) {
+                    double ft = RUL_TRADE_COAST * std::exp(-dSeaE[i] / RUL_TRADE_KM);
+                    if (ft > f) { f = ft; k = 3; }
+                }
+                // the monsoon: a large continent with the sea equatorward of it
+                if (a >= 8 && a <= 30 && dSeaPole[i] > 1500) {   // a continent behind the coast: the heat low that draws the sea air in
+                    // a plateau poleward of the cell: the heat low that draws the monsoon inland
+                    bool plateau = false;
+                    int pdir = latDeg[i] >= 0 ? 1 : -1;
+                    for (int c = 1; c * dyKm <= RUL_PLATEAU_REACH_KM; c++) {
+                        int yy = y + pdir * c;
+                        if (yy < 0 || yy >= H) break;
+                        if (!water[yy * W + x] && elev[yy * W + x] > RUL_PLATEAU_M) { plateau = true; break; }
+                    }
+                    double fm = RUL_MONSOON * std::exp(-dSeaEq[i] / (plateau ? RUL_MONSOON_PLATEAU_KM : RUL_MONSOON_KM));
+                    if (fm > f) { f = fm; k = 6; }
+                }
+                // the tropics: no interior decay, recycling and convergence instead
+                if (a < 15) { double t = std::clamp((15.0 - a) / 5.0, 0.0, 1.0); f = std::max(f, 1.0 + (RUL_TROPICS - 1.0) * t); if (t > 0.5) k = 7; }
+                // subtropical west coast: the desert under the high and the cold current
+                if (a >= 8 && a <= 32 && dSeaW[i] < 1400 && dSeaE[i] > 600) { f *= RUL_WEST_DESERT + (1 - RUL_WEST_DESERT) * std::clamp((dSeaW[i] - 600.0) / 800.0, 0.0, 1.0); k = 2; }
+                // temperate west coast, and the Mediterranean one equatorward of it
+                if (a >= 30 && a < 42 && dSeaW[i] < 800 && k != 2) { f *= RUL_MEDITERRANEAN; k = 4; }
+                else if (a >= 38 && a <= 60 && dSeaW[i] < 600) { f *= RUL_TEMPERATE_WEST; k = 5; }
+                // orography along the wind: the rise from the upwind cell, and the ridge upwind
+                int up = west > 0.5 ? (x - 1 + W) % W : (x + 1) % W;
+                double rise = elev[i] - elev[y * W + up];
+                if (rise > 0 && dSea[i] < RUL_OROGRAPHIC_KM) f *= std::min(1.0 + rise / RUL_LIFT_M, k == 4 || k == 2 ? 1.3 : 1.8);
+                double ridge = 0;
+                int cells = (int)(RUL_SHADOW_KM / dxKm) + 1;
+                for (int c = 1; c <= cells; c++) {
+                    if (c * dxKm > dUp) break;   // only a ridge between the cell and its sea
+                    int xx = west > 0.5 ? (x - c + W) % W : (x + c) % W;
+                    ridge = std::max(ridge, (double)elev[y * W + xx] - elev[i]);
+                }
+                if (ridge > RUL_SHADOW_M) f *= std::max(RUL_SHADOW_FLOOR, 1.0 - (ridge - RUL_SHADOW_M) / (2 * RUL_SHADOW_M));
+                if (elev[i] > 1500 && rise <= 0 && dSea[i] > 500) f *= RUL_PLATEAU;
+                base[i] = (float)f; kind[i] = k;
+                if (std::getenv("HH_DEBUG_RULES") && std::fabs(latDeg[i] + 10.0) < 1.0 && std::fabs(((x + 0.5) / W) * 360.0 - 180.0 + 77.0) < 1.0)
+                    fprintf(stderr, "RULES cell lat %.1f lon %.1f: kind %d base %.2f dSeaW %.0f dSeaE %.0f dSea %.0f dSeaEq %.0f rise %.0f ridge %.0f elev %.0f wide %.2f\n",
+                            latDeg[i], ((x + 0.5) / W) * 360.0 - 180.0, k, f, dSeaW[i], dSeaE[i], dSea[i], dSeaEq[i], rise, ridge, elev[i], wide[i]);
+            }
+        }
+    }
+    // mm/day at this cell on this day
+    double rain(int i, double doy) const {
+        double lat = latDeg[i];
+        double shift = (RUL_ITCZ_SHIFT + RUL_ITCZ_LAND_SHIFT * wide[i]) * std::cos(2 * 3.14159265 * (doy - 202.0) / 365.0);
+        double r = knots(R0, 10, 10.0, std::fabs(lat - shift));
+        if (water[i]) {
+            // the upwelling coast under the subtropical high: the sea with land to its east
+            double a = std::fabs(lat);
+            if (a >= 8 && a <= 32) r *= 0.3 + 0.7 * std::clamp(dLandE[i] / 700.0, 0.0, 1.0);
+            return r;
+        }
+        double s = season(doy, lat);
+        double a = std::fabs(lat);
+        double f = base[i];
+        switch (kind[i]) {
+            case 6: f *= 1.0 + 1.0 * s; break;                       // monsoon: summer three times the winter
+            case 4: f *= 1.0 - 0.65 * s; break;                      // Mediterranean: the winter's rain
+            case 5: f *= 1.0 - 0.3 * s; break;                       // temperate west coast: a winter maximum
+            case 1: if (a > 35) f *= 1.0 + 0.5 * s; break;           // the interior's summer convection
+            default: break;
+        }
+        return r * f;
+    }
+};
+
 struct Climatology {
     // PROBE: the tropical-ocean column budget, term by term -- every
     // open-sea cell within 15 degrees of the equator, every hour after
@@ -1131,6 +1309,7 @@ struct Model {
     std::vector<double> soil;          // land water store, mm: what there is to evaporate
     std::vector<double> ice, nIce;     // sea ice, m of thickness (see L_ICE)
     Prescribed pre;                    // the painted climate (see PRESCRIBED)
+    Rules rul;                         // the climate as rules of thumb (see RULES)
     std::vector<double> anomA, anomB;  // its thermal-anomaly pressure, smoothed
     dyn2::Model d2;                    // the two-level dynamics (see DYN2)
     qg2::Model qg;                     // the two-layer QG weather (see QG2)
@@ -1271,6 +1450,7 @@ struct Model {
         anomA.assign(W * H, 0.0);
         anomB.assign(W * H, 0.0);
         if (PRESCRIBED || PAINT_INIT) pre.init(water, latRad);
+        if (RULES) rul.init(W, H, elev, water, latRad, pre);
         evapAcc.assign(W * H, 0.0);
         rainAcc.assign(W * H, 0.0);
         madeAcc.assign(W * H, 0.0);
@@ -2450,6 +2630,20 @@ struct Model {
                 //
                 // So the ceiling is saturation at the air's own temperature,
                 // and only ascent may lower it.
+                if (RULES) {
+                    // The rain is a rule (see RULES); the column mirrors a
+                    // humidity that follows it, for the record and the cloud.
+                    double rainDay = rul.rain(i, doy);
+                    double rain = rainDay / 24.0;
+                    double rh = std::clamp(0.45 + 0.1 * rainDay, 0.3, 0.9);
+                    capEff[i] = std::max(cap, 0.05);
+                    cloudF[i] = std::clamp(0.25 + 0.12 * rainDay, 0.15, 0.85);
+                    evapAcc[i] += evap; wvAcc[i] += rh * cap; rainAcc[i] += rain;
+                    nW[i] = rh * cap;
+                    if (!water[i]) soil[i] = std::clamp(soil[i] + rain - evap, 0.0, SOIL_CAP_MM);
+                    rainStep[i] = rain;
+                    continue;
+                }
                 if (WATER2 && w2.started) {
                     // The water lives on the mesh (see WATER2). This cell
                     // mirrors its mesh cell: the column for radiation and

@@ -234,6 +234,7 @@ int main(int argc, char** argv) {
     {
         if (argc >= 3) atmosphere::SPINUP_DAYS = atoi(argv[2]) * 365;
         if (argc >= 4 && std::string(argv[3]) == "phys") atmosphere::PRESCRIBED = false;
+        if (argc >= 4 && std::string(argv[3]) == "rules") { atmosphere::PRESCRIBED = true; atmosphere::RULES = true; }
         if (argc >= 4 && std::string(argv[3]) == "physgeo") { atmosphere::PRESCRIBED = false; atmosphere::QG2GEO = true; atmosphere::WATER2 = true; }
         if (argc >= 4 && std::string(argv[3]) == "dyn") atmosphere::DYN2 = true;
         if (argc >= 4 && std::string(argv[3]) == "qg") atmosphere::QG2 = true;
