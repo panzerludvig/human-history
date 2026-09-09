@@ -1025,14 +1025,15 @@ struct Prescribed {
 // summer rain. Temperature stays the painted one, which the review found
 // right. Nothing is transported, so nothing leaks, accumulates or floods.
 // Judged, like everything, by THE WORLD REVIEW.
-inline bool RULES = false;
+inline bool RULES = true;    // the game's climate since 2026-09-09
 constexpr double RUL_INTERIOR_KM = 4000.0;   // the e-folding of the coast's rain inland, along the wind
 constexpr double RUL_EAST_KM = 2800.0;       // and from the east coast, on the subtropical high's western flank
-constexpr double RUL_MONSOON_KM = 1200.0;    // and from the sea equatorward, in the monsoon
+constexpr double RUL_MONSOON_KM = 1000.0;    // and from the sea equatorward, in the monsoon
 constexpr double RUL_MONSOON_PLATEAU_KM = 2600.0;   // its reach with a high plateau poleward, whose summer heat low pulls it on (India against Africa)
-constexpr double RUL_PLATEAU_M = 2000.0, RUL_PLATEAU_REACH_KM = 1500.0;
+constexpr double RUL_PLATEAU_M = 3000.0, RUL_PLATEAU_REACH_KM = 1800.0;
+constexpr double RUL_MONSOON_LAT = 18.0, RUL_MONSOON_PLATEAU_LAT = 32.0;   // the monsoon's poleward limit, without and with the plateau (Yemen against the Punjab)
 constexpr double RUL_MONSOON = 2.2;          // the monsoon coast's multiple
-constexpr double RUL_SUBTROPICAL_DRY = 0.35;  // land under the subtropical high's share, 18-32 degrees, unless a coast rule reaches it
+constexpr double RUL_SUBTROPICAL_DRY = 0.3;   // land under the subtropical high's share, 18-32 degrees, unless a coast rule reaches it
 constexpr double RUL_TROPICS = 1.3;          // the tropical land's multiple: recycling and convergence, no interior decay
 constexpr double RUL_INTERIOR_FLOOR = 0.4;   // the interior keeps this share of the belt's rain, as summer convection
 constexpr double RUL_WEST_DESERT = 0.15;     // the subtropical west coast's share of the belt's rain
@@ -1112,7 +1113,7 @@ struct Rules {
                 unsigned char k = 1;
                 // the subtropical high: the belt's land is desert unless a coast rule below reaches it
                 {
-                    double under = std::clamp((a - 15.0) / 3.0, 0.0, 1.0) * std::clamp((35.0 - a) / 3.0, 0.0, 1.0);
+                    double under = std::clamp((a - 13.0) / 4.0, 0.0, 1.0) * std::clamp((36.0 - a) / 4.0, 0.0, 1.0);
                     f *= 1.0 - (1.0 - RUL_SUBTROPICAL_DRY) * under;
                 }
                 // the subtropical high's western flank pushes sea air poleward and inland
@@ -1129,14 +1130,23 @@ struct Rules {
                 // the monsoon: a large continent with the sea equatorward of it
                 if (a >= 8 && a <= 30 && dSeaPole[i] > 1500) {   // a continent behind the coast: the heat low that draws the sea air in
                     // a plateau poleward of the cell: the heat low that draws the monsoon inland
-                    bool plateau = false;
+                    // a plateau the size of Tibet, not a range: several cells above RUL_PLATEAU_M
+                    // (the Alps stood poleward of the Sahara and gave the Sahel India's reach)
+                    int high = 0;
                     int pdir = latDeg[i] >= 0 ? 1 : -1;
+                    int span = (int)(20.0 / (360.0 / W));   // and twenty degrees of longitude either side: Tibet stands west of China
                     for (int c = 1; c * dyKm <= RUL_PLATEAU_REACH_KM; c++) {
                         int yy = y + pdir * c;
                         if (yy < 0 || yy >= H) break;
-                        if (!water[yy * W + x] && elev[yy * W + x] > RUL_PLATEAU_M) { plateau = true; break; }
+                        for (int dx = -span; dx <= span; dx++) {
+                            int j = yy * W + (x + dx + W) % W;
+                            if (!water[j] && elev[j] > RUL_PLATEAU_M) high++;
+                        }
                     }
-                    double fm = RUL_MONSOON * std::exp(-dSeaEq[i] / (plateau ? RUL_MONSOON_PLATEAU_KM : RUL_MONSOON_KM));
+                    bool plateau = high >= 6;
+                    double limit = plateau ? RUL_MONSOON_PLATEAU_LAT : RUL_MONSOON_LAT;
+                    double fm = RUL_MONSOON * std::exp(-dSeaEq[i] / (plateau ? RUL_MONSOON_PLATEAU_KM : RUL_MONSOON_KM)) *
+                                std::clamp((limit + 3.0 - a) / 3.0, 0.0, 1.0);
                     if (fm > f) { f = fm; k = 6; }
                 }
                 // the tropics: no interior decay, recycling and convergence instead
