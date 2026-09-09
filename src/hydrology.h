@@ -234,6 +234,7 @@ inline void reweight(Result& r, const std::vector<float>& rainMmDay,
     const int N = W * H;
     std::vector<float> acc(N);
     std::vector<float> balance(N); // rain - PET, mm/day, sampled per cell
+    std::vector<float> petArr(N);  // PET alone, for the terminal lakes' evaporation
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
             int i = y * W + x;
@@ -256,6 +257,7 @@ inline void reweight(Result& r, const std::vector<float>& rainMmDay,
             float tC = (atT(x0, y0) * (1 - fx) + atT(x0 + 1, y0) * fx) * (1 - fy) +
                        (atT(x0, y0 + 1) * (1 - fx) + atT(x0 + 1, y0 + 1) * fx) * fy;
             balance[i] = rain - petMmDay(tC);
+            petArr[i] = petMmDay(tC);
             float runoff = std::max(rain * 365.0f * 0.55f - 120.0f, 2.0f); // mm/yr
             acc[i] = cellAreaKm2(y) * runoff / REF_RUNOFF_MM_YR;
         }
@@ -277,11 +279,12 @@ inline void reweight(Result& r, const std::vector<float>& rainMmDay,
             comp.clear();
             comp.push_back(i0);
             visited[i0] = 1;
-            double balSum = 0, accMax = 0;
+            double balSum = 0, accMax = 0, demand = 0;
             for (size_t k = 0; k < comp.size(); k++) {
                 int c = comp[k];
                 balSum += balance[c];
                 accMax = std::max(accMax, (double)acc[c]);
+                demand += petArr[c] * 365.0 * cellAreaKm2(c / W);   // km2 * mm/yr the lake evaporates
                 int cx = c % W, cy = c / W;
                 for (int d = 0; d < 8; d++) {
                     int ny = cy + DY[d];
@@ -293,7 +296,14 @@ inline void reweight(Result& r, const std::vector<float>& rainMmDay,
                     }
                 }
             }
-            bool keep = balSum / comp.size() > 0.1 || accMax >= 30000.0;
+            // A terminal lake survives on its river only if the river brings
+            // more than the lake evaporates: the inflow is the drainage's
+            // runoff (acc is area weighted by runoff over REF_RUNOFF_MM_YR),
+            // the demand the lake's own area times its evaporation. A fixed
+            // area threshold kept every closed basin of a desert the size of
+            // Texas full of water.
+            double inflow = accMax * REF_RUNOFF_MM_YR;
+            bool keep = balSum / comp.size() > 0.1 || inflow > demand;
             if (!keep) {
                 for (int c : comp) r.cells[c].lakeLevel = NO_LAKE;
                 r.lakeCells -= (int)comp.size();

@@ -3154,6 +3154,9 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
     for (auto* v : {&c.meanT, &c.rainMmDay, &c.snowMmDay, &c.rainProb, &c.windU, &c.windV,
                     &c.cloud, &c.diurnal})
         blur(*v, SEASONS);
+    // The rules' rain steps by a factor of two or three from one cell to the
+    // next (a lift, a shadow), and one pass left the cells drawn as blocks.
+    if (RULES) { blur(c.rainMmDay, SEASONS); blur(c.rainMmDay, SEASONS); blur(c.snowMmDay, SEASONS); blur(c.snowMmDay, SEASONS); }
     blur(c.elev, 1);
     c.elevRep.clear();
     c.elev4(); // build the repeated view now, before parallel consumers race the lazy path
