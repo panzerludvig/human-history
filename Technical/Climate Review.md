@@ -4,6 +4,40 @@
 
 The climate measured on the Earth template against what Earth records, region by region: first the painted climate ([[Design/Weather]], decision of 2026-09-04, the survey of 2026-09-07 at the bottom), then the equations alone (decision of 2026-09-08, the survey below). The point is not to fit Earth: it is to find which rules hold and which fail, so that what survives can be trusted on any world. The probe is `sweep.exe earth`, section `THE WORLD REVIEW`; the reference figures are climatological means, rounded, from memory of standard climate atlases. The game and the sweep were confirmed to compute the same world (screenshot of the game in vegetation mode against the sweep's map, 2026-09-07), so this table is what the player sees.
 
+## Survey of 2026-09-09: the rules of thumb
+
+The climate as rules ([[Design/Weather]], decision of 2026-09-09), seventh pass, `sweep.exe earth 0 rules 1`. Temperature is the painted one and unchanged from the survey of 2026-09-07; rain (mm/day, model against Earth):
+
+| Region | Rain | Earth | | Region | Rain | Earth |
+|---|---|---|---|---|---|---|
+| US Pacific NW | 3.2 | 3.5 | | W Europe | 2.9 | 2.2 |
+| California | 1.7 | 1.2 | | Spain | 3.6 | 1.5 |
+| Great Basin | 1.1 | 0.7 | | E Europe | 1.2 | 1.6 |
+| Great Plains | 0.8 | 1.5 | | Scandinavia | 2.1 | 2.0 |
+| US Midwest | 1.6 | 2.5 | | C Siberia | 0.6 | 1.2 |
+| US Southeast | 2.4 | 3.5 | | Arabia | 2.0 | 0.2 |
+| Canada boreal | 0.9 | 1.2 | | Iran | 0.8 | 0.6 |
+| Alaska interior | 1.6 | 0.8 | | C Asia | 1.1 | 0.6 |
+| Mexico plateau | 2.5 | 1.2 | | India | 3.3 | 3.0 |
+| Amazon | 5.1 | 6.0 | | N China | 2.4 | 1.8 |
+| NE Brazil | 5.2 | 2.0 | | S China | 2.8 | 4.5 |
+| Pampas | 2.6 | 2.5 | | Mongolia | 1.1 | 0.6 |
+| Patagonia | 3.1 | 0.6 | | SE Asia | 3.6 | 5.0 |
+| Peru coast | 3.0 | 0.1 | | Japan | 2.5 | 4.5 |
+| NW Africa | 1.3 | 1.2 | | Sahara | 1.0 | 0.1 |
+| Sahel | 3.5 | 1.5 | | Congo | 5.1 | 5.0 |
+| E Africa | 5.2 | 2.0 | | S Africa | 1.8 | 1.4 |
+| Australia interior | 0.8 | 0.6 | | E Australia | 3.2 | 2.5 |
+| N Australia | 3.9 | 2.5 | | | | |
+
+Within 0.7 mm/day in 20 regions; the seasons come out by class (India 0.4 in winter and 7.4 in summer, northern Australia 7.5 and 0.9, Spain's winter, the Midwest's summer).
+
+What holds: everything the rules state, the temperate west coasts, the interiors, the subtropical deserts, the tropics, the monsoon. What fails, by kind:
+
+- **The humid subtropics and their hinterland are dry by 0.7 to 1.7** (the Southeast 2.4 against 3.5, the Midwest 1.6 against 2.5, South China 2.8 against 4.5, Japan 2.5 against 4.5). The east-coast rule's reach and multiple are both a little small; one constant each.
+- **Earth's exceptions.** Northeast Brazil is semi-arid under a subsidence the rules cannot see; East Africa is a dry plateau under a monsoon flow that runs along the coast; the Sahel's monsoon stops sooner than India's; the Peru coast is 3.0 because the review's box includes the Andes; Patagonia's shadow needs the template's Andes to be higher than the 208 km cells make them; Spain's plateau lift is real on the Cantabrian side and wrong for the Meseta. None of these is a rule any other world would need.
+- **Arabia** at 2.0 against 0.2 gets the monsoon rule because the sea lies equatorward and Asia poleward; on Earth the monsoon reaches only its southern coast. The plateau test that distinguishes India from Africa does not distinguish Arabia.
+
 ## Survey of 2026-09-08: the equations alone
 
 The all-physics mode ([[Design/Weather]], decision of 2026-09-08): painted once at hour zero, then radiation, surface balance, ice, the boundary layer, the mesh QG weather and the two-layer water, with no ocean transport. `sweep.exe earth 0 physgeo 1`, commit `b12302b`, one spin-up year and one measured. Reference figures as in the table below.

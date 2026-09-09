@@ -4,7 +4,21 @@
 
 ---
 
-## Decision (2026-09-08): nothing painted but the land
+## Decision (2026-09-09): the climate as rules of thumb
+
+A step back from the day below. The equations alone gave an Earth whose every deviation traced to a term that would take a week each, the cloud rule, the Hadley cell, the ocean drift, the land surface, and the climate a game needs is placement: deserts, forests, tundra and monsoons in the right places for any continent layout. That is what the textbook "hypothetical continent" states directly, so the rules are the climate now (`RULES` in `atmosphere.h`, `sweep.exe earth 0 rules 1`; ninety seconds a run):
+
+- **A zonal rain by latitude** that follows the sun, more over land.
+- **On land:** interiors dry along the wind from their coast, with a floor of summer convection the cold latitudes lack; the subtropical high's belt is desert unless a coast reaches it; west coasts at 8 to 32 degrees are deserts under the cold current; east coasts at 25 to 50 are humid, decaying from their own coast; trade-wind coasts are wet within 400 km; the monsoon comes where a continent stands poleward of the sea, reaching 1200 km, or 2600 with a plateau to draw it; the tropics have no interior decay; Mediterranean and temperate west coasts; windward slopes wet within reach of the sea, the lee shadowed by a ridge between it and its sea, high interior plateaus dry.
+- **Seasons by class:** the monsoon's summer, the Mediterranean's winter, the temperate coast's winter maximum, the interior's summer maximum, the belts' shift with the sun.
+- **Temperature stays painted,** as the prescribed climate had it; the review found it right.
+- **Nothing is transported,** so nothing leaks, accumulates or floods.
+
+After seven passes on the world review, 20 of 37 regions are within 0.7 mm/day of Earth. What remains is in [[Technical/Climate Review]] (survey of 2026-09-09): the humid subtropics a little dry, and the Earth-specific exceptions the rules do not know, Northeast Brazil, East Africa, the Sahel, the Peru coast. The physics stays in the tree behind its flags and on the record below as research.
+
+---
+
+## Decision (2026-09-08, stepped back from above): nothing painted but the land
 
 The decision below is reversed. The terrain, generated from the plates or drawn for the Earth seed, is the only input; the painted climate may set the state once, at the first hour, as the initial guess every climate model starts from, and after that no climate field is set by anything but the equations. What changed since September 4th is the one thing the prognostic model lacked: the eddies. The quasi-geostrophic weather on the geodesic grid ([[Technical/Geodesic Grid]]) produces the storms, so the energy balance has the transport it needs.
 
