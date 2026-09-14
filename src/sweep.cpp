@@ -148,6 +148,51 @@ int main(int argc, char** argv) {
     plates::Field pf = plates::build(seed);
     float seaLevel = terrain::seaLevelFor(landPct / 100.0f, cp, rot, offset, pf);
     hydrology::Result hy = hydrology::build(cp, seaLevel, rot, offset, 12000.0f, pf);
+    {
+        // The lakes, by size: how many, and the largest, so a flood of
+        // France-sized lakes shows up here before it shows up on screen.
+        std::vector<char> vis(hydrology::W * hydrology::H, 0);
+        std::vector<int> sizes;
+        for (int i0 = 0; i0 < hydrology::W * hydrology::H; i0++) {
+            if (vis[i0] || hy.cells[i0].lakeLevel <= hydrology::NO_LAKE + 1) continue;
+            std::vector<int> st{i0}; vis[i0] = 1; int n = 0;
+            while (!st.empty()) {
+                int c = st.back(); st.pop_back(); n++;
+                int cx = c % hydrology::W, cy = c / hydrology::W;
+                for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+                    int ny = cy + dy; if (ny < 0 || ny >= hydrology::H) continue;
+                    int j = ny * hydrology::W + ((cx + dx) % hydrology::W + hydrology::W) % hydrology::W;
+                    if (!vis[j] && hy.cells[j].lakeLevel > hydrology::NO_LAKE + 1) { vis[j] = 1; st.push_back(j); }
+                }
+            }
+            sizes.push_back(n);
+            if (n * (4 * 3.14159265 * 6371.0 * 6371.0 / (hydrology::W * hydrology::H)) > 50000) {
+                double sx = 0, sy = 0; int m = 0; float lvl = hy.cells[i0].lakeLevel, flo = 1e9;
+                // centroid and depths of this component: walk it again
+                std::vector<int> st2{i0}; std::vector<char> v2(hydrology::W * hydrology::H, 0); v2[i0] = 1; std::vector<float> depths;
+                while (!st2.empty()) {
+                    int c = st2.back(); st2.pop_back(); m++;
+                    int cx = c % hydrology::W, cy = c / hydrology::W;
+                    sx += cx; sy += cy; flo = std::min(flo, hy.heightM[c]); depths.push_back(lvl - hy.heightM[c]);
+                    for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+                        int ny = cy + dy; if (ny < 0 || ny >= hydrology::H) continue;
+                        int j = ny * hydrology::W + ((cx + dx) % hydrology::W + hydrology::W) % hydrology::W;
+                        if (!v2[j] && hy.cells[j].lakeLevel > hydrology::NO_LAKE + 1) { v2[j] = 1; st2.push_back(j); }
+                    }
+                }
+                std::sort(depths.begin(), depths.end());
+                fprintf(stderr, "  big lake: %.0f km2 at lat %.0f lon %.0f, level %.0f m, floor %.0f m, depth median %.0f p90 %.0f\n",
+                        n * (4 * 3.14159265 * 6371.0 * 6371.0 / (hydrology::W * hydrology::H)),
+                        (sy / m + 0.5) / hydrology::H * 180 - 90, (sx / m + 0.5) / hydrology::W * 360 - 180, lvl, flo,
+                        depths[depths.size() / 2], depths[depths.size() * 9 / 10]);
+            }
+        }
+        std::sort(sizes.rbegin(), sizes.rend());
+        double km2 = 4 * 3.14159265 * 6371.0 * 6371.0 / (hydrology::W * hydrology::H);
+        fprintf(stderr, "LAKES: %d, largest (km2, cell-area mean):", (int)sizes.size());
+        for (size_t k = 0; k < sizes.size() && k < 8; k++) fprintf(stderr, " %.0f", sizes[k] * km2);
+        fprintf(stderr, "\n");
+    }
     // The same bilinear the climate samplers use, but weighted by whether the
     // cell is land. Interpolating a land temperature out of ocean cells is the
     // wider version of the majority-vote problem: a land point need only be

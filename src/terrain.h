@@ -192,7 +192,15 @@ inline V3 rotate(const float rot[9], V3 v) {
 struct Template {
     int w = 0, h = 0;
     std::vector<float> elev; // metres, row 0 at -90, column 0 at -180, cell centres
+    std::vector<unsigned char> lakes; // 1 inside a lake (data/earth_lakes.bin), same layout; may be empty
     bool active = false;
+    bool lakeAt(V3 n) const {
+        if (lakes.empty()) return false;
+        float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)), lon = std::atan2(n.y, n.x);
+        int x = (int)std::floor((lon + 3.14159265f) / 6.2831853f * w), y = (int)std::floor((lat + 1.5707963f) / 3.14159265f * h);
+        x = ((x % w) + w) % w; y = std::clamp(y, 0, h - 1);
+        return lakes[(size_t)y * w + x] != 0;
+    }
     float sample(V3 n) const {
         float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)), lon = std::atan2(n.y, n.x);
         float fx = (lon + 3.14159265f) / 6.2831853f * w - 0.5f;
@@ -225,6 +233,19 @@ inline bool loadTemplate(const std::string& path) {
         }
     }
     fclose(f);
+    TEMPLATE.lakes.clear();
+    if (ok) {
+        std::string lp = path.substr(0, path.size() - 4) + "_lakes.bin";
+        if (FILE* g = fopen(lp.c_str(), "rb")) {
+            char m2[8]; int32_t lw = 0, lh = 0;
+            if (fread(m2, 1, 8, g) == 8 && std::memcmp(m2, "EARTHLAK", 8) == 0 && fread(&lw, 4, 1, g) == 1 &&
+                fread(&lh, 4, 1, g) == 1 && lw == TEMPLATE.w && lh == TEMPLATE.h) {
+                TEMPLATE.lakes.resize((size_t)lw * lh);
+                if (fread(TEMPLATE.lakes.data(), 1, TEMPLATE.lakes.size(), g) != TEMPLATE.lakes.size()) TEMPLATE.lakes.clear();
+            }
+            fclose(g);
+        }
+    }
     return ok;
 }
 inline float smoothstep(float a, float b, float x);

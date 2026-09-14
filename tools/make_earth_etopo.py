@@ -35,6 +35,24 @@ def main():
     land = (out > 0).mean()
     print("wrote", path, out.shape, "land fraction %.3f" % land, "max", out.max(), "min", out.min())
 
+    # The lakes: Natural Earth's 1:110m lake polygons (the same scale as the
+    # coastlines), as a mask at the template's resolution. A 19 km flood on
+    # 9 km data dams every gorge -- the Congo, the Danube, the Yangtze -- so
+    # the flood's lakes are not believed on the template; these are the
+    # world's shape, like its coasts. data/earth_lakes.bin: "EARTHLAK",
+    # int32 w, int32 h, then h*w bytes, 1 inside a lake, same layout.
+    import sys
+    sys.path.insert(0, str(HERE))
+    import make_earth as drawn
+    drawn.W, drawn.H = W, H
+    lakes = drawn.rasterise(HERE / "ne_110m_lakes.geojson")
+    lpath = ROOT / "data" / "earth_lakes.bin"
+    with open(lpath, "wb") as f:
+        f.write(b"EARTHLAK")
+        f.write(struct.pack("<ii", W, H))
+        f.write(lakes.astype(np.uint8).tobytes())
+    print("wrote", lpath, "lake cells", int(lakes.sum()))
+
     img = np.zeros((H, W, 3), dtype=np.uint8)
     ef = out.astype(np.float64)
     sea = ef <= 0

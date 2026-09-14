@@ -70,7 +70,13 @@ inline std::vector<float> sampleHeights(const terrain::ContinentParams& cp, floa
                     terrain::V3 w = {rot[0] * n.x + rot[3] * n.y + rot[6] * n.z,
                                      rot[1] * n.x + rot[4] * n.y + rot[7] * n.z,
                                      rot[2] * n.x + rot[5] * n.y + rot[8] * n.z};
-                    h[y * W + x] = terrain::heightMeters(w + offset, n, cp, seaLevel, octaves, pf, rot);
+                    // On the real-elevation template the basins are the
+                    // data's; the noise the height function decorates it
+                    // with dug thousands of shallow pits that the flood
+                    // filled into lakes the size of France.
+                    h[y * W + x] = terrain::TEMPLATE.active
+                                       ? terrain::TEMPLATE.sample(n)
+                                       : terrain::heightMeters(w + offset, n, cp, seaLevel, octaves, pf, rot);
                 }
         });
     }
@@ -169,6 +175,27 @@ inline Result build(const terrain::ContinentParams& cp, float seaLevel, const fl
             bool great = roll < 3;
             bool kept = roll < 30;
             float cap = great ? 1.0e9f : 60.0f;
+            if (terrain::TEMPLATE.active) {
+                // Real terrain: no roll, and the flood's basins are not
+                // believed either -- at 19 km on 9 km data every gorge is
+                // dammed (the Congo, the Danube, the Yangtze), and no depth
+                // rule told those from the Great Lakes (measured: a median
+                // depth of 80 m against 43). The lakes are the world's own,
+                // from the template's lake mask: a basin keeps its fill
+                // where the mask says water, drained everywhere else.
+                int inMask = 0;
+                for (int c : members) if (terrain::TEMPLATE.lakeAt(cellDir(c % W, c / W))) inMask++;
+                kept = inMask * 2 >= (int)members.size();
+                cap = 1.0e9f;
+                if (!kept && inMask > 0) {
+                    // a masked lake inside a wider dammed basin: keep only
+                    // the masked cells, at the flood level
+                    for (int c : members)
+                        level[c] = terrain::TEMPLATE.lakeAt(cellDir(c % W, c / W)) ? filled[i] : floorH;
+                    ncomp++;
+                    continue;
+                }
+            }
             // Lakes under three cells are playas the grid cannot draw well.
             if (members.size() < 3) kept = false;
             float lvl = kept ? std::min(filled[i], floorH + cap) : floorH;
@@ -303,7 +330,7 @@ inline void reweight(Result& r, const std::vector<float>& rainMmDay,
             // area threshold kept every closed basin of a desert the size of
             // Texas full of water.
             double inflow = accMax * REF_RUNOFF_MM_YR;
-            bool keep = balSum / comp.size() > 0.1 || inflow > demand;
+            bool keep = balSum / comp.size() > 0.1 || inflow > demand || terrain::TEMPLATE.active;   // the template's lakes are the world's own
             if (!keep) {
                 for (int c : comp) r.cells[c].lakeLevel = NO_LAKE;
                 r.lakeCells -= (int)comp.size();
