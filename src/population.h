@@ -297,6 +297,43 @@ inline float storageCapDays(float P, float granaries) {
     return CAP_DAYS_SETTLED + granaries * GRANARY_STORE / std::max(P, 1.0f);
 }
 
+// Heat (Design/Resources.md): the second need, the first that is not
+// calories. The demand is warmth -- cooking fires always, hearths against
+// the cold -- and burning wood is only the leading MODE of meeting it:
+// herd dung is fuel too, which is how the treeless steppe stayed warm.
+// Demand is in kilograms of wood-equivalent per person per day: about a
+// kilogram to cook anywhere, plus heating that grows with the cold --
+// roughly a tonne a year in the temperate belt, two or three in the
+// subarctic, which is what the ethnographic record measures.
+constexpr float FUEL_COOK_KG = 1.0f;      // kg/person/day, any climate
+constexpr float FUEL_HEAT_BASE_C = 15.0f; // below this the hearth burns for warmth
+constexpr float FUEL_HEAT_KG_DEG = 0.12f; // kg/person/day per degree below base
+// The woodpile: an ambient stockpile like food's 90 days -- it must fill
+// in the mild seasons and drain in winter, but a pile needs no walls and
+// no build (Design/Resources.md: stockpiles without architecture).
+constexpr float FUEL_CAP_KG = 500.0f;   // pile per person: about a hard winter
+constexpr float FUEL_PILE_DAYS = 90.0f; // filled over a season, labour allowing
+// The labour ledger's wood column. A man-day of dedicated cutting in full
+// woods brings home 50 kg; sparser cover means longer walks for less. The
+// byproduct is what ordinary rounds sweep up regardless -- deadfall on the
+// way home -- which covers the cooking fire wherever there are woods at
+// all, so dedicated woodcutters only appear where need outruns it.
+constexpr float WOOD_GATHER_KG = 50.0f;   // per man-day, at full wood cover
+constexpr float WOOD_BYPRODUCT_KG = 1.5f; // per person-day of ordinary rounds
+constexpr float DUNG_KG_PER_FED = 4.0f;   // fuel per people-fed unit of herd
+// A cold hearth kills the way famine does -- the weak first -- but people
+// huddle, ration and endure long before they die, so the rate only bites
+// as the shortfall becomes total (quadratic in the unmet share).
+constexpr float COLD_MAX = 0.02f; // deaths/day at a totally unmet need
+
+inline float fuelNeedKg(float tempC) {
+    return FUEL_COOK_KG + FUEL_HEAT_KG_DEG * std::max(FUEL_HEAT_BASE_C - tempC, 0.0f);
+}
+// Measurement switch (test_resources.cpp): the same world run with the
+// hearth cold, so the heat need's effect can be measured against a
+// baseline. Not a game setting.
+inline bool HEAT_ENABLED = true;
+
 // Cultures and names (Design/Culture.md). A culture owns a small sound
 // inventory, and every settlement descended from it draws its name from
 // that inventory -- so Gervatti and Poetti share an ending without anyone
@@ -527,6 +564,11 @@ struct Settlement {
     float claim[CLAIM_SECTORS] = {};
     float claimKm2 = FORAGE_KM2; // worked value of the whole claim, cached (set on founding)
     double claimT = 0;           // when the frontier was last worked outward
+    // Heat and the labour ledger (Design/Resources.md):
+    float sWood = 0;   // wood cover in reach, 0..1 (fuel gathering pace)
+    float fuelS = 0;   // the woodpile, kg of wood-equivalent (dung dries into it too)
+    float coldYr = 0;  // people the cold took in the trailing year (subset of starvedYr)
+    float labFuel = 0; // share of the labour budget on fuel, last integrated day (readout)
 };
 
 // A migrating group: a settlement with velocity (Design/Migration.md). It
@@ -589,7 +631,7 @@ struct Field {
     std::vector<Ruin> ruins;
     // Per-cell local properties, kept for founding settlements at runtime:
     std::vector<float> kFoodPMap, kWaterMap, sFarmMap, pastureMap, buildMatMap, kGameMap,
-        kSmallMap, kFishMap, sFishMap;
+        kSmallMap, kFishMap, sFishMap, sWoodMap;
     std::vector<Culture> cultures;
     std::vector<Event> events;      // this step's news
     int eventCount[EV_KINDS] = {};  // exact totals, even past what is kept
@@ -746,6 +788,17 @@ inline float pastureSuitability(const terrain::Mixture& m) {
     return std::min(m.cov[5] + m.cov[6] + m.cov[7] + 0.4f * m.cov[8] + 0.3f * m.cov[1], 1.0f);
 }
 
+// Wood cover: the share of the surroundings a fuel gatherer finds trees on.
+// Distinct from buildMat, which credits bare rock (stone builds a granary;
+// it does not burn). Savanna and marsh carry scattered timber; tundra a
+// little scrub and driftwood, which is why the far north heats with herds
+// or not at all.
+inline float woodSuitability(const terrain::Mixture& m) {
+    return std::min(m.cov[2] + m.cov[3] + m.cov[4] + 0.5f * m.cov[8] + 0.3f * m.cov[7] +
+                        0.25f * m.cov[9] + 0.05f * m.cov[1],
+                    1.0f);
+}
+
 inline Field build(const terrain::ContinentParams& cp, float seaLevel, const float rot[9],
                    terrain::V3 offset, const plates::Field& pf, const hydrology::Result& hy,
                    const atmosphere::Climatology* clim = nullptr) {
@@ -756,9 +809,10 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
 
     // Everything the population model needs to know about one cell.
     auto evalCell = [&](int x, int y, float& kFoodP, float& kWater, float& sFarm, float& pasture,
-                        float& buildMat, float& kGame, float& kSmall, float& kFish, float& sFish) {
+                        float& buildMat, float& kGame, float& kSmall, float& kFish, float& sFish,
+                        float& sWood) {
         int i = y * W + x;
-        kFoodP = kWater = sFarm = pasture = buildMat = kGame = kSmall = 0;
+        kFoodP = kWater = sFarm = pasture = buildMat = kGame = kSmall = sWood = 0;
         float h = hm[i];
         if (h <= 0) return;                                           // land only
         if (hy.cells[i].lakeLevel > hydrology::NO_LAKE + 1 && h < hy.cells[i].lakeLevel) return;
@@ -803,6 +857,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         buildMat = std::clamp(m.cov[2] + m.cov[3] + m.cov[4] + 0.3f * m.cov[8] +
                                   0.6f * m.cov[0],
                               0.15f, 1.0f);
+        sWood = woodSuitability(m);
 
         // What the water in reach is worth. A shoreline is what makes it:
         // the sea at the door, a lake, or a river big enough to weir. Only
@@ -833,13 +888,14 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
     f.kSmallMap.assign(W * H, 0.0f);
     f.kFishMap.assign(W * H, 0.0f);
     f.sFishMap.assign(W * H, 0.0f);
+    f.sWoodMap.assign(W * H, 0.0f);
 #pragma omp parallel for
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
             int i = y * W + x;
             evalCell(x, y, f.kFoodPMap[i], f.kWaterMap[i], f.sFarmMap[i], f.pastureMap[i],
                      f.buildMatMap[i], f.kGameMap[i], f.kSmallMap[i], f.kFishMap[i],
-                     f.sFishMap[i]);
+                     f.sFishMap[i], f.sWoodMap[i]);
             // What an unskilled newcomer would find here: the land, plus the
             // fish anyone can take from a bank without gear.
             f.K[i] = std::min(f.kFoodPMap[i] + f.kFishMap[i] * FISH_BASE, f.kWaterMap[i]);
@@ -903,7 +959,9 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         s.sFarm = f.sFarmMap[c.cell];
         s.pasture = f.pastureMap[c.cell];
         s.buildMat = f.buildMatMap[c.cell];
+        s.sWood = f.sWoodMap[c.cell];
         s.S = storageCapDays(s.P, s.granaries) * s.P; // the world opens on full stores
+        s.fuelS = 0.5f * FUEL_CAP_KG * s.P;           // and half a woodpile
         // The world opens with each settlement holding what it needs, capped
         // at half the seeding distance so no two claims start overlapping.
         // The yields above are for the old fixed catchment, so they are
@@ -1083,6 +1141,8 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     float fillLo = s.fillLo, fillHi = s.fillHi, granNeed = s.granNeedYrs;
     float starved = s.starvedYr;
     float bows = s.bows;
+    float fuelS = s.fuelS, coldYr = s.coldYr, labFuel = s.labFuel;
+    float fuelNet = 0; // kg/day the pile last gained or lost (horizon watch)
     double cycleT = s.cycleT;
     float lat = std::asin(std::clamp(ctx.n.z, -1.0f, 1.0f));
     float lon = std::atan2(ctx.n.y, ctx.n.x);
@@ -1102,15 +1162,57 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
         float dStarve;
         derivatives(P, R, S, flow, K, capDays, GATHER_SETTLED * P * wh / 12.0f, dP, dR, dS,
                     dStarve);
-        starved += dStarve * hstep;
+        // Heat and the labour ledger (Design/Resources.md). Warmth is a
+        // demand like food's, and burning wood only its leading mode: the
+        // herd's dung burns too, and ordinary rounds sweep up deadfall (the
+        // byproduct) which covers the cooking fire wherever there are woods
+        // at all. Only the need past that pulls dedicated cutters out of
+        // the day's budget -- whatever the food work leaves free, and
+        // nothing while hunger has the stores down to hoarding: famine
+        // pre-empts the woods. The pile fills in the mild seasons and
+        // drains in winter; when it runs dry in the cold, the hands famine
+        // would take first are taken by the cold instead.
+        float dCold = 0;
+        if (HEAT_ENABLED) {
+            float needKg = fuelNeedKg(cachedSeasonT(s, tk)) * P;
+            float budget = P * wh / 12.0f; // man-days the day holds
+            // Food's claim on the budget is the harvest actually eaten or
+            // banked, not the notional maximum: a full larder frees hands.
+            float capS = capDays * std::max(P, 1.0f);
+            float Hfood = std::min(flow, GATHER_SETTLED * budget);
+            float useful =
+                std::min(Hfood, P + std::max(capS - S, 0.0f) / std::max(hstep, 1.0f));
+            float freeMD = std::max(budget - useful / GATHER_SETTLED, 0.0f);
+            float fillNow = std::clamp(S / capS, 0.0f, 1.0f);
+            float dung = s.herd * DUNG_KG_PER_FED;
+            float byp = P * WOOD_BYPRODUCT_KG * s.sWood;
+            float capKg = FUEL_CAP_KG * std::max(P, 1.0f);
+            float gatherKg = WOOD_GATHER_KG * s.sWood; // per man-day of cutting
+            float wantKg = std::max(needKg - dung - byp, 0.0f) +
+                           std::max(capKg - fuelS, 0.0f) / FUEL_PILE_DAYS;
+            float cutMD = gatherKg > 0 && fillNow > HOARD_FILL
+                              ? std::min(wantKg / gatherKg, freeMD)
+                              : 0.0f;
+            labFuel = budget > 0 ? cutMD / budget : 0.0f;
+            float inflow = dung + byp + cutMD * gatherKg;
+            // The hearth burns around the clock; no daylight factor here.
+            float burn = std::min(needKg * hstep, fuelS + inflow * hstep);
+            float unmet = needKg > 0 ? 1.0f - burn / (needKg * hstep) : 0.0f;
+            dCold = COLD_MAX * P * unmet * unmet;
+            fuelS = std::clamp(fuelS + inflow * hstep - burn, 0.0f, capKg);
+            fuelNet = inflow - needKg;
+        }
+        starved += (dStarve + dCold) * hstep;
         starved *= std::max(1.0f - hstep / 365.0f, 0.0f); // trailing year
+        coldYr += dCold * hstep;
+        coldYr *= std::max(1.0f - hstep / 365.0f, 0.0f);
         // Sub-day steps see the rhythm: harvesting and eating happen inside
         // the day's activity window, so stores hold flat through the night.
         double a = s.t + k * (double)hstep;
         float act = hstep >= 1.0f
                         ? 1.0f
                         : (float)(daylight::activeDays(lon, a, a + hstep, wh) / hstep);
-        stepCohorts(pop, phiNow, dStarve, hstep);
+        stepCohorts(pop, phiNow, dStarve + dCold, hstep);
         P = pop.total();
         R = std::clamp(R + dR * hstep, 0.0f, 1.0f);
         float cap = capDays * std::max(P, 1.0f);
@@ -1187,6 +1289,9 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     s.granNeedYrs = granNeed;
     s.starvedYr = starved;
     s.bows = bows;
+    s.fuelS = fuelS;
+    s.coldYr = coldYr;
+    s.labFuel = labFuel;
     s.cycleT = cycleT;
     s.t = now;
     float capDays = storageCapDays(s.P, s.granaries);
@@ -1209,6 +1314,11 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
         double toHoard = (s.S - HOARD_FILL * capDays * s.P) / -dS;
         if (toHoard > 0) horizon = std::min(horizon, std::max(toHoard, 15.0));
     }
+    // A draining woodpile is a deadline like a draining larder: wake by the
+    // day it runs out (and keep waking while the hearths stand cold -- the
+    // population horizon above cannot see the cold's deaths).
+    if (fuelNet < -1e-6f)
+        horizon = std::min(horizon, std::max((double)(s.fuelS / -fuelNet), 15.0));
     s.nextUpdate = now + std::max(horizon, 5.0);
     return changed;
 }

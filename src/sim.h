@@ -790,6 +790,11 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     s.sFish = pf.sFishMap[cell];
     s.pasture = pf.pastureMap[cell];
     s.buildMat = pf.buildMatMap[cell];
+    s.sWood = pf.sWoodMap[cell];
+    // The first days on new ground go to firewood before anything else
+    // stands: a month's pile, not a winter's -- arriving in autumn on bare
+    // tundra is as dangerous as it sounds.
+    s.fuelS = 100.0f * b.P;
     s.cycleT = now;  // the fill cycle starts with the settlement
     s.claimT = now;  // and so does the frontier
     // They claim what they need on the day they arrive, as far as the room

@@ -281,6 +281,6 @@ These were part of Delegate's Tech Tree design. Each is deferred because its pre
 ## Open Questions
 
 - Does expertise decay if a technology goes unused (a collapsed settlement's knowledge)?
-- Does farming change the map — cleared fields as terrain deviations ([[Design/Terrain]])?
+- ~~Does farming change the map — cleared fields as terrain deviations ([[Design/Terrain]])?~~ Decided 2026-09-01: yes — slash-and-burn clearance is the real driver of early deforestation; see [[Design/Resources]].
 - ~~The world-clock model means a harsher world does not discover sooner — pacing is fixed by design. Revisit if that ever feels wrong in play.~~ Revisited 2026-08-26: necessity techs (farming, granaries) are now need-driven; see Discovery above.
 - ~~Should *adoption* (aware → practising) also be need-scaled?~~ Decided 2026-08-26: yes — see the practice rate under Spread.

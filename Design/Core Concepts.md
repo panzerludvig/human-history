@@ -29,6 +29,7 @@ Mechanics built on the core concepts, each with its own note:
 | [[Design/Technology]] | Dark, shared, automatic discovery driven by need; expertise; farming first | Implemented |
 | [[Design/Migration]] | Bands as moving settlements; storage; emergent nomadism; the first agent | Implemented |
 | [[Design/Weather]] | Atmosphere run at generation; stored climatology; weather as a function | Implemented |
+| [[Design/Resources]] | A capped labour ledger; heat as the second need; wood as a depletable stock | Implemented |
 
 ---
 

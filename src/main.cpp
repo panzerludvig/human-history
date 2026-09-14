@@ -367,7 +367,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 21\n";
+    f << "version 22\n";
     f << "seed " << w.seed << "\n";
     f << "earth " << (w.earth ? 1 : 0) << "\n";
     f << "time " << w.simTime << "\n";
@@ -389,6 +389,7 @@ static bool saveWorld(const World& w, const Camera& c) {
           << s.culture << " " << s.aff.hunt << " " << s.aff.gather << " " << s.aff.farm << " "
           << s.aff.herd << " " << s.aff.fight << " " << s.claimT;
         for (int k = 0; k < population::CLAIM_SECTORS; k++) f << " " << s.claim[k];
+        f << " " << s.fuelS << " " << s.coldYr;
         f << "\n";
     }
     for (const population::Band& b : w.pop.bands) {
@@ -436,7 +437,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         double children = 0, men = 0, women = 0, elderly = 0;
         std::string name;
         double culture = 0, affHunt = 0, affGather = 0, affFarm = 0, affHerd = 0, affFight = 0;
-        double claimT = 0;
+        double claimT = 0, fuelS = -1, coldYr = 0;
         double claim[population::CLAIM_SECTORS] = {};
         double tech[population::NTECH][4] = {};
     };
@@ -491,6 +492,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
                     f >> sv.claimT;
                     for (int k = 0; k < population::CLAIM_SECTORS; k++) f >> sv.claim[k];
                 }
+                if (version >= 22) f >> sv.fuelS >> sv.coldYr;
             } else {
                 if (version >= 4) f >> sv.S >> sv.scarce;
                 else sv.S = 0.5 * population::CAP_DAYS_SETTLED * sv.P;
@@ -584,6 +586,12 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.kSmall = w.pop.kSmallMap[cell];
             st.kFish = w.pop.kFishMap[cell];
             st.sFish = w.pop.sFishMap[cell];
+            st.sWood = w.pop.sWoodMap[cell];
+            // Saves that predate the hearth open with half a pile, as a new
+            // world does -- not empty, or every old save thaws into a freeze.
+            st.fuelS = sv.fuelS >= 0 ? (float)sv.fuelS
+                                     : 0.5f * population::FUEL_CAP_KG * (float)sv.P;
+            st.coldYr = (float)sv.coldYr;
             st.gRegion = population::gameRegion(cell);
             for (int t = 0; t < population::NTECH; t++) {
                 st.tech[t].aware = sv.tech[t][0] > 0.5;
@@ -2193,6 +2201,10 @@ static std::string peopleText(const population::Settlement& st) {
         snprintf(b, sizeof b, "Hunger: %d lost this year\n", (int)std::lround(st.starvedYr));
         out += b;
     }
+    if (st.coldYr >= 0.5f) {
+        snprintf(b, sizeof b, "  of them to cold hearths: %d\n", (int)std::lround(st.coldYr));
+        out += b;
+    }
     out += "\n";
     out += "What they carry:\n";
     snprintf(b, sizeof b, "  Food: %d days (of %d)\n", (int)(st.S / std::max(st.P, 1.0f)),
@@ -2203,6 +2215,13 @@ static std::string peopleText(const population::Settlement& st) {
     out += b;
     if (st.herd > 0.5f) {
         snprintf(b, sizeof b, "  Livestock: feeds %d\n", (int)st.herd);
+        out += b;
+    }
+    {
+        float need = population::fuelNeedKg(population::cachedSeasonT(st, now)) *
+                     std::max(st.P, 1.0f);
+        snprintf(b, sizeof b, "  Firewood: %d days at this season\n",
+                 (int)(st.fuelS / std::max(need, 1.0f)));
         out += b;
     }
     return out;
@@ -2262,6 +2281,13 @@ static std::string envText(const population::Settlement& st) {
     out += b;
     snprintf(b, sizeof b, "Build materials: %d%%\n", (int)std::lround(st.buildMat * 100));
     out += b;
+    snprintf(b, sizeof b, "Woodland: %d%%\n", (int)std::lround(st.sWood * 100));
+    out += b;
+    if (st.labFuel > 0.005f) {
+        snprintf(b, sizeof b, "Woodcutters: %d%% of the day's labour\n",
+                 (int)std::lround(st.labFuel * 100));
+        out += b;
+    }
     snprintf(b, sizeof b, "Awareness: %d km\n", (int)awareKm);
     out += b;
     if (st.scarceSince >= 0) {
