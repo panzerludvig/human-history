@@ -367,7 +367,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 23\n";
+    f << "version 24\n";
     f << "seed " << w.seed << "\n";
     f << "earth " << (w.earth ? 1 : 0) << "\n";
     f << "time " << w.simTime << "\n";
@@ -391,6 +391,8 @@ static bool saveWorld(const World& w, const Camera& c) {
         for (int k = 0; k < population::CLAIM_SECTORS; k++) f << " " << s.claim[k];
         f << " " << s.fuelS << " " << s.coldYr;
         f << " " << s.farmsteads << " " << s.fsteadWork;
+        f << " " << s.tillWork << " " << (int)s.tillSite;
+        for (int k = 0; k <= population::FSTEAD_MAX; k++) f << " " << s.tilled[k];
         f << "\n";
     }
     for (const population::Band& b : w.pop.bands) {
@@ -439,6 +441,8 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         std::string name;
         double culture = 0, affHunt = 0, affGather = 0, affFarm = 0, affHerd = 0, affFight = 0;
         double claimT = 0, fuelS = -1, coldYr = 0, farmsteads = 0, fsteadWork = 0;
+        double tillWork = 0, tillSite = -1;
+        double tilled[1 + population::FSTEAD_MAX] = {};
         double claim[population::CLAIM_SECTORS] = {};
         double tech[population::NTECH][4] = {};
     };
@@ -495,6 +499,10 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
                 }
                 if (version >= 22) f >> sv.fuelS >> sv.coldYr;
                 if (version >= 23) f >> sv.farmsteads >> sv.fsteadWork;
+                if (version >= 24) {
+                    f >> sv.tillWork >> sv.tillSite;
+                    for (int k = 0; k <= population::FSTEAD_MAX; k++) f >> sv.tilled[k];
+                }
             } else {
                 if (version >= 4) f >> sv.S >> sv.scarce;
                 else sv.S = 0.5 * population::CAP_DAYS_SETTLED * sv.P;
@@ -596,7 +604,20 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.coldYr = (float)sv.coldYr;
             st.farmsteads = (float)sv.farmsteads;
             st.fsteadWork = (float)sv.fsteadWork;
-            st.farmEff = w.pop.sFarmMap[cell]; // refined on the first wake
+            st.tillWork = (float)sv.tillWork;
+            st.tillSite = (int8_t)sv.tillSite;
+            for (int k = 0; k <= population::FSTEAD_MAX; k++)
+                st.tilled[k] = (float)sv.tilled[k];
+            // Saves that predate built plots hold farming villages with no
+            // fields on record: back-fill what their hands would have
+            // cleared by now, or every old farm starves on load.
+            if (version < 24 && sv.tech[population::TECH_FARMING][1] > 0.5) {
+                st.tilled[0] = std::min((float)sv.P * population::FARM_KM2_PER_PERSON,
+                                        population::VILLAGE_FIELDS_KM2);
+                for (int k = 0; k < (int)(st.farmsteads + 0.5f) &&
+                                k < population::FSTEAD_MAX; k++)
+                    st.tilled[k + 1] = population::FSTEAD_KM2;
+            }
             st.gRegion = population::gameRegion(cell);
             for (int t = 0; t < population::NTECH; t++) {
                 st.tech[t].aware = sv.tech[t][0] > 0.5;
@@ -699,6 +720,9 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
     w.pop.gameT = savedTime;
     for (population::Settlement& st : w.pop.settlements)
         if (st.kGame > 0) st.gameNow = w.pop.gameG[st.gRegion];
+    // Cache what the standing fields feed before anything asks (panels read
+    // farmK before the first simulate step).
+    for (population::Settlement& st : w.pop.settlements) sim::updateFarmland(w.pop, st);
     w.simTime = savedTime;
     if (savedTechRng) w.tech.rng = savedTechRng;
     // Contact draws and the invention clock are exponential (memoryless), so
@@ -859,11 +883,12 @@ static std::vector<float> popTexData() {
     return d;
 }
 
-// Five texels per settlement: its people, granaries and field reach, then
-// the sixteen sectors of its claim, four to a texel. A settlement is
-// SITE_STRIDE texels along the row, so the shader indexes site*5 + k.
+// Ten texels per settlement: its people, granaries, village field reach and
+// farmstead count; the sixteen sectors of its claim, four to a texel; then
+// each farmstead's own field radius, four to a texel. A settlement is
+// SITE_STRIDE texels along the row, so the shader indexes site*10 + k.
 constexpr int SITE_TEX_W = 256;
-constexpr int SITE_STRIDE = 5;
+constexpr int SITE_STRIDE = 10;
 static std::vector<float> siteTexData(int& rows) {
     const std::vector<population::Settlement>& ss = app.world.pop.settlements;
     size_t texels = ss.size() * SITE_STRIDE;
@@ -876,6 +901,8 @@ static std::vector<float> siteTexData(int& rows) {
         d[o + 2] = sim::farmRadiusKm(ss[i], app.world.simTime);
         d[o + 3] = ss[i].farmsteads;
         for (int k = 0; k < population::CLAIM_SECTORS; k++) d[o + 4 + k] = ss[i].claim[k];
+        for (int k = 0; k < population::FSTEAD_MAX; k++)
+            d[o + 20 + k] = sim::farmsteadFieldKm(ss[i], k);
     }
     return d;
 }
@@ -2488,9 +2515,25 @@ static std::string buildingsText(const population::Settlement& st, double now) {
         out += b;
     }
     if (st.tech[population::TECH_FARMING].practising) {
-        snprintf(b, sizeof b, "Farmland worked: %d%% of the claim\n",
-                 (int)std::lround(st.farmEff / std::max(st.sFarm, 0.01f) * 100));
-        out += b;
+        float sum = 0;
+        for (int k = 0; k <= population::FSTEAD_MAX; k++) sum += st.tilled[k];
+        if (sum > 0.05f) {
+            snprintf(b, sizeof b, "Fields: %.1f km2 tilled (%.1f at the village)\n", sum,
+                     st.tilled[0]);
+            out += b;
+            snprintf(b, sizeof b, "  feeding %d at their skill\n",
+                     (int)(st.farmK *
+                           technology::expertise(st.tech[population::TECH_FARMING], now)));
+            out += b;
+        }
+        if (st.tillWork > 0) {
+            snprintf(b, sizeof b, "Clearing a plot%s: %d%% done\n",
+                     st.tillSite > 0 ? " at a farmstead" : "",
+                     (int)std::lround(
+                         (1.0 - st.tillWork / (population::PLOT_KM2 *
+                                               population::TILL_WORK_PER_KM2)) * 100));
+            out += b;
+        }
     }
     const population::TechState& gt = st.tech[population::TECH_GRANARY];
     if (gt.practising) {

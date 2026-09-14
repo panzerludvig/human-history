@@ -94,36 +94,57 @@ start-known status is a deliberate compression, recorded as such.
 
 **Terrain suitability s** (used by both discovery weight and adoption rate): the grass-like share of the surrounding cover mixture — grassland + savanna + steppe, with marsh at half credit (the real cradles were river floodplains) — times the farming climate window (warmth and moisture). Cereal agriculture came from wild grasses; you can't domesticate what doesn't grow around you. Grassland river valleys become the world's invention hotspots; tundra stays foraging country.
 
-Farming multiplies the *food* side of the capacity min() by **1 + 4·s·expertise** — up to ×5 on prime grassland at full expertise, conservative for agriculture historically but right for its early form. Water is not multiplied, so where farming succeeds, water genuinely starts to bind — rivers begin deciding where the large settlements are. Irrigation will later multiply water use, so rivers start deciding where the large settlements are, through the same min() in [[Design/Population]].
+Farm food comes from **built plots**, not a multiplier (reworked 2026-09-14;
+the original form was a food multiplier 1 + 4·s·expertise on the whole
+claim): a tilled km² feeds `TILLED_YIELD_PKM2` (25) × suitability ×
+expertise people — 4 ha a head at full skill on prime ground, with the long
+fallow priced in — and the plots must be cleared first (see the next
+section). Farm output therefore scales with *hands and years*, not with
+land alone. Water is still not multiplied, so where farming succeeds, water
+genuinely starts to bind — rivers begin deciding where the large
+settlements are, through the same min() in [[Design/Population]]; irrigation
+will later multiply water use.
 
 Represented as an entry in a technology table (generalized when husbandry arrived), so the rest of the roster slots in beside it.
 
-### Farming's reach, and farmsteads (built 2026-09-14)
+### Farming's reach, tilled plots, and farmsteads (built 2026-09-14)
 
 Farming's reach is **derived, not defined** — von Thünen by way of the
 labour ledger ([[Design/Resources]]): a field at distance d costs its round
 trip out of the working day every day it is worked, so its value falls
 linearly to zero where the walk would eat the whole day (4.8 km/h, 12
 hours: 28.8 km). Foraging keeps the gentler claim taper — a forager ranges
-and camps; a farmer commutes to the same field daily. So a settlement's
-farmed land is the walk-priced share of its claim (`claimFarmKm2`,
-`farmEff`), which for a large claim is a fraction of what it holds: land
-past the walk is farmland only a **farmstead** can open.
+and camps; a farmer commutes to the same field daily. Daily fields end
+where the commute costs ~15% of the day (4.3 km — where the ethnography
+puts the village-field edge), giving the village a ~58 km² fields disc;
+land past that is farmland only a **farmstead** can open.
+
+**Tilled land is a built thing** (decided 2026-09-14, replacing the drawn
+"footprint" annulus derived from output): a settlement selects a plot and
+clears it as a work order with a start and a finish — a square kilometre
+at 2,000 man-days (girdle, burn, stump, break; fire and axes, so no
+materials factor — skill and hands set the pace, and famine pauses it).
+Orders are placed yearly while food binds and stop at what hands can work
+(8 ha a person, `FARM_KM2_PER_PERSON`); the village disc fills first, then
+each farmstead's 12 km² block. **What the map draws is the built area** —
+the village annulus and a small mosaic around each farmstead hold exactly
+the plots that stand — so the map and the panel can no longer disagree,
+and a new farm is visibly a generation's clearing work. Colonists arrive
+to unbroken ground and must clear before they harvest.
 
 A farmstead moves the household to the field. It is a building of the
 mother settlement — no new agent, no new event queue entry; its people
 stay the settlement's population — standing for a hamlet-scale cluster
-that works a 12 km² block of the far claim. It follows the granary
-pattern exactly: demand measured yearly (practising farming, food binding,
-claim ground the walk forbids), a fixed work total (500 man-days), paced
-by farming expertise and materials, only the fed build. Its block is
-priced at **its own cell's** suitability, not the village's — the river
-village whose claim runs into hills gets farmsteads only where the grass
-is, and a slot that falls on scree or water opens nothing, which is the
-map talking. Farmsteads anchor relocation like granaries (sunk
-investment), leave ruins, and are drawn as lone farmhouses on a
-golden-angle spiral walking outward to ~23 km (`sim::farmsteadPos`,
-mirrored in the shader), each standing among the fields it works.
+whose block is tilled plot by plot like the village's. It is ordered when
+every site in hand is tilled up and food still binds, built like a granary
+(500 man-days, expertise-paced, only the fed build). Its land is priced at
+**its own cell's** suitability, not the village's — the river village
+whose claim runs into hills gets farmsteads only where the grass is, and a
+slot that falls on scree or water opens nothing, which is the map talking.
+Farmsteads anchor relocation like granaries (sunk investment), leave
+ruins, and are drawn as lone farmhouses on a golden-angle spiral walking
+outward to ~23 km (`sim::farmsteadPos`, mirrored in the shader), each
+among its own fields.
 
 The boundary against colonization: a farmstead only works land whose
 people can reach the village within the day — one community. Beyond the

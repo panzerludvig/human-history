@@ -30,7 +30,9 @@ struct Report {
     int farmers = 0;          // settlements practising farming
     double farmsteads = 0;    // standing farmsteads, world total
     int building = 0;         // farmsteads going up
-    double workedShare = 0;   // farmEff / sFarm, farmer-population-weighted
+    int clearing = 0;         // plots being cleared
+    double tilledKm2 = 0;     // world total under the rotation
+    double farmFed = 0;       // people the fields feed at current expertise
     double farmerPop = 0;
 };
 
@@ -58,10 +60,11 @@ static Report survey(const population::Field& pf, double now) {
             r.farmers++;
             r.farmsteads += s.farmsteads;
             if (s.fsteadWork > 0) r.building++;
-            if (s.sFarm > 0.01f) {
-                r.workedShare += s.farmEff / s.sFarm * s.P;
-                r.farmerPop += s.P;
-            }
+            if (s.tillWork > 0) r.clearing++;
+            for (int k = 0; k <= population::FSTEAD_MAX; k++) r.tilledKm2 += s.tilled[k];
+            r.farmFed += s.farmK * technology::expertise(
+                                       s.tech[population::TECH_FARMING], now);
+            r.farmerPop += s.P;
         }
     }
     return r;
@@ -155,9 +158,10 @@ int main(int argc, char** argv) {
             c0.nBare, c0.pBare, c0.nSparse, c0.pSparse, c0.nWooded, c0.pWooded);
     for (int p = 0; p < 2; p++)
         fprintf(stderr,
-                "%s: %d settlements farm; %.0f farmsteads stand, %d going up; "
-                "worked land %.0f%% of the claim's potential (farmer-weighted)\n",
-                p ? "heat    " : "baseline", out[p].farmers, out[p].farmsteads, out[p].building,
-                100.0 * out[p].workedShare / std::max(out[p].farmerPop, 1.0));
+                "%s: %d settlements farm (%.0f people); %.0f km2 tilled, %d plots being "
+                "cleared; fields feed %.0f; %.0f farmsteads stand, %d going up\n",
+                p ? "heat    " : "baseline", out[p].farmers, out[p].farmerPop,
+                out[p].tilledKm2, out[p].clearing, out[p].farmFed, out[p].farmsteads,
+                out[p].building);
     return 0;
 }

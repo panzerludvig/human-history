@@ -1,4 +1,4 @@
-// The simulation orchestrator: processes settlement re-evaluations, technology
+﻿// The simulation orchestrator: processes settlement re-evaluations, technology
 // events, splits, and band journeys in strict chronological order, since each
 // event can change the rates of the others. See Design/Migration.md.
 #pragma once
@@ -360,11 +360,16 @@ inline bool growClaim(population::Field& pf, int si, double now) {
 // how a herding band values the steppe a forager walks past -- and it must
 // gate founding too, or a band would choose a target it then refuses.
 inline float moverCap(const population::Field& pf, int cell, float farmExp, float husbExp,
-                      double now, float fishExp = 0) {
+                      double now, float fishExp = 0, float movers = 300.0f) {
     using namespace population;
     float food = pf.kFoodPMap[cell];
     if (food <= 0) return 0;
-    food += food * technology::FARM_YIELD_GAIN * pf.sFarmMap[cell] * farmExp;
+    // What a farming mover could make of this ground: the fields their
+    // hands could till here, at its suitability -- prospective, since the
+    // plots would still have to be cleared on arrival.
+    food += population::TILLED_YIELD_PKM2 * pf.sFarmMap[cell] * farmExp *
+            std::min(movers * population::FARM_KM2_PER_PERSON,
+                     population::VILLAGE_FIELDS_KM2);
     if (husbExp > 0)
         food += pf.pastureMap[cell] * FORAGE_KM2 * HERD_PASTURE_K / SUSTAIN_R *
                 (0.3f + 0.7f * husbExp) * 0.85f;
@@ -378,8 +383,8 @@ inline float moverCap(const population::Field& pf, int cell, float farmExp, floa
 // valley is a bad place to move to for a generation. Only applied to the
 // finalists of a search -- scars are sparse, and the lookup is not free.
 inline float moverCapScarred(const population::Field& pf, int cell, float farmExp, float husbExp,
-                             double now, float fishExp = 0) {
-    return moverCap(pf, cell, farmExp, husbExp, now, fishExp) *
+                             double now, float fishExp = 0, float movers = 300.0f) {
+    return moverCap(pf, cell, farmExp, husbExp, now, fishExp, movers) *
            population::cellCondition(pf, cell, now);
 }
 
@@ -395,7 +400,8 @@ inline float moverCapRoom(const population::Field& pf, int cell, float farmExp, 
     if (room < population::CLAIM_FLOOR_KM) return 0.0f;
     // What they would hold on arrival: what they need, or what fits.
     float take = std::min(wantedReachKm(pf, cell, movers, population::SUSTAIN_R), room);
-    return moverCapScarred(pf, cell, farmExp, husbExp, now, fishExp) * claimFactor(take);
+    return moverCapScarred(pf, cell, farmExp, husbExp, now, fishExp, std::max(movers, 1.0f)) *
+           claimFactor(take);
 }
 
 // The best-looking unclaimed prospect within the knowledge range, judged with
@@ -425,7 +431,9 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
             // no skills is worth exactly K.
             if (pf.kWaterMap[cell] < MIN_SETTLEMENT_K) continue;
             if (!skilled && pf.K[cell] < MIN_SETTLEMENT_K) continue;
-            float cap = skilled ? moverCap(pf, cell, farmExp, husbExp, now, fishExp) : pf.K[cell];
+            float cap = skilled ? moverCap(pf, cell, farmExp, husbExp, now, fishExp,
+                                           movers > 0 ? movers : 300.0f)
+                                : pf.K[cell];
             if (cap < MIN_SETTLEMENT_K) continue;
             terrain::V3 n = cellCentre(cell);
             float dot = terrain::dot(from, n);
@@ -509,13 +517,11 @@ inline void gameTick(population::Field& pf, double now) {
         float cover = bowCoverage(s.bows, s.P);
         float gameFlow =
             s.kGame * huntEff(g) * (1.0f + BOW_BIG_GAIN * cover * archExp) * s.meanF;
-        float farmMult = 1.0f + technology::FARM_YIELD_GAIN * s.farmEff *
-                                    technology::expertise(s.tech[TECH_FARMING], now);
+        float farm = s.farmK * technology::expertise(s.tech[TECH_FARMING], now);
         float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
         float total = (s.kFoodP - s.kGame - s.kSmall) * s.meanF +
                       s.kSmall * smallGameEff(cover, archExp) * s.meanF + gameFlow +
-                      s.kFoodP * (farmMult - 1.0f) + s.herd * 0.85f +
-                      FARMYARD_SHARE_POP * s.kFoodP * hExp;
+                      farm + s.herd * 0.85f + FARMYARD_SHARE_POP * s.kFoodP * hExp;
         if (total <= 1e-6f) continue;
         draw[s.gRegion] += s.P * gameFlow / total; // game share of what they eat
     }
@@ -543,7 +549,7 @@ inline population::SeasonCtx seasonCtx(const population::Settlement& s,
     ctx.n = cellCentre(s.cell);
     ctx.h = std::max(hy.heightM[s.cell], 0.0f);
     ctx.farmExp = technology::expertise(s.tech[population::TECH_FARMING], now);
-    ctx.farmMult = 1.0f + technology::FARM_YIELD_GAIN * s.farmEff * ctx.farmExp;
+    ctx.farmFlow = s.farmK * ctx.farmExp;
     ctx.husbExp = technology::expertise(s.tech[population::TECH_HUSBANDRY], now);
     ctx.granExp = technology::expertise(s.tech[population::TECH_GRANARY], now);
     ctx.gameG = s.gameNow;
@@ -605,29 +611,39 @@ inline terrain::V3 farmsteadPos(int cell, int k) {
     return norm3(c + (east * std::cos(a) + north * std::sin(a)) * r);
 }
 
-// What the settlement can actually farm, cached as farmEff: the walkable
-// share of the claim at the home cell's suitability, plus each farmstead's
-// block priced at ITS cell's suitability -- a farmstead standing on good
-// grass opens good land; one whose slot fell on scree or water opens
-// nothing, which is the map talking. Recomputed on every wake (the claim
-// grows, farmsteads finish); cheap -- sixteen small integrals and a few
-// map lookups.
-inline void updateFarmEff(population::Field& pf, population::Settlement& s) {
+// What the standing fields feed, cached as farmK, and where the next plot
+// would go. Each site's tilled plots are priced at ITS OWN cell's
+// suitability -- a farmstead on good grass opens good land; one whose slot
+// fell on scree or water opens nothing, which is the map talking. Also
+// decides the next work order's site (the village's daily-walk disc first,
+// then each farmstead's block in the order they stand), how many farmstead
+// slots the claim can hold, and whether the next slot is worth building on.
+// Recomputed on every wake; a few map lookups.
+inline float claimReach(const population::Settlement& s, const terrain::V3& q);
+
+inline void updateFarmland(population::Field& pf, population::Settlement& s) {
     using namespace population;
-    float walkable = 0; // "near" is a legacy Windows macro; avoid the word
-    for (int k = 0; k < CLAIM_SECTORS; k++) walkable += claimFarmKm2(s.claim[k]);
-    walkable /= CLAIM_SECTORS;
-    s.farmNearKm2 = walkable;
-    float worked = std::min(walkable, s.claimKm2);
-    float eff = s.sFarm * worked;
+    float k = s.sFarm * s.tilled[0];
+    int next = (s.sFarm > 0.05f && s.tilled[0] < VILLAGE_FIELDS_KM2 - 0.01f) ? 0 : -1;
     int n = std::min((int)(s.farmsteads + 0.5f), FSTEAD_MAX);
-    for (int k = 0; k < n; k++) {
-        if (worked + FSTEAD_KM2 > s.claimKm2) break;
-        int cell = cellOf(farmsteadPos(s.cell, k));
-        eff += pf.sFarmMap[cell] * FSTEAD_KM2;
-        worked += FSTEAD_KM2;
+    for (int i = 0; i < n; i++) {
+        float suit = pf.sFarmMap[cellOf(farmsteadPos(s.cell, i))];
+        k += suit * s.tilled[i + 1];
+        if (next < 0 && suit > 0.05f && s.tilled[i + 1] < FSTEAD_KM2 - 0.01f) next = i + 1;
     }
-    s.farmEff = s.claimKm2 > 0 ? eff / s.claimKm2 : 0.0f;
+    s.farmK = k * TILLED_YIELD_PKM2;
+    s.tillSiteNext = (int8_t)next;
+    // How far out the farmstead spiral stays inside the claim: slots are
+    // taken in order, so the first one past the border ends the count.
+    terrain::V3 c = cellCentre(s.cell);
+    int slots = 0;
+    for (int i = 0; i < FSTEAD_MAX; i++) {
+        terrain::V3 q = farmsteadPos(s.cell, i);
+        if (distKm(q, c) > claimReach(s, q)) break;
+        slots = i + 1;
+    }
+    s.fsteadMax = (uint8_t)slots;
+    s.fsteadNextOk = n < slots && pf.sFarmMap[cellOf(farmsteadPos(s.cell, n))] > 0.05f;
 }
 
 // Fields around a settlement. Stone tools did not stop the first farmers
@@ -636,26 +652,26 @@ inline void updateFarmEff(population::Field& pf, population::Settlement& s) {
 // clearing, not a patch of open ground it happened to find. Area: roughly
 // 0.4 ha under crop feeds a person at Neolithic yields, and with a long
 // fallow (a rotation of some twenty years) the land inside the rotation is
-// about eight hectares a head. That whole mosaic -- crop, stubble, scrub
-// regrowth, the trees not yet taken -- is what farming looks like from
-// above, so it is the footprint drawn.
-constexpr float FARM_HA_PER_FARMER = 8.0f;
+// about eight hectares a head (population::FARM_KM2_PER_PERSON). That whole
+// mosaic -- crop, stubble, scrub regrowth, the trees not yet taken -- is
+// what farming looks like from above, so it is the footprint drawn.
 
-
-// How far the fields reach: the outer edge of an annulus around the village
-// holding the area this settlement's farmers work. Zero for anyone who does
-// not farm, so it is also the test for whether to draw fields at all.
+// How far the village fields reach: the outer edge of an annulus holding
+// exactly the plots that have been cleared -- the drawing IS the built
+// area, so the map and the panel can no longer disagree. Zero when no plot
+// stands, so it is also the test for whether to draw fields at all. Each
+// farmstead's fields are drawn the same way around its own house, from the
+// per-slot tilled areas the site texture carries.
 inline float farmRadiusKm(const population::Settlement& s, double now) {
-    float fExp = technology::expertise(s.tech[population::TECH_FARMING], now);
-    if (fExp <= 0 || s.sFarm <= 0 || s.P <= 0) return 0.0f;
-    float k = technology::effectiveK(s, now);
-    if (k <= 0) return 0.0f;
-    // The share of the settlement's food the fields provide, applied to its
-    // people: the number of mouths the fields actually feed.
-    float farmers = s.P * std::min(s.kFoodP * technology::FARM_YIELD_GAIN * s.farmEff * fExp / k, 1.0f);
-    float areaKm2 = farmers * FARM_HA_PER_FARMER * 0.01f; // 100 ha to the km^2
+    (void)now;
+    if (s.tilled[0] <= 0) return 0.0f;
     float inner = fieldInnerKm(s.P);
-    return std::sqrt(inner * inner + areaKm2 / 3.14159265f);
+    return std::sqrt(inner * inner + s.tilled[0] / 3.14159265f);
+}
+
+inline float farmsteadFieldKm(const population::Settlement& s, int k) {
+    if (k < 0 || k >= population::FSTEAD_MAX || s.tilled[k + 1] <= 0) return 0.0f;
+    return std::sqrt(s.tilled[k + 1] / 3.14159265f);
 }
 
 // A band forages the cell it stands on: same famine rule as a settlement, but
@@ -851,7 +867,7 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     take = std::max(take, CLAIM_FLOOR_KM);
     for (int k = 0; k < CLAIM_SECTORS; k++) s.claim[k] = take;
     applyClaim(pf, s);
-    updateFarmEff(pf, s);
+    updateFarmland(pf, s);
     s.S = std::min(b.S, CAP_DAYS_SETTLED * b.P);
     for (int t = 0; t < NTECH; t++) s.tech[t] = b.tech[t];
     if (s.tech[TECH_HUSBANDRY].practising) {
@@ -939,7 +955,7 @@ inline bool mergeBand(population::Field& pf, technology::WorldState& ws,
     return true;
 }
 
-// One band re-evaluation: integrate, move, then decide — rest, settle here,
+// One band re-evaluation: integrate, move, then decide â€” rest, settle here,
 // arrive, re-target, or give up. Returns false if the band no longer exists.
 inline bool stepBand(population::Field& pf, technology::WorldState& ws,
                      const hydrology::Result& hy, const atmosphere::Climatology& clim, int bi,
@@ -1063,7 +1079,7 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
     auto canHold = [&](int c) { return moverCapRoom(pf, c, fExp, hExp, now, b.P, qExp) >= b.P; };
     if (distKm(pos, tgt) < 20.0f) {
         // Arrived: the rumour meets reality.
-        if (pf.settlementAt[cell] < 0 && moverCap(pf, cell, fExp, hExp, now, qExp) >= MIN_SETTLEMENT_K &&
+        if (pf.settlementAt[cell] < 0 && moverCap(pf, cell, fExp, hExp, now, qExp, b.P) >= MIN_SETTLEMENT_K &&
             canHold(cell) && claimFits(pf, pos)) {
             foundSettlement(pf, ws, hy, clim, b, cell, now);
             done = true;
@@ -1079,7 +1095,7 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws,
             }
         }
     } else if (!b.resting && pf.settlementAt[cell] < 0 &&
-               moverCap(pf, cell, fExp, hExp, now, qExp) >= MIN_SETTLEMENT_K && claimFits(pf, pos) &&
+               moverCap(pf, cell, fExp, hExp, now, qExp, b.P) >= MIN_SETTLEMENT_K && claimFits(pf, pos) &&
                canHold(cell) &&
                moverCapRoom(pf, cell, fExp, hExp, now, b.P, qExp) >=
                    hopeRatio(now - b.setOut) *
@@ -1466,7 +1482,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
             if (t != s.nextUpdate) continue;
             decaySkills(pf, ws, ev.idx, t);
             growClaim(pf, ev.idx, t);
-            updateFarmEff(pf, s); // the claim moved or a farmstead finished
+            updateFarmland(pf, s); // the claim moved or a farmstead finished
             changed |= population::advance(s, technology::effectiveK(s, t),
                                            seasonCtx(s, hy, clim, t), t);
             reportGranaries(pf, s, t);
@@ -1527,7 +1543,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
         if (!s.leaving && s.t < now - 1e-9) {
             decaySkills(pf, ws, i, now);
             growClaim(pf, i, now);
-            updateFarmEff(pf, s);
+            updateFarmland(pf, s);
             changed |= population::advance(s, technology::effectiveK(s, now),
                                            seasonCtx(s, hy, clim, now), now);
             reportGranaries(pf, s, now);

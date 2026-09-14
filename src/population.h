@@ -327,24 +327,31 @@ constexpr float RELOC_ANCHOR_FSTEAD = 0.15f; // sunk investment, like granaries
 // slot stands at ~23 km -- just inside where the commute value hits zero.
 constexpr float FSTEAD_R0_KM = 2.5f, FSTEAD_DR_KM = 1.1f;
 
-// The worked value of a claim's ground within the day's walk: the claim
-// taper (what ranging to it costs) times the commute factor (what working
-// it daily costs), in the same normalized km2 as claimYieldKm2, so the two
-// are directly comparable. What a claim holds beyond this is farmland only
-// a farmstead can open.
-inline float claimFarmKm2(float R) {
-    static const float unit = FORAGE_KM2 / claimValueKm2(CLAIM_CAP_KM);
-    float D = FARM_WALK_KMH * FARM_DAY_H / 2.0f;
-    float lim = std::min(R, D), t2 = CLAIM_TAPER_KM * CLAIM_TAPER_KM;
-    float sum = 0;
-    const int N = 24;
-    for (int i = 0; i < N; i++) {
-        float r = (i + 0.5f) * lim / N;
-        sum += 1.0f / (1.0f + r * r / t2) * (1.0f - r / D) * 2.0f * 3.14159265f * r *
-               (lim / N);
-    }
-    return sum * unit;
-}
+// Tilled land is a built thing (decided 2026-09-14): a settlement selects a
+// plot, clears and breaks it as a work order with a start and a finish, and
+// the farm yield comes from the plots that stand -- so what the map draws
+// and what the people eat are one quantity. The commute curve above decides
+// WHERE plots can be: daily fields end where the walk costs ~15% of the day
+// (4.3 km -- where the ethnography puts the village-field edge), and land
+// past that is opened by farmsteads, each working its own block.
+constexpr float FIELD_WORTH = 0.85f; // the commute value where daily fields end
+constexpr float VILLAGE_FIELDS_KM2 =
+    58.0f; // pi * 4.32^2: the daily-walk disc, from farmCommute >= FIELD_WORTH
+// What a tilled km2 feeds at full suitability and expertise: 4 ha a head --
+// early-cereal figures with the long fallow priced in. At s*e = 0.5 a
+// square kilometre feeds 12, which is the margin where farming is barely
+// worth the clearing.
+constexpr float TILLED_YIELD_PKM2 = 25.0f;
+// Nobody clears land they cannot work: the whole rotation mosaic a person
+// tends is about 8 ha, so tilled land is capped by hands, not only ground.
+constexpr float FARM_KM2_PER_PERSON = 0.08f;
+// One work order: a plot of a square kilometre, cleared and broken at a
+// fixed labour price. Girdle, burn, stump and break: about 20 man-days an
+// acre's worth per hectare, so ~2,000 to the km2 -- a village crew of six
+// takes a year and a half over it, and a farm is a generation's work.
+constexpr float PLOT_KM2 = 1.0f;
+constexpr float TILL_WORK_PER_KM2 = 2000.0f;
+constexpr float TILL_LABOUR_SHARE = 0.02f;
 
 // Heat (Design/Resources.md): the second need, the first that is not
 // calories. The demand is warmth -- cooking fires always, hearths against
@@ -622,11 +629,17 @@ struct Settlement {
     // Farming's reach, and the farmsteads that extend it:
     float farmsteads = 0;  // standing farmsteads (drawn on the map, slot order)
     float fsteadWork = 0;  // man-days left on the farmstead going up, 0 = none
-    float farmEff = 0;     // effective farm suitability: worked, walk-priced land
-                           // over the whole claim (sim::updateFarmEff; replaces
-                           // raw sFarm in every yield formula)
-    float farmNearKm2 = 0; // the claim's walkable farm value, cached with farmEff
     uint8_t builtFsteads = 0; // finished this step; the sim reports and clears
+    // The fields themselves: built plots, village first, then per farmstead.
+    float tilled[1 + FSTEAD_MAX] = {}; // km2 under the rotation at each site
+    float farmK = 0;      // people the standing fields feed at full expertise
+                          // (sim::updateFarmland caches it from tilled and the
+                          // suitability where each site stands)
+    float tillWork = 0;   // man-days left on the plot being cleared, 0 = none
+    int8_t tillSite = -1; // where that plot is: 0 the village, 1+k farmstead k
+    int8_t tillSiteNext = -1; // where the next order would go, -1 = no room
+    uint8_t fsteadMax = 0;    // farmstead slots the claim can hold
+    bool fsteadNextOk = false; // the next slot stands on land worth tilling
 };
 
 // A migrating group: a settlement with velocity (Design/Migration.md). It
@@ -1018,7 +1031,6 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         s.pasture = f.pastureMap[c.cell];
         s.buildMat = f.buildMatMap[c.cell];
         s.sWood = f.sWoodMap[c.cell];
-        s.farmEff = f.sFarmMap[c.cell]; // refined on the first wake (updateFarmEff)
         s.S = storageCapDays(s.P, s.granaries) * s.P; // the world opens on full stores
         s.fuelS = 0.5f * FUEL_CAP_KG * s.P;           // and half a woodpile
         // The world opens with each settlement holding what it needs, capped
@@ -1083,8 +1095,8 @@ struct SeasonCtx {
     const atmosphere::Climatology* clim = nullptr;
     terrain::V3 n{};
     float h = 0;
-    float farmMult = 1; // 1 + gain*farmEff*expertise, from technology
-    float farmExp = 0;  // farming expertise (farmstead build pace and demand)
+    float farmFlow = 0; // people the fields feed at current expertise (farmK * exp)
+    float farmExp = 0;  // farming expertise (clearing pace and demand)
     float husbExp = 0;  // husbandry expertise
     float granExp = 0;  // granary expertise, 0 unless practising (build pace)
     Affinity aff;       // what these people are good at, from doing it
@@ -1163,7 +1175,7 @@ inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double
     float hunted = (s.kGame * bigEff + s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp)) *
                    affinityBonus(ctx.aff.hunt);
     float forage = (s.kFoodP - s.kGame - s.kSmall) * affinityBonus(ctx.aff.gather) + hunted;
-    float farm = s.kFoodP * (ctx.farmMult - 1.0f);
+    float farm = ctx.farmFlow; // the standing plots, at current expertise
     float fF = s.meanF, fG2 = 1.0f, fFish = 1.0f;
     if (ctx.clim) {
         float tC = cachedSeasonT(s, t);
@@ -1204,6 +1216,10 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     float fuelS = s.fuelS, coldYr = s.coldYr, labFuel = s.labFuel;
     float fuelNet = 0; // kg/day the pile last gained or lost (horizon watch)
     float farmsteads = s.farmsteads, fsteadWork = s.fsteadWork;
+    float tillWork = s.tillWork;
+    int tillSite = s.tillSite;
+    float sumTilled = 0;
+    for (int i = 0; i <= FSTEAD_MAX; i++) sumTilled += s.tilled[i];
     double cycleT = s.cycleT;
     float lat = std::asin(std::clamp(ctx.n.z, -1.0f, 1.0f));
     float lon = std::atan2(ctx.n.y, ctx.n.x);
@@ -1289,13 +1305,21 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
             bool binds = fillHi > GRANARY_HI && fillLo < GRANARY_LO;
             granNeed = binds ? granNeed + 1.0f : 0.0f;
             if (binds && buildWork <= 0 && ctx.granExp > 0) buildWork = GRANARY_WORK;
-            // Farmstead demand, measured yearly like the granary's: a
-            // farming people whose food binds, with claim ground the walk
-            // forbids (farmNearKm2 and the standing farmsteads short of the
-            // claim), moves a household out to it.
-            if (ctx.farmExp > 0 && s.sFarm > 0.05f && needRamp(phiNow) > 0.1f &&
-                fsteadWork <= 0 && farmsteads < FSTEAD_MAX &&
-                s.farmNearKm2 + (farmsteads + 1.0f) * FSTEAD_KM2 <= s.claimKm2)
+            // Field demand, measured yearly like the granary's: a farming
+            // people whose food binds selects the next plot and clears it,
+            // as long as there are hands to work what stands (the 8 ha a
+            // person can tend). Where the sites in hand are all tilled up,
+            // the next order is a FARMSTEAD instead: move a household out
+            // and open a new block (sim::updateFarmland decides where the
+            // next plot would go and whether the next slot is worth it).
+            bool wantsLand = ctx.farmExp > 0 && needRamp(phiNow) > 0.1f &&
+                             sumTilled < P * FARM_KM2_PER_PERSON;
+            if (wantsLand && tillWork <= 0 && s.tillSiteNext >= 0) {
+                tillSite = s.tillSiteNext;
+                tillWork = PLOT_KM2 * TILL_WORK_PER_KM2;
+            }
+            if (wantsLand && s.tillSiteNext < 0 && fsteadWork <= 0 &&
+                farmsteads < s.fsteadMax && s.fsteadNextOk)
                 fsteadWork = FSTEAD_WORK;
             cycleT = tk;
             fillLo = fillHi = fill;
@@ -1319,6 +1343,21 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
                 farmsteads += 1;
                 fsteadWork = 0;
                 if (s.builtFsteads < 250) s.builtFsteads++;
+            }
+        }
+        // Clearing the plot: girdle, burn, stump, break. Fire and axes, not
+        // timber, so no materials factor -- skill and hands set the pace,
+        // and famine pauses it like any other work.
+        if (tillWork > 0 && tillSite >= 0 && ctx.farmExp > 0 && fill > HOARD_FILL) {
+            tillWork -= P * TILL_LABOUR_SHARE * (0.5f + 0.5f * ctx.farmExp) * hstep;
+            if (tillWork <= 0) {
+                float cap = tillSite == 0 ? VILLAGE_FIELDS_KM2 : FSTEAD_KM2;
+                float& t = s.tilled[std::clamp(tillSite, 0, FSTEAD_MAX)];
+                float add = std::min(PLOT_KM2, cap - t);
+                t += std::max(add, 0.0f);
+                sumTilled += std::max(add, 0.0f);
+                tillWork = 0;
+                tillSite = -1;
             }
         }
         // Bows: one bowyer finishes one bow in BOW_WORK_DAYS however large
@@ -1347,7 +1386,7 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     {
         float plant = (s.kFoodP - s.kGame - s.kSmall) * s.meanF;
         float game = (s.kGame + s.kSmall) * s.meanF;
-        float crop = s.kFoodP * (ctx.farmMult - 1.0f);
+        float crop = ctx.farmFlow;
         float stock = s.herd * 0.85f + FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp;
         float tot = std::max(plant + game + crop + stock, 1e-3f);
         float k = std::min((float)(span / (AFFINITY_TAU_YEARS * 365.0)), 1.0f);
@@ -1373,6 +1412,8 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     s.labFuel = labFuel;
     s.farmsteads = farmsteads;
     s.fsteadWork = fsteadWork;
+    s.tillWork = tillWork;
+    s.tillSite = (int8_t)tillSite;
     s.cycleT = cycleT;
     s.t = now;
     float capDays = storageCapDays(s.P, s.granaries);
@@ -1384,7 +1425,7 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
         (s.kGame * bigEffMean + s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp)) *
             affinityBonus(ctx.aff.hunt);
     float meanFlow = std::min(
-        (forageBase * s.meanF + s.kFoodP * (ctx.farmMult - 1.0f)) * s.R, s.kWater);
+        (forageBase * s.meanF + ctx.farmFlow) * s.R, s.kWater);
     float dP, dR, dS, dStarveMean;
     derivatives(s.P, s.R, s.S, meanFlow, K, capDays, GATHER_SETTLED * s.P, dP, dR, dS,
                 dStarveMean);

@@ -16,7 +16,8 @@ constexpr double AWARE_MEAN_YEARS = 25.0;     // per knowing neighbour
 constexpr double PRACT_MEAN_YEARS = 100.0;    // per unit neighbour expertise at suitability 1
 constexpr float EXPERTISE_START = 0.2f;
 constexpr double EXPERTISE_TAU = 50.0 * YEAR; // practice matures toward 1
-constexpr float FARM_YIELD_GAIN = 4.0f;       // food multiplier 1 + gain*s*expertise
+// Farm yield now comes from built plots (population::TILLED_YIELD_PKM2 via
+// Settlement::farmK), not from a suitability multiplier.
 // Herds: living stock. Growth toward a pasture cap; a seed herd is bred from
 // wild capture when practice begins. Units are "people fed per day".
 constexpr float HERD_SEED = 1.0f;             // bred from wild capture at practice start
@@ -139,9 +140,9 @@ inline float suitability(const population::Settlement& s, int tech) {
 // harvest-shaped total, the herd's current flow (seasonal mean ~0.85), and
 // the farmyard bonus; water caps the whole.
 inline float effectiveK(const population::Settlement& s, double now) {
-    // farmEff, not sFarm: the farmed land is the walk-priced share of the
-    // claim plus what the farmsteads reopened (sim::updateFarmEff).
-    float farmMult = 1.0f + FARM_YIELD_GAIN * s.farmEff * expertise(s.tech[population::TECH_FARMING], now);
+    // Farm food comes from the standing plots (sim::updateFarmland caches
+    // farmK from them), not from an abstract multiplier: no fields, no crop.
+    float farm = s.farmK * expertise(s.tech[population::TECH_FARMING], now);
     float hExp = expertise(s.tech[population::TECH_HUSBANDRY], now);
     float husb = s.herd * 0.85f + population::FARMYARD_SHARE_POP * s.kFoodP * hExp;
     float archExp = expertise(s.tech[population::TECH_ARCHERY], now);
@@ -152,8 +153,7 @@ inline float effectiveK(const population::Settlement& s, double now) {
     float forage = s.kFoodP - s.kGame - s.kSmall + s.kGame * bigEff +
                    s.kSmall * population::smallGameEff(cover, archExp);
     // Fish carry no land-condition term: the water is not worn out.
-    return std::min(forage * s.meanF + s.kFoodP * (farmMult - 1.0f) + husb +
-                        s.kFish * population::fishEff(fishExp),
+    return std::min(forage * s.meanF + farm + husb + s.kFish * population::fishEff(fishExp),
                     s.kWater);
 }
 

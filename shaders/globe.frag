@@ -28,8 +28,8 @@ uniform sampler2D uEarth;  // the Earth template, metres in r (see terrain.h)
 uniform int uUseEarth;
 uniform sampler2D uPop;    // carrying capacity K, settlement index + 1, band index + 1
 uniform sampler2D uBands;  // one texel per band: position xyz on the unit sphere, headcount
-uniform sampler2D uSites;  // five texels per settlement: people/granaries/fields, then the
-                           // sixteen sectors of its claim, four to a texel
+uniform sampler2D uSites;  // ten texels per settlement: people/granaries/fields/farmsteads,
+                           // the sixteen claim sectors, then farmstead field radii
 uniform sampler2D uOverlay; // markers and labels drawn on the CPU; magenta = nothing here
 uniform vec3 uSun;         // world-space sun direction (day-night and seasons)
 uniform sampler2D uClim;   // climatology, 4 season bands: cloud, rain, wind u, wind v
@@ -299,7 +299,7 @@ const ivec2 DIRS[8] = ivec2[8](ivec2(1, 0), ivec2(1, 1), ivec2(0, 1), ivec2(-1, 
 
 // What a cell's green channel names: the settlement standing there, or -1
 // for its texel when nobody does.
-const int SITE_STRIDE = 5;
+const int SITE_STRIDE = 10;
 
 vec4 siteTexel(int idx, int k) {
     int t = idx * SITE_STRIDE + k;
@@ -525,9 +525,57 @@ float ruinNear(vec3 n) {
 // looks like from above. Returns rgb = the ground's colour here and w = how
 // strongly it replaces what grew before: 1 inside a worked plot, less on the
 // cleared ground between plots, 0 outside the clearing altogether.
+// One clearing's mosaic, in a local ground frame (km) about its centre.
+// Nothing about a clearing is circular: the outline wanders with the
+// ground, the wood and where the last stumps were left. `turn` rotates the
+// whole layout so neighbouring clearings do not plough in step.
+vec4 fieldMosaic(vec2 e, float distKm, float rKm, float innerKm, float turn) {
+    if (distKm >= rKm || distKm < innerKm) return vec4(0.0);
+    vec2 f = vec2(e.x * cos(turn) + e.y * sin(turn), -e.x * sin(turn) + e.y * cos(turn));
+    // Cleared ground: brush cut and burnt, grazed and walked over. It is
+    // the canvas the plots sit on, and it is what makes a farm read as one
+    // place rather than a scatter of stripes.
+    vec3 cleared = vec3(0.46, 0.44, 0.28);
+    // Furlongs: the strips run one way for a block and another way in the
+    // next, following the lie of the ground rather than any plan. A whole
+    // clearing ploughed one way reads as a barcode, and open field country
+    // never looked like that.
+    vec2 blk = floor(f / 1.2);
+    float bh = fract(sin(dot(blk, vec2(37.7, 11.3)) + turn) * 9137.77);
+    float ba = (bh - 0.5) * 1.3;
+    vec2 fl = f - (blk + 0.5) * 1.2;
+    vec2 g = vec2(fl.x * cos(ba) + fl.y * sin(ba), -fl.x * sin(ba) + fl.y * cos(ba));
+    // Plots: long and narrow, the shape ard ploughing and hand sowing
+    // give -- about 350 m by 800 m, a little wider in some furlongs.
+    float pw = 0.30 + 0.12 * bh;
+    vec2 plot = vec2(floor(g.x / pw), floor(g.y / 0.80));
+    float hsh = fract(sin(dot(plot, vec2(12.9898, 78.233)) + bh + turn * 100.0) * 43758.5453);
+    // The mosaic thins towards its edge instead of ending at a line: the
+    // outermost ground is the newest taken and the longest left to rest,
+    // so the clearing frays into the country around it.
+    float bearing = atan(f.y, f.x);
+    float wobble = 0.94 + 0.11 * sin(bearing * 3.0 + turn) +
+                   0.07 * sin(bearing * 7.0 - turn * 2.0);
+    float edge = distKm / (rKm * wobble);
+    if (edge >= 1.0) return vec4(0.0);
+    float fade = 1.0 - smoothstep(0.82, 1.0, edge); // the wood takes it back
+    if (hsh < edge * edge * 0.85) return vec4(cleared, 0.65 * fade);
+    float shade = fract(hsh * 7.0);
+    vec3 tilled = vec3(0.31, 0.21, 0.12);   // turned earth, ash still in it
+    vec3 standing = vec3(0.78, 0.66, 0.22); // barley coming on
+    vec3 stubble = vec3(0.60, 0.55, 0.34);  // cut, or resting the year
+    vec3 col = shade < 0.34 ? tilled : (shade < 0.70 ? standing : stubble);
+    // A darker line where one plot meets the next: the baulks.
+    vec2 inPlot = fract(vec2(g.x / pw, g.y / 0.80));
+    float baulk = min(min(inPlot.x, 1.0 - inPlot.x) / 0.10,
+                      min(inPlot.y, 1.0 - inPlot.y) / 0.05);
+    return vec4(col * (0.75 + 0.25 * clamp(baulk, 0.0, 1.0)), fade);
+}
+
 vec4 fieldsNear(vec3 n) {
     if (uKmPerPixel > 4.0) return vec4(0.0);
     ivec2 c0 = hydroCell(n);
+    // The village's own clearing, ringing the houses.
     for (int dy = -1; dy <= 1; dy++)
         for (int dx = -1; dx <= 1; dx++) {
             ivec2 c = c0 + ivec2(dx, dy);
@@ -537,57 +585,48 @@ vec4 fieldsNear(vec3 n) {
             if (rKm <= 0.0) continue;
             vec3 cc = cellCentre(cw);
             float distKm = length(n - cc) * 6371.0;
-            if (distKm >= rKm || distKm < villageRadiusKm(site.r) * 1.2) continue;
-            // Nothing about a clearing is circular: the outline wanders with
-            // the ground, the wood and where the last stumps were left.
-            // Local ground frame, in km, turned by a per-cell angle so
-            // neighbouring villages do not plough in step.
             vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
             vec3 north = cross(cc, east);
             int cell = cw.y * HW + cw.x;
             float turn = float(cell % 628) * 0.01;
             vec2 e = vec2(dot(n - cc, east), dot(n - cc, north)) * 6371.0;
-            vec2 f = vec2(e.x * cos(turn) + e.y * sin(turn), -e.x * sin(turn) + e.y * cos(turn));
-            // Cleared ground: brush cut and burnt, grazed and walked over.
-            // It is the canvas the plots sit on, and it is what makes a farm
-            // read as one place rather than a scatter of stripes.
-            vec3 cleared = vec3(0.46, 0.44, 0.28);
-            // Furlongs: the strips run one way for a block and another way in
-            // the next, following the lie of the ground rather than any plan.
-            // A whole clearing ploughed one way reads as a barcode, and open
-            // field country never looked like that.
-            vec2 blk = floor(f / 1.2);
-            float bh = fract(sin(dot(blk, vec2(37.7, 11.3)) + turn) * 9137.77);
-            float ba = (bh - 0.5) * 1.3;
-            vec2 fl = f - (blk + 0.5) * 1.2;
-            vec2 g = vec2(fl.x * cos(ba) + fl.y * sin(ba), -fl.x * sin(ba) + fl.y * cos(ba));
-            // Plots: long and narrow, the shape ard ploughing and hand sowing
-            // give -- about 350 m by 800 m, a little wider in some furlongs.
-            float pw = 0.30 + 0.12 * bh;
-            vec2 plot = vec2(floor(g.x / pw), floor(g.y / 0.80));
-            float hsh = fract(sin(dot(plot, vec2(12.9898, 78.233)) + bh + float(cell)) * 43758.5453);
-            // The mosaic thins towards its edge instead of ending at a line:
-            // the outermost ground is the newest taken and the longest left
-            // to rest, so the clearing frays into the country around it.
-            float bearing = atan(f.y, f.x);
-            float ph = float(cell % 628) * 0.01;
-            float wobble = 0.94 + 0.11 * sin(bearing * 3.0 + ph) +
-                           0.07 * sin(bearing * 7.0 - ph * 2.0);
-            float edge = distKm / (rKm * wobble);
-            if (edge >= 1.0) continue;
-            float fade = 1.0 - smoothstep(0.82, 1.0, edge); // the wood takes it back
-            if (hsh < edge * edge * 0.85) return vec4(cleared, 0.65 * fade);
-            float shade = fract(hsh * 7.0);
-            vec3 tilled = vec3(0.31, 0.21, 0.12);   // turned earth, ash still in it
-            vec3 standing = vec3(0.78, 0.66, 0.22); // barley coming on
-            vec3 stubble = vec3(0.60, 0.55, 0.34);  // cut, or resting the year
-            vec3 col = shade < 0.34 ? tilled : (shade < 0.70 ? standing : stubble);
-            // A darker line where one plot meets the next: the baulks.
-            vec2 inPlot = fract(vec2(g.x / pw, g.y / 0.80));
-            float baulk = min(min(inPlot.x, 1.0 - inPlot.x) / 0.10,
-                              min(inPlot.y, 1.0 - inPlot.y) / 0.05);
-            return vec4(col * (0.75 + 0.25 * clamp(baulk, 0.0, 1.0)), fade);
+            vec4 m = fieldMosaic(e, distKm, rKm, villageRadiusKm(site.r) * 1.2, turn);
+            if (m.w > 0.0) return m;
         }
+    // Each farmstead's clearing: a small mosaic about the far house, its
+    // radius from the per-slot tilled area the site texture carries. A
+    // couple of km across at most, so only close views need the wider
+    // search the outlying houses demand.
+    if (uKmPerPixel <= 1.0) {
+        int rx = clamp(int(26.0 / max(20.0 * cos(asin(n.z)), 1.0)) + 1, 2, 9);
+        for (int dy = -2; dy <= 2; dy++)
+            for (int dx = -rx; dx <= rx; dx++) {
+                ivec2 c = c0 + ivec2(dx, dy);
+                ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
+                int idx = siteIndex(cw);
+                if (idx < 0) continue;
+                vec4 site = siteTexel(idx, 0);
+                if (site.a < 0.5) continue;
+                vec3 cc = cellCentre(cw);
+                vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
+                vec3 north = cross(cc, east);
+                int cell = cw.y * HW + cw.x;
+                float ph = float(cell % 628) * 0.01;
+                int nf = int(site.a + 0.5);
+                for (int k = 0; k < nf && k < 20; k++) {
+                    float rf = siteTexel(idx, 5 + k / 4)[k % 4];
+                    if (rf <= 0.0) continue;
+                    float a = 2.39996 * float(k) + ph + 1.1; // sim::farmsteadPos
+                    float rr = 2.5 + 1.1 * float(k);
+                    vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
+                    float dKm = length(n - p) * 6371.0;
+                    if (dKm >= rf) continue;
+                    vec2 e2 = vec2(dot(n - p, east), dot(n - p, north)) * 6371.0;
+                    vec4 m = fieldMosaic(e2, dKm, rf, 0.0, ph + float(k) * 0.7);
+                    if (m.w > 0.0) return m;
+                }
+            }
+    }
     return vec4(0.0);
 }
 
