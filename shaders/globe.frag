@@ -535,30 +535,43 @@ float ruinNear(vec3 n) {
 vec4 plotsAt(vec2 f, float builtKm2, float innerKm, float seed) {
     float d2 = dot(f, f);
     float R = sqrt(builtKm2 / 3.14159265);
-    if (d2 > (R + 1.5) * (R + 1.5) || d2 < innerKm * innerKm) return vec4(0.0);
-    vec2 blk = floor(f);
+    if (d2 > (R + 0.9) * (R + 0.9) || d2 < innerKm * innerKm) return vec4(0.0);
+    vec2 blk = floor(f * 2.0); // clearing proceeds in quarter-km2 blocks
     float h = fract(sin(dot(blk, vec2(12.9898, 78.233)) + seed) * 43758.5453);
-    vec2 centre = blk + 0.5;
+    vec2 centre = (blk + 0.5) * 0.5;
     if (length(centre) * (0.75 + 0.5 * h) >= R) return vec4(0.0); // not cleared yet
-    // The plot inside its block: shrunk by a headland margin, turned the
-    // way its ploughman chose, its boundary wandering with the stumps and
-    // stones that were left.
-    float ang = (fract(h * 91.17) - 0.5) * 1.2;
-    vec2 l = f - centre;
-    vec2 r = vec2(l.x * cos(ang) + l.y * sin(ang), -l.x * sin(ang) + l.y * cos(ang));
-    float wx = 0.40 + 0.08 * fract(h * 31.7); // half-extents, km
-    float wy = 0.34 + 0.10 * fract(h * 57.3);
-    float wob = 0.92 + 0.10 * sin((r.x + r.y) * 9.0 + h * 40.0);
-    if (abs(r.x) > wx * wob || abs(r.y) > wy * wob) return vec4(0.0);
-    float shade = fract(h * 7.0);
-    vec3 tilled = vec3(0.31, 0.21, 0.12);   // turned earth, ash still in it
+    // Inside a cleared block: not one field but a lattice of garden-small
+    // plots, a hectare or two each -- stone-age holdings are a scatter of
+    // patches, not a ploughman's strip -- with scrubby ground between and
+    // footpath baulks around each.
+    vec3 tilledC = vec3(0.31, 0.21, 0.12);  // turned earth, ash still in it
     vec3 standing = vec3(0.78, 0.66, 0.22); // barley coming on
     vec3 stubble = vec3(0.60, 0.55, 0.34);  // cut, or resting the year
-    vec3 col = shade < 0.34 ? tilled : (shade < 0.70 ? standing : stubble);
-    // Furrows run the length of the plot, and a darker baulk rims it.
-    float fur = 0.94 + 0.06 * sin(r.y / 0.012);
-    float baulk = min((wx * wob - abs(r.x)) / 0.06, (wy * wob - abs(r.y)) / 0.05);
-    return vec4(col * fur * (0.72 + 0.28 * clamp(baulk, 0.0, 1.0)), 0.95);
+    vec3 scrub = vec3(0.45, 0.43, 0.27);    // taken once, resting long
+    // Far out a plot is smaller than the pixel: fade to the blended tone
+    // rather than shimmer.
+    vec3 avg = tilledC * 0.25 + standing * 0.30 + stubble * 0.25 + scrub * 0.20;
+    float lod = smoothstep(0.035, 0.14, uKmPerPixel);
+    if (lod >= 1.0) return vec4(avg * (0.92 + 0.16 * h), 0.85);
+    float ang = (fract(h * 91.17) - 0.5) * 1.2; // the block's own lie
+    vec2 l = f - centre;
+    vec2 r = vec2(l.x * cos(ang) + l.y * sin(ang), -l.x * sin(ang) + l.y * cos(ang));
+    vec2 cellSz = vec2(0.075 + 0.03 * fract(h * 31.7), 0.13 + 0.05 * fract(h * 57.3));
+    vec2 pc = floor(r / cellSz);
+    float h2 = fract(sin(dot(pc, vec2(41.3, 17.9)) + h * 71.0) * 33871.1);
+    vec3 col;
+    float a;
+    if (h2 < 0.22) { col = scrub; a = 0.7; } // a patch never taken this year
+    else {
+        float shade = fract(h2 * 5.0);
+        col = shade < 0.35 ? tilledC : (shade < 0.72 ? standing : stubble);
+        vec2 inP = fract(r / cellSz);
+        float edgeD = min(min(inP.x, 1.0 - inP.x) * cellSz.x,
+                          min(inP.y, 1.0 - inP.y) * cellSz.y);
+        col *= 0.70 + 0.30 * clamp(edgeD / 0.008, 0.0, 1.0); // footpath baulks
+        a = 0.95;
+    }
+    return vec4(mix(col, avg * (0.92 + 0.16 * h), lod), mix(a, 0.85, lod));
 }
 
 vec4 fieldsNear(vec3 n) {
@@ -570,7 +583,7 @@ vec4 fieldsNear(vec3 n) {
             ivec2 c = c0 + ivec2(dx, dy);
             ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
             vec4 site = siteAt(cw);
-            if (site.b <= 0.5) continue; // tilled km2 at the village
+            if (site.b <= 0.05) continue; // tilled km2 at the village
             vec3 cc = cellCentre(cw);
             vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
             vec3 north = cross(cc, east);
@@ -608,7 +621,7 @@ vec4 fieldsNear(vec3 n) {
                     vec2 e = vec2(dot(n - p, east), dot(n - p, north)) * 6371.0;
                     if (dot(e, e) > 3.0 * 3.0) continue; // beyond the block
                     float area = siteTexel(idx, 5 + k / 4)[k % 4];
-                    if (area <= 0.5) continue;
+                    if (area <= 0.05) continue;
                     vec2 f = vec2(e.x * cos(a) + e.y * sin(a),
                                   -e.x * sin(a) + e.y * cos(a));
                     vec4 m = plotsAt(f, area, 0.05, ph * 55.0 + float(k) * 9.1);

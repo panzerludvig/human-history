@@ -120,10 +120,13 @@ puts the village-field edge), giving the village a ~58 km² fields disc;
 land past that is farmland only a **farmstead** can open.
 
 **Tilled land is a built thing** (decided 2026-09-14, replacing the drawn
-"footprint" annulus derived from output): a settlement selects a plot and
-clears it as a work order with a start and a finish — a square kilometre
-at 2,000 man-days (girdle, burn, stump, break; fire and axes, so no
-materials factor — skill and hands set the pace, and famine pauses it).
+"footprint" annulus derived from output): a settlement selects new ground
+and clears it as a work order with a start and a finish — half a square
+kilometre per order at 2,000 man-days/km² (girdle, burn, stump, break;
+fire and axes, so no materials factor — skill and hands set the pace, and
+famine pauses it). An order is a season's clearing of many garden-small
+plots, a hectare or two each, and that is how the map draws it: lattices
+of small patches with scrub between, accreting block by block outward.
 Orders are placed yearly while food binds and stop at what hands can work
 (8 ha a person, `FARM_KM2_PER_PERSON`); the village disc fills first, then
 each farmstead's 12 km² block. **What the map draws is the built area** —

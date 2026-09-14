@@ -345,11 +345,13 @@ constexpr float TILLED_YIELD_PKM2 = 25.0f;
 // Nobody clears land they cannot work: the whole rotation mosaic a person
 // tends is about 8 ha, so tilled land is capped by hands, not only ground.
 constexpr float FARM_KM2_PER_PERSON = 0.08f;
-// One work order: a plot of a square kilometre, cleared and broken at a
-// fixed labour price. Girdle, burn, stump and break: about 20 man-days an
-// acre's worth per hectare, so ~2,000 to the km2 -- a village crew of six
-// takes a year and a half over it, and a farm is a generation's work.
-constexpr float PLOT_KM2 = 1.0f;
+// One work order: half a square kilometre of new ground -- not one field
+// but a season's clearing of many, since a stone-age plot is garden-small,
+// a hectare or two, and a holding is a scatter of them. Girdle, burn,
+// stump and break at ~20 man-days a hectare, 2,000 to the km2: a village
+// crew of six finishes an order in most of a year, and a farm is a
+// generation's work.
+constexpr float PLOT_KM2 = 0.5f;
 constexpr float TILL_WORK_PER_KM2 = 2000.0f;
 constexpr float TILL_LABOUR_SHARE = 0.02f;
 
