@@ -433,22 +433,28 @@ int hutsNear(vec3 n) {
             if (length(n - cc) * 6371.0 < rKm * 1.2) return 3;
         }
     // Farmsteads: sim::farmsteadPos mirrored exactly -- lone houses standing
-    // kilometres from their village among the far fields, so the search box
-    // reaches further than the village pass above.
+    // kilometres from their village among the far fields. The pop texture's
+    // alpha points from the cell a farmstead stands on back to its
+    // village's cell, so nine lookups find the owner.
     {
         float fhKm = 0.006;
-        int rx = clamp(int(26.0 / max(20.0 * cos(asin(n.z)), 1.0)) + 1, 2, 9);
-        for (int dy = -2; dy <= 2; dy++)
-            for (int dx = -rx; dx <= rx; dx++) {
+        int seen = -1;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) {
                 ivec2 c = c0 + ivec2(dx, dy);
                 ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
-                vec4 site = siteAt(cw);
+                int vcell = int(texelFetch(uPop, cw, 0).a + 0.5) - 1;
+                if (vcell < 0 || vcell == seen) continue;
+                seen = vcell;
+                ivec2 vw = ivec2(vcell % HW, vcell / HW);
+                int idx = siteIndex(vw);
+                if (idx < 0) continue;
+                vec4 site = siteTexel(idx, 0);
                 if (site.r <= 0.0 || site.a < 0.5) continue;
-                vec3 cc = cellCentre(cw);
+                vec3 cc = cellCentre(vw);
                 vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
                 vec3 north = cross(cc, east);
-                int cell = cw.y * HW + cw.x;
-                float ph = float(cell % 628) * 0.01;
+                float ph = float(vcell % 628) * 0.01;
                 int f = int(site.a + 0.5);
                 for (int k = 0; k < f && k < 20; k++) {
                     float a = 2.39996 * float(k) + ph + 1.1;
@@ -539,7 +545,13 @@ vec4 plotsAt(vec2 f, float builtKm2, float innerKm, float seed) {
     vec2 blk = floor(f * 2.0); // clearing proceeds in quarter-km2 blocks
     float h = fract(sin(dot(blk, vec2(12.9898, 78.233)) + seed) * 43758.5453);
     vec2 centre = (blk + 0.5) * 0.5;
-    if (length(centre) * (0.75 + 0.5 * h) >= R) return vec4(0.0); // not cleared yet
+    float m = length(centre) * (0.75 + 0.5 * h);
+    if (m >= R) return vec4(0.0); // not cleared yet
+    // Swidden: at any moment only a tenth to a third of the rotation is
+    // open ground -- the freshly cleared outer ring, plus scattered patches
+    // re-taken inside it. The long fallow has gone back to the wild and
+    // draws nothing at all.
+    if (m < 0.9 * R && fract(h * 217.9) >= 0.15) return vec4(0.0);
     // Inside a cleared block: not one field but a lattice of garden-small
     // plots, a hectare or two each -- stone-age holdings are a scatter of
     // patches, not a ploughman's strip -- with scrubby ground between and
@@ -595,24 +607,28 @@ vec4 fieldsNear(vec3 n) {
             vec4 m = plotsAt(f, site.b, villageRadiusKm(site.r) * 1.2, turn * 100.0);
             if (m.w > 0.0) return m;
         }
-    // Each farmstead's plots, about the far house. A couple of km across
-    // at most, so only close views need the wider search the outlying
-    // houses demand; the per-slot tilled areas ride in the site texture.
+    // Each farmstead's plots, about the far house. The pop texture's alpha
+    // points from any cell holding a farmstead back to its village's cell,
+    // so this is nine fetches -- not a 50 km scan -- and the slot loop only
+    // runs for pixels actually standing near somebody's far fields.
     if (uKmPerPixel <= 1.0) {
-        int rx = clamp(int(26.0 / max(20.0 * cos(asin(n.z)), 1.0)) + 1, 2, 9);
-        for (int dy = -2; dy <= 2; dy++)
-            for (int dx = -rx; dx <= rx; dx++) {
+        int seen = -1;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) {
                 ivec2 c = c0 + ivec2(dx, dy);
                 ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
-                int idx = siteIndex(cw);
+                int vcell = int(texelFetch(uPop, cw, 0).a + 0.5) - 1;
+                if (vcell < 0 || vcell == seen) continue;
+                seen = vcell;
+                ivec2 vw = ivec2(vcell % HW, vcell / HW);
+                int idx = siteIndex(vw);
                 if (idx < 0) continue;
                 vec4 site = siteTexel(idx, 0);
                 if (site.a < 0.5) continue;
-                vec3 cc = cellCentre(cw);
+                vec3 cc = cellCentre(vw);
                 vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
                 vec3 north = cross(cc, east);
-                int cell = cw.y * HW + cw.x;
-                float ph = float(cell % 628) * 0.01;
+                float ph = float(vcell % 628) * 0.01;
                 int nf = int(site.a + 0.5);
                 for (int k = 0; k < nf && k < 20; k++) {
                     float a = 2.39996 * float(k) + ph + 1.1; // sim::farmsteadPos

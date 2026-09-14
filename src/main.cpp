@@ -880,6 +880,13 @@ static std::vector<float> popTexData() {
         if (held && pf.bands[held - 1].P >= b.P) continue;
         d[cell * 4 + 2] = (float)(i + 1);
     }
+    // Alpha points from any cell holding a FARMSTEAD back to its village's
+    // cell (index + 1), so the shader's farmstead passes look at their own
+    // nine cells instead of scanning a 50 km box per pixel -- that scan was
+    // a full-screen frame-rate bill at close zoom.
+    for (const population::Settlement& s : pf.settlements)
+        for (int k = 0; k < (int)(s.farmsteads + 0.5f) && k < population::FSTEAD_MAX; k++)
+            d[sim::cellOf(sim::farmsteadPos(s.cell, k)) * 4 + 3] = (float)(s.cell + 1);
     return d;
 }
 
