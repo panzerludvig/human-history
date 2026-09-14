@@ -235,8 +235,11 @@ inline float templateHeight(V3 p, V3 n, int octaves) {
     float hills = ridged(p * 4.0f + 2.0f, std::clamp(octaves - 2, 1, 6));
     float landness = smoothstep(0.0f, 150.0f, e);
     float mtn = smoothstep(700.0f, 2500.0f, e);
-    return e + landness * (detail * 200.0f + hills * 250.0f) + mtn * (peaks - 0.5f) * 1400.0f +
-           (1.0f - landness) * detail * 300.0f;
+    // The template is real elevation at 9 km now (ETOPO5); the noise only
+    // supplies what is below that: less than half of what the drawn
+    // template, which had no relief of its own, needed.
+    return e + landness * (detail * 80.0f + hills * 120.0f) + mtn * (peaks - 0.5f) * 600.0f +
+           (1.0f - landness) * detail * 120.0f;
 }
 
 // Height in metres above sea level. `p` is the point in noise space, `n` the

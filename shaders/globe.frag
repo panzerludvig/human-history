@@ -210,8 +210,8 @@ float templateHeight(vec3 p, vec3 n, int octaves) {
     float hills = ridged(p * 4.0 + 2.0, clamp(octaves - 2, 1, 6));
     float landness = smoothstep(0.0, 150.0, e);
     float mtn = smoothstep(700.0, 2500.0, e);
-    return e + landness * (detail * 200.0 + hills * 250.0) + mtn * (peaks - 0.5) * 1400.0 +
-           (1.0 - landness) * detail * 300.0;
+    return e + landness * (detail * 80.0 + hills * 120.0) + mtn * (peaks - 0.5) * 600.0 +
+           (1.0 - landness) * detail * 120.0;
 }
 
 // Height in metres above sea level. `p` is the point in noise space, `n` the

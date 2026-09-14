@@ -1532,9 +1532,8 @@ static void uploadEarth() {
     }
     glBindTexture(GL_TEXTURE_2D, app.earthTex);
     const terrain::Template& tp = terrain::TEMPLATE;
-    std::vector<float> d((size_t)tp.w * tp.h * 4, 0.0f);
-    for (size_t i = 0; i < (size_t)tp.w * tp.h; i++) d[i * 4] = tp.elev[i];
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, tp.w, tp.h, 0, GL_RGBA, GL_FLOAT, d.data());
+    // One channel: at ETOPO5's 4320 x 2160 four channels would be 150 MB.
+    glTexImage2D(GL_TEXTURE_2D, 0, 0x822E /*GL_R32F*/, tp.w, tp.h, 0, 0x1903 /*GL_RED*/, GL_FLOAT, tp.elev.data());
     glActiveTexture(GL_TEXTURE0);
 }
 
