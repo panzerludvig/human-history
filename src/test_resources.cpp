@@ -26,6 +26,12 @@ struct Report {
     int nBare = 0, nSparse = 0, nWooded = 0;
     double cutBare = 0, cutSparse = 0, cutWooded = 0; // labour share on wood (pop-weighted)
     double herdBare = 0;                              // herd per person on treeless ground
+    // Farming and its reach:
+    int farmers = 0;          // settlements practising farming
+    double farmsteads = 0;    // standing farmsteads, world total
+    int building = 0;         // farmsteads going up
+    double workedShare = 0;   // farmEff / sFarm, farmer-population-weighted
+    double farmerPop = 0;
 };
 
 static Report survey(const population::Field& pf, double now) {
@@ -47,6 +53,15 @@ static Report survey(const population::Field& pf, double now) {
             r.nSparse++; r.pSparse += s.P; r.cutSparse += s.labFuel * s.P;
         } else {
             r.nWooded++; r.pWooded += s.P; r.cutWooded += s.labFuel * s.P;
+        }
+        if (s.tech[population::TECH_FARMING].practising) {
+            r.farmers++;
+            r.farmsteads += s.farmsteads;
+            if (s.fsteadWork > 0) r.building++;
+            if (s.sFarm > 0.01f) {
+                r.workedShare += s.farmEff / s.sFarm * s.P;
+                r.farmerPop += s.P;
+            }
         }
     }
     return r;
@@ -138,5 +153,11 @@ int main(int argc, char** argv) {
             100.0 * c1.cutWooded / std::max(c1.pWooded, 1.0));
     fprintf(stderr, "\nbaseline by wood cover: treeless %d / %8.0f, sparse %d / %8.0f, wooded %d / %8.0f\n",
             c0.nBare, c0.pBare, c0.nSparse, c0.pSparse, c0.nWooded, c0.pWooded);
+    for (int p = 0; p < 2; p++)
+        fprintf(stderr,
+                "%s: %d settlements farm; %.0f farmsteads stand, %d going up; "
+                "worked land %.0f%% of the claim's potential (farmer-weighted)\n",
+                p ? "heat    " : "baseline", out[p].farmers, out[p].farmsteads, out[p].building,
+                100.0 * out[p].workedShare / std::max(out[p].farmerPop, 1.0));
     return 0;
 }

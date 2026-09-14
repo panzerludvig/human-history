@@ -297,6 +297,55 @@ inline float storageCapDays(float P, float granaries) {
     return CAP_DAYS_SETTLED + granaries * GRANARY_STORE / std::max(P, 1.0f);
 }
 
+// Farming's reach is the day's walk, derived, not defined (von Thuenen by
+// way of the labour ledger): a field at distance d costs its round trip out
+// of the working day, every day it is worked, so its value falls linearly
+// to zero where the walk would eat the whole day -- at 4.8 km/h and a
+// 12-hour day, 28.8 km. Foraging keeps the gentler claim taper (a forager
+// ranges and camps; a farmer commutes to the same field daily).
+constexpr float FARM_WALK_KMH = 4.8f;
+constexpr float FARM_DAY_H = 12.0f;
+inline float farmCommute(float km) {
+    return std::max(1.0f - 2.0f * km / (FARM_WALK_KMH * FARM_DAY_H), 0.0f);
+}
+
+// Farmsteads: past the walk, the answer is to move the household to the
+// field. A farmstead is a building of the mother settlement -- drawn as a
+// lone house among its fields -- standing for the hamlet-scale cluster
+// that works a block of the claim too far to commute to. Its people stay
+// the settlement's people: no new agent, no new event. It is built like a
+// granary (measured demand, fixed work, only the fed build) and its worked
+// land is priced at ITS OWN cell's suitability, so a river village whose
+// claim runs into hills gets farmsteads only where the grass is.
+constexpr float FSTEAD_KM2 = 12.0f;  // worked claim-km2 one farmstead re-enables
+constexpr float FSTEAD_WORK = 500.0f;       // man-days: houses, byres, clearing
+constexpr float FSTEAD_LABOUR_SHARE = 0.02f;
+constexpr int FSTEAD_MAX = 20;              // slots on the spiral; claims cap sooner
+constexpr float RELOC_ANCHOR_FSTEAD = 0.15f; // sunk investment, like granaries
+// Where slot k stands: a golden-angle spiral walking outward from the
+// village at field scale, mirrored exactly in shaders/globe.frag. The last
+// slot stands at ~23 km -- just inside where the commute value hits zero.
+constexpr float FSTEAD_R0_KM = 2.5f, FSTEAD_DR_KM = 1.1f;
+
+// The worked value of a claim's ground within the day's walk: the claim
+// taper (what ranging to it costs) times the commute factor (what working
+// it daily costs), in the same normalized km2 as claimYieldKm2, so the two
+// are directly comparable. What a claim holds beyond this is farmland only
+// a farmstead can open.
+inline float claimFarmKm2(float R) {
+    static const float unit = FORAGE_KM2 / claimValueKm2(CLAIM_CAP_KM);
+    float D = FARM_WALK_KMH * FARM_DAY_H / 2.0f;
+    float lim = std::min(R, D), t2 = CLAIM_TAPER_KM * CLAIM_TAPER_KM;
+    float sum = 0;
+    const int N = 24;
+    for (int i = 0; i < N; i++) {
+        float r = (i + 0.5f) * lim / N;
+        sum += 1.0f / (1.0f + r * r / t2) * (1.0f - r / D) * 2.0f * 3.14159265f * r *
+               (lim / N);
+    }
+    return sum * unit;
+}
+
 // Heat (Design/Resources.md): the second need, the first that is not
 // calories. The demand is warmth -- cooking fires always, hearths against
 // the cold -- and burning wood is only the leading MODE of meeting it:
@@ -392,6 +441,7 @@ enum : int {
     EV_GRANARY,    // a granary finished
     EV_GAME_GONE,  // a regional herd hunted to nothing
     EV_TECH_LOST,  // nobody here can do it any more
+    EV_FARMSTEAD,  // a farmstead raised on the far fields
     EV_KINDS
 };
 
@@ -569,6 +619,14 @@ struct Settlement {
     float fuelS = 0;   // the woodpile, kg of wood-equivalent (dung dries into it too)
     float coldYr = 0;  // people the cold took in the trailing year (subset of starvedYr)
     float labFuel = 0; // share of the labour budget on fuel, last integrated day (readout)
+    // Farming's reach, and the farmsteads that extend it:
+    float farmsteads = 0;  // standing farmsteads (drawn on the map, slot order)
+    float fsteadWork = 0;  // man-days left on the farmstead going up, 0 = none
+    float farmEff = 0;     // effective farm suitability: worked, walk-priced land
+                           // over the whole claim (sim::updateFarmEff; replaces
+                           // raw sFarm in every yield formula)
+    float farmNearKm2 = 0; // the claim's walkable farm value, cached with farmEff
+    uint8_t builtFsteads = 0; // finished this step; the sim reports and clears
 };
 
 // A migrating group: a settlement with velocity (Design/Migration.md). It
@@ -960,6 +1018,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         s.pasture = f.pastureMap[c.cell];
         s.buildMat = f.buildMatMap[c.cell];
         s.sWood = f.sWoodMap[c.cell];
+        s.farmEff = f.sFarmMap[c.cell]; // refined on the first wake (updateFarmEff)
         s.S = storageCapDays(s.P, s.granaries) * s.P; // the world opens on full stores
         s.fuelS = 0.5f * FUEL_CAP_KG * s.P;           // and half a woodpile
         // The world opens with each settlement holding what it needs, capped
@@ -1024,7 +1083,8 @@ struct SeasonCtx {
     const atmosphere::Climatology* clim = nullptr;
     terrain::V3 n{};
     float h = 0;
-    float farmMult = 1; // 1 + gain*s*expertise, from technology
+    float farmMult = 1; // 1 + gain*farmEff*expertise, from technology
+    float farmExp = 0;  // farming expertise (farmstead build pace and demand)
     float husbExp = 0;  // husbandry expertise
     float granExp = 0;  // granary expertise, 0 unless practising (build pace)
     Affinity aff;       // what these people are good at, from doing it
@@ -1143,6 +1203,7 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     float bows = s.bows;
     float fuelS = s.fuelS, coldYr = s.coldYr, labFuel = s.labFuel;
     float fuelNet = 0; // kg/day the pile last gained or lost (horizon watch)
+    float farmsteads = s.farmsteads, fsteadWork = s.fsteadWork;
     double cycleT = s.cycleT;
     float lat = std::asin(std::clamp(ctx.n.z, -1.0f, 1.0f));
     float lon = std::atan2(ctx.n.y, ctx.n.x);
@@ -1228,6 +1289,14 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
             bool binds = fillHi > GRANARY_HI && fillLo < GRANARY_LO;
             granNeed = binds ? granNeed + 1.0f : 0.0f;
             if (binds && buildWork <= 0 && ctx.granExp > 0) buildWork = GRANARY_WORK;
+            // Farmstead demand, measured yearly like the granary's: a
+            // farming people whose food binds, with claim ground the walk
+            // forbids (farmNearKm2 and the standing farmsteads short of the
+            // claim), moves a household out to it.
+            if (ctx.farmExp > 0 && s.sFarm > 0.05f && needRamp(phiNow) > 0.1f &&
+                fsteadWork <= 0 && farmsteads < FSTEAD_MAX &&
+                s.farmNearKm2 + (farmsteads + 1.0f) * FSTEAD_KM2 <= s.claimKm2)
+                fsteadWork = FSTEAD_WORK;
             cycleT = tk;
             fillLo = fillHi = fill;
         }
@@ -1240,6 +1309,16 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
                 granaries += 1;
                 buildWork = 0;
                 if (s.builtGranaries < 250) s.builtGranaries++;
+            }
+        }
+        // A farmstead goes up the same way: settled farmers know how to
+        // raise a house, so farming expertise sets the pace.
+        if (fsteadWork > 0 && ctx.farmExp > 0 && fill > HOARD_FILL) {
+            fsteadWork -= P * FSTEAD_LABOUR_SHARE * ctx.farmExp * s.buildMat * hstep;
+            if (fsteadWork <= 0) {
+                farmsteads += 1;
+                fsteadWork = 0;
+                if (s.builtFsteads < 250) s.builtFsteads++;
             }
         }
         // Bows: one bowyer finishes one bow in BOW_WORK_DAYS however large
@@ -1261,7 +1340,7 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
             s.herd = 0;
     }
     bool changed = std::fabs(P - s.P) > 0.5f || std::fabs(R - s.R) > 0.002f ||
-                   granaries != s.granaries;
+                   granaries != s.granaries || farmsteads != s.farmsteads;
     // What they have been living on pulls their affinities that way, over
     // generations. Fighting is not fed from food; it comes from raiding
     // and being raided, and fades in peace (sim.h).
@@ -1292,6 +1371,8 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     s.fuelS = fuelS;
     s.coldYr = coldYr;
     s.labFuel = labFuel;
+    s.farmsteads = farmsteads;
+    s.fsteadWork = fsteadWork;
     s.cycleT = cycleT;
     s.t = now;
     float capDays = storageCapDays(s.P, s.granaries);

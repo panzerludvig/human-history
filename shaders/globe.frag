@@ -432,6 +432,40 @@ int hutsNear(vec3 n) {
             // reads as a hole in the fields rather than a place.
             if (length(n - cc) * 6371.0 < rKm * 1.2) return 3;
         }
+    // Farmsteads: sim::farmsteadPos mirrored exactly -- lone houses standing
+    // kilometres from their village among the far fields, so the search box
+    // reaches further than the village pass above.
+    {
+        float fhKm = 0.006;
+        int rx = clamp(int(26.0 / max(20.0 * cos(asin(n.z)), 1.0)) + 1, 2, 9);
+        for (int dy = -2; dy <= 2; dy++)
+            for (int dx = -rx; dx <= rx; dx++) {
+                ivec2 c = c0 + ivec2(dx, dy);
+                ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
+                vec4 site = siteAt(cw);
+                if (site.r <= 0.0 || site.a < 0.5) continue;
+                vec3 cc = cellCentre(cw);
+                vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
+                vec3 north = cross(cc, east);
+                int cell = cw.y * HW + cw.x;
+                float ph = float(cell % 628) * 0.01;
+                int f = int(site.a + 0.5);
+                for (int k = 0; k < f && k < 20; k++) {
+                    float a = 2.39996 * float(k) + ph + 1.1;
+                    float rr = 2.5 + 1.1 * float(k); // sim::FSTEAD_R0/DR
+                    vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
+                    vec3 dv = n - p;
+                    if (dot(dv, dv) * 40602000.0 > fhKm * fhKm) continue;
+                    vec2 lp = vec2(dot(dv, east), dot(dv, north)) * 6371.0;
+                    float ang = a * 1.7 + fract(sin(float(k) * 45.164 + ph) * 21943.7) * 3.14159;
+                    vec2 r2 = vec2(lp.x * cos(ang) + lp.y * sin(ang),
+                                   -lp.x * sin(ang) + lp.y * cos(ang));
+                    // The farmhouse, and the trodden yard around it.
+                    if (abs(r2.x) < 0.0045 && abs(r2.y) < 0.003) return r2.y < 0.0 ? 1 : 4;
+                    if (dot(dv, dv) * 40602000.0 < 0.005 * 0.005) return 3;
+                }
+            }
+    }
     return 0;
 }
 

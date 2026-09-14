@@ -367,7 +367,7 @@ static bool saveWorld(const World& w, const Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 22\n";
+    f << "version 23\n";
     f << "seed " << w.seed << "\n";
     f << "earth " << (w.earth ? 1 : 0) << "\n";
     f << "time " << w.simTime << "\n";
@@ -390,6 +390,7 @@ static bool saveWorld(const World& w, const Camera& c) {
           << s.aff.herd << " " << s.aff.fight << " " << s.claimT;
         for (int k = 0; k < population::CLAIM_SECTORS; k++) f << " " << s.claim[k];
         f << " " << s.fuelS << " " << s.coldYr;
+        f << " " << s.farmsteads << " " << s.fsteadWork;
         f << "\n";
     }
     for (const population::Band& b : w.pop.bands) {
@@ -437,7 +438,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
         double children = 0, men = 0, women = 0, elderly = 0;
         std::string name;
         double culture = 0, affHunt = 0, affGather = 0, affFarm = 0, affHerd = 0, affFight = 0;
-        double claimT = 0, fuelS = -1, coldYr = 0;
+        double claimT = 0, fuelS = -1, coldYr = 0, farmsteads = 0, fsteadWork = 0;
         double claim[population::CLAIM_SECTORS] = {};
         double tech[population::NTECH][4] = {};
     };
@@ -493,6 +494,7 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
                     for (int k = 0; k < population::CLAIM_SECTORS; k++) f >> sv.claim[k];
                 }
                 if (version >= 22) f >> sv.fuelS >> sv.coldYr;
+                if (version >= 23) f >> sv.farmsteads >> sv.fsteadWork;
             } else {
                 if (version >= 4) f >> sv.S >> sv.scarce;
                 else sv.S = 0.5 * population::CAP_DAYS_SETTLED * sv.P;
@@ -592,6 +594,9 @@ static bool loadWorld(const std::string& name, World& w, Camera& c) {
             st.fuelS = sv.fuelS >= 0 ? (float)sv.fuelS
                                      : 0.5f * population::FUEL_CAP_KG * (float)sv.P;
             st.coldYr = (float)sv.coldYr;
+            st.farmsteads = (float)sv.farmsteads;
+            st.fsteadWork = (float)sv.fsteadWork;
+            st.farmEff = w.pop.sFarmMap[cell]; // refined on the first wake
             st.gRegion = population::gameRegion(cell);
             for (int t = 0; t < population::NTECH; t++) {
                 st.tech[t].aware = sv.tech[t][0] > 0.5;
@@ -869,6 +874,7 @@ static std::vector<float> siteTexData(int& rows) {
         d[o + 0] = std::max(ss[i].P, 1.0f);
         d[o + 1] = ss[i].granaries;
         d[o + 2] = sim::farmRadiusKm(ss[i], app.world.simTime);
+        d[o + 3] = ss[i].farmsteads;
         for (int k = 0; k < population::CLAIM_SECTORS; k++) d[o + 4 + k] = ss[i].claim[k];
     }
     return d;
@@ -2038,6 +2044,31 @@ static std::string describePoint(Vec3 n) {
                     }
             }
     }
+    if (building.empty() && !wd.pop.settlementAt.empty()) {
+        // Farmsteads stand kilometres from their village, so the search box
+        // has to reach further than the granaries' one-cell ring.
+        float pickR = (float)std::clamp(app.cam.kmPerPixel() * 2.0, 0.6, 2.5) +
+                      (float)(app.cam.kmPerPixel() * 3.0);
+        float lat = std::asin(std::clamp(nf.z, -1.0f, 1.0f));
+        int rx = std::min((int)std::ceil(1.6f / std::max(std::cos(lat), 0.05f)) + 1,
+                          hydrology::W / 2);
+        for (int dy = -2; dy <= 2 && building.empty(); dy++)
+            for (int dx = -rx; dx <= rx && building.empty(); dx++) {
+                int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
+                int cell = yy * hydrology::W + hydrology::wrapX(cx + dx);
+                int si = wd.pop.settlementAt[cell];
+                if (si < 0) continue;
+                const population::Settlement& st = wd.pop.settlements[si];
+                for (int k = 0;
+                     k < (int)(st.farmsteads + 0.5f) && k < population::FSTEAD_MAX; k++)
+                    if (sim::distKm(nf, sim::farmsteadPos(st.cell, k)) < pickR) {
+                        char fb[64];
+                        snprintf(fb, sizeof fb, "Farmstead of %s  |  ", st.name);
+                        building = fb;
+                        break;
+                    }
+            }
+    }
     if (building.empty() && !wd.pop.settlementAt.empty() && app.cam.kmPerPixel() < 4.0) {
         // Fields: the same annulus the shader draws, so what the cursor
         // names and what the eye sees are one definition.
@@ -2447,6 +2478,20 @@ static std::string buildingsText(const population::Settlement& st, double now) {
              (int)population::CAP_DAYS_SETTLED,
              (int)(population::storageCapDays(st.P, st.granaries) - population::CAP_DAYS_SETTLED));
     out += b;
+    if (st.farmsteads > 0.5f) {
+        snprintf(b, sizeof b, "Farmsteads: %d\n", (int)st.farmsteads);
+        out += b;
+    }
+    if (st.fsteadWork > 0) {
+        snprintf(b, sizeof b, "Farmstead going up: %d%% done\n",
+                 (int)std::lround((1.0 - st.fsteadWork / population::FSTEAD_WORK) * 100));
+        out += b;
+    }
+    if (st.tech[population::TECH_FARMING].practising) {
+        snprintf(b, sizeof b, "Farmland worked: %d%% of the claim\n",
+                 (int)std::lround(st.farmEff / std::max(st.sFarm, 0.01f) * 100));
+        out += b;
+    }
     const population::TechState& gt = st.tech[population::TECH_GRANARY];
     if (gt.practising) {
         snprintf(b, sizeof b, "Build pace: craft %d%% x materials %d%%\n",
@@ -2556,6 +2601,7 @@ static const char* NEWS_LABEL[population::EV_KINDS][2] = {
     {"granary was built", "granaries were built"},
     {"regional herd was hunted out", "regional herds were hunted out"},
     {"people lost a technology", "peoples lost technologies"},
+    {"farmstead was raised", "farmsteads were raised"},
 };
 
 // The entries of one kind, in order.
@@ -3252,10 +3298,11 @@ int main(int argc, char** argv) {
         setScreen(Screen::InGame);
         if (argc >= 9) {
             advanceDays(atof(argv[8]) * 365.0); // fast-forward years
-            int gran = 0, building = 0;
+            int gran = 0, building = 0, fstead = 0;
             for (const population::Settlement& s : app.world.pop.settlements) {
                 gran += (int)(s.granaries + 0.5f);
                 building += s.buildWork > 0 ? 1 : 0;
+                fstead += (int)(s.farmsteads + 0.5f);
             }
             double totalP = 0;
             population::Cohorts all{};
@@ -3315,10 +3362,10 @@ int main(int argc, char** argv) {
                     "people: %.0f%% children, %.0f%% men, %.0f%% women, %.0f%% elderly\n",
                     all.C / tp * 100, all.M / tp * 100, all.W / tp * 100, all.E / tp * 100);
             fprintf(stderr,
-                    "granaries built: %d, under construction: %d\n"
+                    "granaries built: %d, under construction: %d, farmsteads: %d\n"
                     "settlements: %d, people: %.0f, bands: %d (peak %d), ruins: %d, "
                     "worked sites: %d\n",
-                    gran, building, (int)app.world.pop.settlements.size(), totalP,
+                    gran, building, fstead, (int)app.world.pop.settlements.size(), totalP,
                     (int)app.world.pop.bands.size(), (int)app.world.pop.peakBands,
                     (int)app.world.pop.ruins.size(), (int)app.world.pop.scars.size());
         }

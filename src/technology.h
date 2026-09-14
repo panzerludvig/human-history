@@ -139,7 +139,9 @@ inline float suitability(const population::Settlement& s, int tech) {
 // harvest-shaped total, the herd's current flow (seasonal mean ~0.85), and
 // the farmyard bonus; water caps the whole.
 inline float effectiveK(const population::Settlement& s, double now) {
-    float farmMult = 1.0f + FARM_YIELD_GAIN * s.sFarm * expertise(s.tech[population::TECH_FARMING], now);
+    // farmEff, not sFarm: the farmed land is the walk-priced share of the
+    // claim plus what the farmsteads reopened (sim::updateFarmEff).
+    float farmMult = 1.0f + FARM_YIELD_GAIN * s.farmEff * expertise(s.tech[population::TECH_FARMING], now);
     float hExp = expertise(s.tech[population::TECH_HUSBANDRY], now);
     float husb = s.herd * 0.85f + population::FARMYARD_SHARE_POP * s.kFoodP * hExp;
     float archExp = expertise(s.tech[population::TECH_ARCHERY], now);
