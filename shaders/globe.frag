@@ -525,18 +525,31 @@ float ruinNear(vec3 n) {
 // looks like from above. Returns rgb = the ground's colour here and w = how
 // strongly it replaces what grew before: 1 inside a worked plot, less on the
 // cleared ground between plots, 0 outside the clearing altogether.
-// One tilled plot: a rough square kilometre of worked ground, its long
-// axis turned the way its ploughman chose, its boundary wandering with the
-// stumps and stones that were left. `e` is the local ground frame (km)
-// about the plot's centre; `h` its hash.
-vec4 plotPatch(vec2 e, float ang, float h) {
-    vec2 r = vec2(e.x * cos(ang) + e.y * sin(ang), -e.x * sin(ang) + e.y * cos(ang));
-    float w = 0.42 + 0.18 * fract(h * 13.7); // half-width, km
-    float l = 0.26 / w;                      // half-length: about a km2 held
-    float bearing = atan(r.y, r.x);
-    float wob = 0.90 + 0.14 * sin(bearing * 5.0 + h * 40.0) +
-                0.06 * sin(bearing * 11.0 - h * 17.0);
-    if (abs(r.x) > l * wob || abs(r.y) > w * wob) return vec4(0.0);
+// The plots about one centre, at constant cost: the ground is divided into
+// rough square-km blocks in a local frame, each block hashed with a
+// jittered clearing order -- a block is tilled once the built area reaches
+// its rank. So the clearing accretes outward plot by plot, patchy at the
+// frontier, and a pixel only ever looks at the one block it stands in.
+// `f` local ground km (already turned by the site's angle), `builtKm2` the
+// standing plots, `innerKm` a hole for the houses.
+vec4 plotsAt(vec2 f, float builtKm2, float innerKm, float seed) {
+    float d2 = dot(f, f);
+    float R = sqrt(builtKm2 / 3.14159265);
+    if (d2 > (R + 1.5) * (R + 1.5) || d2 < innerKm * innerKm) return vec4(0.0);
+    vec2 blk = floor(f);
+    float h = fract(sin(dot(blk, vec2(12.9898, 78.233)) + seed) * 43758.5453);
+    vec2 centre = blk + 0.5;
+    if (length(centre) * (0.75 + 0.5 * h) >= R) return vec4(0.0); // not cleared yet
+    // The plot inside its block: shrunk by a headland margin, turned the
+    // way its ploughman chose, its boundary wandering with the stumps and
+    // stones that were left.
+    float ang = (fract(h * 91.17) - 0.5) * 1.2;
+    vec2 l = f - centre;
+    vec2 r = vec2(l.x * cos(ang) + l.y * sin(ang), -l.x * sin(ang) + l.y * cos(ang));
+    float wx = 0.40 + 0.08 * fract(h * 31.7); // half-extents, km
+    float wy = 0.34 + 0.10 * fract(h * 57.3);
+    float wob = 0.92 + 0.10 * sin((r.x + r.y) * 9.0 + h * 40.0);
+    if (abs(r.x) > wx * wob || abs(r.y) > wy * wob) return vec4(0.0);
     float shade = fract(h * 7.0);
     vec3 tilled = vec3(0.31, 0.21, 0.12);   // turned earth, ash still in it
     vec3 standing = vec3(0.78, 0.66, 0.22); // barley coming on
@@ -544,14 +557,10 @@ vec4 plotPatch(vec2 e, float ang, float h) {
     vec3 col = shade < 0.34 ? tilled : (shade < 0.70 ? standing : stubble);
     // Furrows run the length of the plot, and a darker baulk rims it.
     float fur = 0.94 + 0.06 * sin(r.y / 0.012);
-    float baulk = min((l * wob - abs(r.x)) / 0.06, (w * wob - abs(r.y)) / 0.05);
+    float baulk = min((wx * wob - abs(r.x)) / 0.06, (wy * wob - abs(r.y)) / 0.05);
     return vec4(col * fur * (0.72 + 0.28 * clamp(baulk, 0.0, 1.0)), 0.95);
 }
 
-// Where village plot i lies: a sunflower spiral working outward from the
-// houses, so clearing visibly accretes plot by plot -- the first fields at
-// the door, the newest at the edge of the walk. One built plot per km2 of
-// Settlement::tilled[0] (site.b carries the area).
 vec4 fieldsNear(vec3 n) {
     if (uKmPerPixel > 4.0) return vec4(0.0);
     ivec2 c0 = hydroCell(n);
@@ -561,31 +570,21 @@ vec4 fieldsNear(vec3 n) {
             ivec2 c = c0 + ivec2(dx, dy);
             ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
             vec4 site = siteAt(cw);
-            int np = int(site.b + 0.5); // tilled km2 -> plots
-            if (np <= 0) continue;
+            if (site.b <= 0.5) continue; // tilled km2 at the village
             vec3 cc = cellCentre(cw);
-            float distKm = length(n - cc) * 6371.0;
-            if (distKm > 4.32 * sqrt(float(np) / 58.0) + 1.2) continue; // spiral reach
             vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
             vec3 north = cross(cc, east);
             int cell = cw.y * HW + cw.x;
-            float ph = float(cell % 628) * 0.01;
-            float inner = villageRadiusKm(site.r) * 1.2 + 0.25;
-            for (int i = 0; i < np && i < 58; i++) {
-                float a = 2.39996 * float(i) + ph * 3.0;
-                float rr = inner + (4.32 - inner) * sqrt((float(i) + 0.5) / 58.0);
-                vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
-                vec2 e = vec2(dot(n - p, east), dot(n - p, north)) * 6371.0;
-                if (dot(e, e) > 1.4) continue; // beyond any plot's own reach
-                float h = fract(sin(float(i) * 12.9898 + ph * 91.7) * 43758.5453);
-                vec4 m = plotPatch(e, a * 1.7 + h * 3.14159, h);
-                if (m.w > 0.0) return m;
-            }
+            float turn = float(cell % 628) * 0.01;
+            vec2 e = vec2(dot(n - cc, east), dot(n - cc, north)) * 6371.0;
+            vec2 f = vec2(e.x * cos(turn) + e.y * sin(turn),
+                          -e.x * sin(turn) + e.y * cos(turn));
+            vec4 m = plotsAt(f, site.b, villageRadiusKm(site.r) * 1.2, turn * 100.0);
+            if (m.w > 0.0) return m;
         }
-    // Each farmstead's plots: the same spiral at hamlet scale about the far
-    // house, from the per-slot tilled areas the site texture carries. A
-    // couple of km across at most, so only close views need the wider
-    // search the outlying houses demand.
+    // Each farmstead's plots, about the far house. A couple of km across
+    // at most, so only close views need the wider search the outlying
+    // houses demand; the per-slot tilled areas ride in the site texture.
     if (uKmPerPixel <= 1.0) {
         int rx = clamp(int(26.0 / max(20.0 * cos(asin(n.z)), 1.0)) + 1, 2, 9);
         for (int dy = -2; dy <= 2; dy++)
@@ -603,24 +602,17 @@ vec4 fieldsNear(vec3 n) {
                 float ph = float(cell % 628) * 0.01;
                 int nf = int(site.a + 0.5);
                 for (int k = 0; k < nf && k < 20; k++) {
-                    int npf = int(siteTexel(idx, 5 + k / 4)[k % 4] + 0.5);
-                    if (npf <= 0) continue;
                     float a = 2.39996 * float(k) + ph + 1.1; // sim::farmsteadPos
                     float rr = 2.5 + 1.1 * float(k);
                     vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
-                    if (length(n - p) * 6371.0 > 2.6) continue; // block reach
-                    for (int i = 0; i < npf && i < 12; i++) {
-                        float af = 2.39996 * float(i) + a * 5.0;
-                        float rf = 0.25 + 1.75 * sqrt((float(i) + 0.5) / 12.0);
-                        vec3 q = normalize(p + (east * cos(af) + north * sin(af)) *
-                                                   (rf / 6371.0));
-                        vec2 e = vec2(dot(n - q, east), dot(n - q, north)) * 6371.0;
-                        if (dot(e, e) > 1.4) continue;
-                        float h = fract(sin(float(i) * 78.233 + float(k) * 9.1 + ph * 55.0) *
-                                        43758.5453);
-                        vec4 m = plotPatch(e, af * 1.3 + h * 3.14159, h);
-                        if (m.w > 0.0) return m;
-                    }
+                    vec2 e = vec2(dot(n - p, east), dot(n - p, north)) * 6371.0;
+                    if (dot(e, e) > 3.0 * 3.0) continue; // beyond the block
+                    float area = siteTexel(idx, 5 + k / 4)[k % 4];
+                    if (area <= 0.5) continue;
+                    vec2 f = vec2(e.x * cos(a) + e.y * sin(a),
+                                  -e.x * sin(a) + e.y * cos(a));
+                    vec4 m = plotsAt(f, area, 0.05, ph * 55.0 + float(k) * 9.1);
+                    if (m.w > 0.0) return m;
                 }
             }
     }
