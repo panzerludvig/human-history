@@ -898,11 +898,10 @@ static std::vector<float> siteTexData(int& rows) {
         size_t o = i * SITE_STRIDE * 4;
         d[o + 0] = std::max(ss[i].P, 1.0f);
         d[o + 1] = ss[i].granaries;
-        d[o + 2] = sim::farmRadiusKm(ss[i], app.world.simTime);
+        d[o + 2] = ss[i].tilled[0]; // village plots, km2 (one drawn patch each)
         d[o + 3] = ss[i].farmsteads;
         for (int k = 0; k < population::CLAIM_SECTORS; k++) d[o + 4 + k] = ss[i].claim[k];
-        for (int k = 0; k < population::FSTEAD_MAX; k++)
-            d[o + 20 + k] = sim::farmsteadFieldKm(ss[i], k);
+        for (int k = 0; k < population::FSTEAD_MAX; k++) d[o + 20 + k] = ss[i].tilled[k + 1];
     }
     return d;
 }

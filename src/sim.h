@@ -656,22 +656,18 @@ inline void updateFarmland(population::Field& pf, population::Settlement& s) {
 // mosaic -- crop, stubble, scrub regrowth, the trees not yet taken -- is
 // what farming looks like from above, so it is the footprint drawn.
 
-// How far the village fields reach: the outer edge of an annulus holding
-// exactly the plots that have been cleared -- the drawing IS the built
-// area, so the map and the panel can no longer disagree. Zero when no plot
-// stands, so it is also the test for whether to draw fields at all. Each
-// farmstead's fields are drawn the same way around its own house, from the
-// per-slot tilled areas the site texture carries.
+// The plots are drawn individually by the shader (one patch per built
+// km2, on a sunflower spiral working outward from the village and from
+// each farmstead -- the spiral is inner-out, so clearing visibly accretes).
+// This radius is the spiral's reach for the plots that stand: the tooltip
+// pick and any coarse test use it as the fields' extent.
 inline float farmRadiusKm(const population::Settlement& s, double now) {
     (void)now;
     if (s.tilled[0] <= 0) return 0.0f;
     float inner = fieldInnerKm(s.P);
-    return std::sqrt(inner * inner + s.tilled[0] / 3.14159265f);
-}
-
-inline float farmsteadFieldKm(const population::Settlement& s, int k) {
-    if (k < 0 || k >= population::FSTEAD_MAX || s.tilled[k + 1] <= 0) return 0.0f;
-    return std::sqrt(s.tilled[k + 1] / 3.14159265f);
+    // The spiral's packing makes its reach the annulus radius; the margin
+    // is a plot's own half-width past its centre.
+    return std::sqrt(inner * inner + s.tilled[0] / 3.14159265f) + 0.6f;
 }
 
 // A band forages the cell it stands on: same famine rule as a settlement, but
