@@ -1056,7 +1056,7 @@ struct Rules {
     std::vector<float> dLandE;               // sea cells: km to land eastward (the upwelling coast's sea)
     std::vector<float> dSeaEq, dSeaPole;     // land: km to the sea equatorward and poleward along the column
     std::vector<unsigned char> water;
-    std::vector<float> latDeg, elev;
+    std::vector<float> latDeg, elev, elevS;   // and the elevation smoothed over three cells
     std::vector<float> cont, wide;
     std::vector<unsigned char> kind;   // 0 sea, 1 interior, 2 west desert, 3 east humid, 4 mediterranean, 5 temperate west, 6 monsoon, 7 tropics
     // Earth's zonal-mean rain by latitude, mm/day, every 10 degrees from the equator
@@ -1066,6 +1066,12 @@ struct Rules {
         int k = std::min((int)p, n - 2);
         return v[k] + (p - k) * (v[k + 1] - v[k]);
     }
+    // Every rule fades in and out over a few degrees and a few hundred
+    // kilometres: hard switches drew the 208 km cells as blocks on the map.
+    static double band(double a, double lo, double hi, double w = 4.0) {
+        return std::clamp((a - lo) / w + 0.5, 0.0, 1.0) * std::clamp((hi - a) / w + 0.5, 0.0, 1.0);
+    }
+    static double within(double d, double km, double w = 300.0) { return std::clamp((km - d) / w + 0.5, 0.0, 1.0); }
     static double season(double doy, double latDegSigned) {   // +1 at midsummer, -1 at midwinter, for this hemisphere
         double s = std::cos(2 * 3.14159265 * (doy - 202.0) / 365.0);
         return latDegSigned >= 0 ? s : -s;
@@ -1073,6 +1079,21 @@ struct Rules {
     void init(int w, int h, const std::vector<float>& elevM, const std::vector<unsigned char>& wat,
               const std::vector<float>& latRad, const Prescribed& pre) {
         W = w; H = h; water = wat; elev = elevM; cont = pre.cont; wide = pre.wide; dLandE = pre.dEast;
+        elevS = elev;
+        for (int pass = 0; pass < 2; pass++) {
+            std::vector<float> t = elevS;
+            for (int y = 1; y < H - 1; y++)
+                for (int x = 0; x < W; x++) {
+                    int i = y * W + x; double sum = 0, wsum = 0;
+                    for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+                        int j = (y + dy) * W + (x + dx + W) % W;
+                        double wgt = (dx == 0 ? 2.0 : 1.0) * (dy == 0 ? 2.0 : 1.0);
+                        sum += wgt * std::max(elevS[j], 0.0f); wsum += wgt;
+                    }
+                    t[i] = (float)(sum / wsum);
+                }
+            elevS = t;
+        }
         latDeg.assign(W * H, 0.0f); base.assign(W * H, 1.0f); kind.assign(W * H, 0);
         dSeaW.assign(W * H, 1e9f); dSeaE.assign(W * H, 1e9f); dSea.assign(W * H, 0.0f); dSeaEq.assign(W * H, 1e9f); dSeaPole.assign(W * H, 1e9f);
         const double dyKm = 3.14159265 * R_EARTH / H / 1000.0;
@@ -1118,17 +1139,21 @@ struct Rules {
                 }
                 // the subtropical high's western flank pushes sea air poleward and inland
                 // from the east coast: the humid subtropics, decaying from THAT coast
-                if (a >= 25 && a <= 50) {
+                {
+                    double b = band(a, 25, 50);
                     double fe = RUL_EAST_HUMID * std::exp(-dSeaE[i] / RUL_EAST_KM);
-                    if (fe > f) { f = fe; k = 3; }
+                    double fx = f + (std::max(fe, f) - f) * b;
+                    if (fx > f) { f = fx; k = 3; }
                 }
                 // the trade-wind coast: wet where the trades come ashore, and only there
-                if (a >= 8 && a < 25) {
+                {
+                    double b = band(a, 8, 25);
                     double ft = RUL_TRADE_COAST * std::exp(-dSeaE[i] / RUL_TRADE_KM);
-                    if (ft > f) { f = ft; k = 3; }
+                    double fx = f + (std::max(ft, f) - f) * b;
+                    if (fx > f) { f = fx; k = 3; }
                 }
                 // the monsoon: a large continent with the sea equatorward of it
-                if (a >= 8 && a <= 30 && dSeaPole[i] > 1500) {   // a continent behind the coast: the heat low that draws the sea air in
+                if (band(a, 8, 30) > 0 && dSeaPole[i] > 900) {   // a continent behind the coast: the heat low that draws the sea air in
                     // a plateau poleward of the cell: the heat low that draws the monsoon inland
                     // a plateau the size of Tibet, not a range: several cells above RUL_PLATEAU_M
                     // (the Alps stood poleward of the Sahara and gave the Sahel India's reach)
@@ -1146,34 +1171,68 @@ struct Rules {
                     bool plateau = high >= 6;
                     double limit = plateau ? RUL_MONSOON_PLATEAU_LAT : RUL_MONSOON_LAT;
                     double fm = RUL_MONSOON * std::exp(-dSeaEq[i] / (plateau ? RUL_MONSOON_PLATEAU_KM : RUL_MONSOON_KM)) *
-                                std::clamp((limit + 3.0 - a) / 3.0, 0.0, 1.0);
-                    if (fm > f) { f = fm; k = 6; }
+                                std::clamp((limit + 3.0 - a) / 3.0, 0.0, 1.0) * band(a, 8, 30) *
+                                std::clamp((dSeaPole[i] - 900.0) / 600.0, 0.0, 1.0);
+                    double fx = f + (std::max(fm, f) - f);
+                    if (fm > f) { f = fx; k = 6; }
                 }
                 // the tropics: no interior decay, recycling and convergence instead
                 if (a < 15) { double t = std::clamp((15.0 - a) / 5.0, 0.0, 1.0); f = std::max(f, 1.0 + (RUL_TROPICS - 1.0) * t); if (t > 0.5) k = 7; }
                 // subtropical west coast: the desert under the high and the cold current
-                if (a >= 8 && a <= 32 && dSeaW[i] < 1400 && dSeaE[i] > 600) { f *= RUL_WEST_DESERT + (1 - RUL_WEST_DESERT) * std::clamp((dSeaW[i] - 600.0) / 800.0, 0.0, 1.0); k = 2; }
+                {
+                    double b = band(a, 8, 32) * within(dSeaW[i], 1400) * (1.0 - within(dSeaE[i], 600));
+                    double share = RUL_WEST_DESERT + (1 - RUL_WEST_DESERT) * std::clamp((dSeaW[i] - 600.0) / 800.0, 0.0, 1.0);
+                    f *= 1.0 - (1.0 - share) * b;
+                    if (b > 0.5) k = 2;
+                }
                 // temperate west coast, and the Mediterranean one equatorward of it
-                if (a >= 30 && a < 42 && dSeaW[i] < 800 && k != 2) { f *= RUL_MEDITERRANEAN; k = 4; }
-                else if (a >= 38 && a <= 60 && dSeaW[i] < 600) { f *= RUL_TEMPERATE_WEST; k = 5; }
+                {
+                    double bm = band(a, 30, 42) * within(dSeaW[i], 800) * (k == 2 ? 0.0 : 1.0);
+                    double bt = band(a, 38, 60) * within(dSeaW[i], 600) * (1.0 - bm);
+                    f *= 1.0 - (1.0 - RUL_MEDITERRANEAN) * bm;
+                    f *= 1.0 + (RUL_TEMPERATE_WEST - 1.0) * bt;
+                    if (bm > 0.5) k = 4; else if (bt > 0.5) k = 5;
+                }
                 // orography along the wind: the rise from the upwind cell, and the ridge upwind
+                // on the smoothed elevation, over two cells, so a range reads as a slope
                 int up = west > 0.5 ? (x - 1 + W) % W : (x + 1) % W;
-                double rise = elev[i] - elev[y * W + up];
-                if (rise > 0 && dSea[i] < RUL_OROGRAPHIC_KM) f *= std::min(1.0 + rise / RUL_LIFT_M, k == 4 || k == 2 ? 1.3 : 1.8);
+                int up2 = west > 0.5 ? (x - 2 + W) % W : (x + 2) % W;
+                double rise = 0.5 * ((elevS[i] - elevS[y * W + up]) + (elevS[y * W + up] - elevS[y * W + up2]));
+                if (rise > 0) f *= 1.0 + (std::min(1.0 + rise / RUL_LIFT_M, k == 4 || k == 2 ? 1.3 : 1.8) - 1.0) * within(dSea[i], RUL_OROGRAPHIC_KM);
                 double ridge = 0;
                 int cells = (int)(RUL_SHADOW_KM / dxKm) + 1;
                 for (int c = 1; c <= cells; c++) {
                     if (c * dxKm > dUp) break;   // only a ridge between the cell and its sea
                     int xx = west > 0.5 ? (x - c + W) % W : (x + c) % W;
-                    ridge = std::max(ridge, (double)elev[y * W + xx] - elev[i]);
+                    ridge = std::max(ridge, (double)elevS[y * W + xx] - elevS[i]);
                 }
                 if (ridge > RUL_SHADOW_M) f *= std::max(RUL_SHADOW_FLOOR, 1.0 - (ridge - RUL_SHADOW_M) / (2 * RUL_SHADOW_M));
-                if (elev[i] > 1500 && rise <= 0 && dSea[i] > 500) f *= RUL_PLATEAU;
+                f *= 1.0 - (1.0 - RUL_PLATEAU) * std::clamp((elevS[i] - 1200.0) / 600.0, 0.0, 1.0) * (rise <= 0 ? 1.0 : 0.5) * (1.0 - within(dSea[i], 500));
                 base[i] = (float)f; kind[i] = k;
-                if (std::getenv("HH_DEBUG_RULES") && std::fabs(latDeg[i] + 10.0) < 1.0 && std::fabs(((x + 0.5) / W) * 360.0 - 180.0 + 77.0) < 1.0)
-                    fprintf(stderr, "RULES cell lat %.1f lon %.1f: kind %d base %.2f dSeaW %.0f dSeaE %.0f dSea %.0f dSeaEq %.0f rise %.0f ridge %.0f elev %.0f wide %.2f\n",
-                            latDeg[i], ((x + 0.5) / W) * 360.0 - 180.0, k, f, dSeaW[i], dSeaE[i], dSea[i], dSeaEq[i], rise, ridge, elev[i], wide[i]);
             }
+        }
+        smoothBase();
+    }
+    // The multiple smoothed over land, two passes: what the rules say
+    // changes by a factor of two across one cell where a rule switches on,
+    // and the map drew the 208 km cells as blocks.
+    void smoothBase() {
+        for (int pass = 0; pass < 2; pass++) {
+            std::vector<float> t = base;
+            for (int y = 1; y < H - 1; y++)
+                for (int x = 0; x < W; x++) {
+                    int i = y * W + x;
+                    if (water[i]) continue;
+                    double sum = 0, wsum = 0;
+                    for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+                        int j = (y + dy) * W + (x + dx + W) % W;
+                        if (water[j]) continue;
+                        double wgt = (dx == 0 ? 2.0 : 1.0) * (dy == 0 ? 2.0 : 1.0);
+                        sum += wgt * base[j]; wsum += wgt;
+                    }
+                    t[i] = (float)(sum / wsum);
+                }
+            base = t;
         }
     }
     // mm/day at this cell on this day
