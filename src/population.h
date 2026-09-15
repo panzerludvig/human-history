@@ -336,18 +336,60 @@ inline void bandStarve(Cohorts& c, float deaths) {
     c.E = std::max(c.E - f * FAMINE_W_ELDER * c.E, 0.0f);
 }
 
+// What a settlement eats, term by term: the diet, defined once. Every
+// place that needs "how much food is here" -- the annual capacity
+// (effectiveFood, technology::effectiveK), the seasonal flow (foodFlow),
+// the wake horizon (scheduleWake), the game pools' draw (sim::gameTick) --
+// assembles its answer from these terms with its own seasonal factors, so
+// a change to what counts as food is made in foodTerms alone. All terms
+// are annual-mean, per day, before the land condition R.
+struct FoodTerms {
+    float plant = 0;     // gatherable plants: the yield less its game share
+    float bigGame = 0;   // the regional pool's herds, at their present health
+    float smallGame = 0; // the local small game, at this group's bows
+    float farm = 0;      // the standing plots at current expertise
+    float herd = 0;      // the livestock's mean flow (seasonal mean ~0.85)
+    float farmyard = 0;  // household animals, no pasture needed
+    float fish = 0;      // the water in reach, at current gear
+};
+
+inline FoodTerms foodTerms(const Settlement& s, const SeasonCtx& ctx) {
+    FoodTerms f;
+    f.plant = s.kFoodP - s.kGame - s.kSmall;
+    float bigEff = huntEff(ctx.gameG) * (1.0f + BOW_BIG_GAIN * ctx.bowCover * ctx.archExp);
+    f.bigGame = s.kGame * bigEff;
+    f.smallGame = s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp);
+    f.farm = ctx.farmFlow;
+    f.herd = s.herd * 0.85f;
+    f.farmyard = FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp;
+    f.fish = s.kFish * fishEff(ctx.fishExp);
+    return f;
+}
+
+// Annual food capacity: foraging scaled by the seasonal mean (with the
+// game-borne share tracking the regional pool's health), farming's
+// harvest-shaped total, the herd's current flow and the farmyard bonus,
+// the fish; water caps the whole. Before the land condition: the caller
+// multiplies by R where the land is worn (fish carry no such term, but
+// R is applied to the whole by every caller that applies it at all).
+inline float effectiveFood(const Settlement& s, const SeasonCtx& ctx) {
+    FoodTerms f = foodTerms(s, ctx);
+    return std::min((f.plant + f.bigGame + f.smallGame) * s.meanF + f.farm + (f.herd + f.farmyard) +
+                        f.fish,
+                    s.kWater);
+}
+
 // The seasonal food flow at time t: foraging follows the forage factor,
 // farming follows squared growing activity normalized to keep its annual
 // total (a prominent harvest season; year-round cropping in the tropics),
 // and water caps the whole.
 inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double t) {
+    FoodTerms f = foodTerms(s, ctx);
     // Three kinds of food from the land: plants, the herds of the regional
     // pool, and the small game a bow is for.
-    float bigEff = huntEff(ctx.gameG) * (1.0f + BOW_BIG_GAIN * ctx.bowCover * ctx.archExp);
-    float hunted = (s.kGame * bigEff + s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp)) *
-                   affinityBonus(ctx.aff.hunt);
-    float forage = (s.kFoodP - s.kGame - s.kSmall) * affinityBonus(ctx.aff.gather) + hunted;
-    float farm = ctx.farmFlow; // the standing plots, at current expertise
+    float hunted = (f.bigGame + f.smallGame) * affinityBonus(ctx.aff.hunt);
+    float forage = f.plant * affinityBonus(ctx.aff.gather) + hunted;
+    float farm = f.farm; // the standing plots, at current expertise
     float fF = s.meanF, fG2 = 1.0f, fFish = 1.0f;
     if (ctx.clim) {
         float tC = cachedSeasonT(s, t);
@@ -361,12 +403,10 @@ inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double
     // Husbandry: the herd is a walking store -- its flow barely dips in
     // winter (fodder and slaughter). Plus the pasture-free farmyard animals.
     float gNow = std::clamp((fF - 0.12f) / 0.88f, 0.0f, 1.0f);
-    float husb = (s.herd * (0.7f + 0.3f * gNow) +
-                  FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp) *
-                 R * affinityBonus(ctx.aff.herd);
+    float husb = (s.herd * (0.7f + 0.3f * gNow) + f.farmyard) * R * affinityBonus(ctx.aff.herd);
     // Fish are not scaled by R: a coast is not worn out by being fished,
     // which is the whole reason a fishing people can stay put.
-    float fish = s.kFish * fishEff(ctx.fishExp) * fFish * affinityBonus(ctx.aff.hunt);
+    float fish = f.fish * fFish * affinityBonus(ctx.aff.hunt);
     return std::min((forage * fF + farm * fG2 * affinityBonus(ctx.aff.farm)) * R + husb + fish,
                     s.kWater);
 }
@@ -601,11 +641,10 @@ inline void driftAffinity(Settlement& s, const SeasonCtx& ctx, double span) {
 // woodpile is a deadline like a draining larder.
 inline void scheduleWake(Settlement& s, float K, const SeasonCtx& ctx, float fuelNet, double now) {
     float capDays = storageCapDays(s.P, s.granaries);
-    float bigEffMean = huntEff(ctx.gameG) * (1.0f + BOW_BIG_GAIN * ctx.bowCover * ctx.archExp);
-    float forageBase = (s.kFoodP - s.kGame - s.kSmall) * affinityBonus(ctx.aff.gather) +
-                       (s.kGame * bigEffMean + s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp)) *
-                           affinityBonus(ctx.aff.hunt);
-    float meanFlow = std::min((forageBase * s.meanF + ctx.farmFlow) * s.R, s.kWater);
+    FoodTerms f = foodTerms(s, ctx);
+    float forageBase = f.plant * affinityBonus(ctx.aff.gather) +
+                       (f.bigGame + f.smallGame) * affinityBonus(ctx.aff.hunt);
+    float meanFlow = std::min((forageBase * s.meanF + f.farm) * s.R, s.kWater);
     float dP, dR, dS, dStarveMean;
     derivatives(s.P, s.R, s.S, meanFlow, K, capDays, GATHER_SETTLED * s.P, dP, dR, dS, dStarveMean);
     double horizon = 1800;

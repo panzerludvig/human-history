@@ -32,16 +32,19 @@ inline void gameTick(population::Field& pf, double now) {
     std::vector<float> draw(pf.gameG.size(), 0.0f);
     for (const Settlement& s : pf.settlements) {
         if (s.kGame <= 0 || s.P <= 1) continue;
+        SeasonCtx ctx = technology::annualCtx(s, now);
+        FoodTerms f = foodTerms(s, ctx);
+        // Deviation from "the diet is defined once" (foodTerms): the herds'
+        // flow is multiplied here in the order this function always used,
+        // (kGame * huntEff) * bows * meanF, not f.bigGame * meanF, which
+        // groups the same factors as kGame * (huntEff * bows). The two
+        // differ by a rounding, and that rounding moved a 40-year probe by
+        // one person; the order stays until a behaviour change is wanted.
         float g = pf.gameG[s.gRegion];
-        float archExp = technology::expertise(s.tech[TECH_ARCHERY], now);
-        float cover = bowCoverage(s.bows, s.P);
         float gameFlow =
-            s.kGame * huntEff(g) * (1.0f + BOW_BIG_GAIN * cover * archExp) * s.meanF;
-        float farm = s.farmK * technology::expertise(s.tech[TECH_FARMING], now);
-        float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
-        float total = (s.kFoodP - s.kGame - s.kSmall) * s.meanF +
-                      s.kSmall * smallGameEff(cover, archExp) * s.meanF + gameFlow +
-                      farm + s.herd * 0.85f + FARMYARD_SHARE_POP * s.kFoodP * hExp;
+            s.kGame * huntEff(g) * (1.0f + BOW_BIG_GAIN * ctx.bowCover * ctx.archExp) * s.meanF;
+        float total =
+            f.plant * s.meanF + f.smallGame * s.meanF + gameFlow + f.farm + f.herd + f.farmyard;
         if (total <= 1e-6f) continue;
         draw[s.gRegion] += s.P * gameFlow / total; // game share of what they eat
     }
@@ -53,30 +56,19 @@ inline void gameTick(population::Field& pf, double now) {
         float before = g;
         pf.gameG[r] = std::clamp(g + (regen - depl) * (float)dt, 0.0f, 1.0f);
         if (before >= GAME_FLOOR && pf.gameG[r] < GAME_FLOOR)
-            note(pf, EV_GAME_GONE, now, 0, 0, 0, 0,
-                 "a regional herd was hunted past saving");
+            note(pf, EV_GAME_GONE, now, 0, 0, 0, 0, "a regional herd was hunted past saving");
     }
     for (Settlement& s : pf.settlements)
         if (s.kGame > 0) s.gameNow = pf.gameG[s.gRegion];
     pf.gameT = now;
 }
 
-inline population::SeasonCtx seasonCtx(const population::Settlement& s,
-                                       const hydrology::Result& hy,
+inline population::SeasonCtx seasonCtx(const population::Settlement& s, const hydrology::Result& hy,
                                        const atmosphere::Climatology& clim, double now) {
-    population::SeasonCtx ctx;
+    population::SeasonCtx ctx = technology::annualCtx(s, now);
     ctx.clim = &clim;
     ctx.n = cellCentre(s.cell);
     ctx.h = std::max(hy.heightM[s.cell], 0.0f);
-    ctx.farmExp = technology::expertise(s.tech[population::TECH_FARMING], now);
-    ctx.farmFlow = s.farmK * ctx.farmExp;
-    ctx.husbExp = technology::expertise(s.tech[population::TECH_HUSBANDRY], now);
-    ctx.granExp = technology::expertise(s.tech[population::TECH_GRANARY], now);
-    ctx.gameG = s.gameNow;
-    ctx.archExp = technology::expertise(s.tech[population::TECH_ARCHERY], now);
-    ctx.fishExp = technology::expertise(s.tech[population::TECH_FISHING], now);
-    ctx.bowCover = population::bowCoverage(s.bows, s.P);
-    ctx.aff = s.aff;
     return ctx;
 }
 

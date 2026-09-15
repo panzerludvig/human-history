@@ -136,26 +136,28 @@ inline float suitability(const population::Settlement& s, int tech) {
     return s.tech[population::TECH_FARMING].practising ? 1.0f : 0.15f;
 }
 
-// Annual food capacity: foraging scaled by the seasonal mean (with the
-// game-borne share tracking the regional pool's health), farming's
-// harvest-shaped total, the herd's current flow (seasonal mean ~0.85), and
-// the farmyard bonus; water caps the whole.
-inline float effectiveK(const population::Settlement& s, double now) {
+// The skill side of a SeasonCtx: what this settlement is good at today,
+// with no climate attached. sim::seasonCtx adds the site for the seasonal
+// integration; between wakes, the annual mean is asked through this.
+inline population::SeasonCtx annualCtx(const population::Settlement& s, double now) {
+    population::SeasonCtx ctx;
+    ctx.farmExp = expertise(s.tech[population::TECH_FARMING], now);
     // Farm food comes from the standing plots (sim::updateFarmland caches
     // farmK from them), not from an abstract multiplier: no fields, no crop.
-    float farm = s.farmK * expertise(s.tech[population::TECH_FARMING], now);
-    float hExp = expertise(s.tech[population::TECH_HUSBANDRY], now);
-    float husb = s.herd * 0.85f + population::FARMYARD_SHARE_POP * s.kFoodP * hExp;
-    float archExp = expertise(s.tech[population::TECH_ARCHERY], now);
-    float fishExp = expertise(s.tech[population::TECH_FISHING], now);
-    float cover = population::bowCoverage(s.bows, s.P);
-    float bigEff = population::huntEff(s.gameNow) *
-                   (1.0f + population::BOW_BIG_GAIN * cover * archExp);
-    float forage = s.kFoodP - s.kGame - s.kSmall + s.kGame * bigEff +
-                   s.kSmall * population::smallGameEff(cover, archExp);
-    // Fish carry no land-condition term: the water is not worn out.
-    return std::min(forage * s.meanF + farm + husb + s.kFish * population::fishEff(fishExp),
-                    s.kWater);
+    ctx.farmFlow = s.farmK * ctx.farmExp;
+    ctx.husbExp = expertise(s.tech[population::TECH_HUSBANDRY], now);
+    ctx.granExp = expertise(s.tech[population::TECH_GRANARY], now);
+    ctx.gameG = s.gameNow;
+    ctx.archExp = expertise(s.tech[population::TECH_ARCHERY], now);
+    ctx.fishExp = expertise(s.tech[population::TECH_FISHING], now);
+    ctx.bowCover = population::bowCoverage(s.bows, s.P);
+    ctx.aff = s.aff;
+    return ctx;
+}
+
+// Annual food capacity at today's skills: population::effectiveFood.
+inline float effectiveK(const population::Settlement& s, double now) {
+    return population::effectiveFood(s, annualCtx(s, now));
 }
 
 // Is there anything here to practise on? Not "how much is it worth" but
