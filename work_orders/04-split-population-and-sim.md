@@ -1,6 +1,6 @@
 # 04 — Split population.h and sim.h by concern
 
-**Status:** queued (2026-09-15)
+**Status:** in progress (2026-09-15)
 
 ## Problem
 

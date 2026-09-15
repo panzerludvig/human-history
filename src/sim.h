@@ -824,7 +824,7 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
                             const hydrology::Result& hy, const atmosphere::Climatology& clim,
                             const population::Band& b, int cell, double now) {
     using namespace population;
-    Settlement s{cell, 0, false, b.pop, b.P, cellCondition(pf, cell, now), now, now};
+    Settlement s = newSettlement(cell, b.pop, b.P, cellCondition(pf, cell, now), now);
     // A community that picked up and moved keeps its identity along with
     // its name; only colonists are somebody new.
     s.id = b.sid ? b.sid : pf.nextSettlementId++;
