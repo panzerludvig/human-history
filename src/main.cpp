@@ -7,7 +7,6 @@
 #define NOMINMAX
 #include <windows.h>
 #include <windowsx.h>
-#include <GL/gl.h>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
@@ -15,7 +14,6 @@
 #include <string>
 #include <vector>
 #include <fstream>
-#include <sstream>
 #include <algorithm>
 #include <array>
 #include <random>
@@ -27,110 +25,7 @@
 #include "technology.h"
 #include "sim.h"
 #include "atmosphere.h"
-
-// ---------------------------------------------------------------- GL loading
-
-typedef char GLchar;
-typedef ptrdiff_t GLsizeiptr;
-#define GL_FRAGMENT_SHADER 0x8B30
-#define GL_VERTEX_SHADER 0x8B31
-#define GL_COMPILE_STATUS 0x8B81
-#define GL_LINK_STATUS 0x8B82
-#define GL_RGBA32F 0x8814
-#define GL_TEXTURE0 0x84C0
-#define GL_TEXTURE1 0x84C1
-#define GL_TEXTURE2 0x84C2
-#define GL_TEXTURE3 0x84C3
-#define GL_TEXTURE4 0x84C4
-#define GL_TEXTURE5 0x84C5
-#define GL_TEXTURE6 0x84C6
-#define GL_TEXTURE7 0x84C7
-#define GL_RG32F 0x8230
-#define GL_RG 0x8227
-#define GL_CLAMP_TO_EDGE 0x812F
-
-typedef GLuint(APIENTRY* PFNGLCREATESHADERPROC)(GLenum);
-typedef void(APIENTRY* PFNGLSHADERSOURCEPROC)(GLuint, GLsizei, const GLchar* const*, const GLint*);
-typedef void(APIENTRY* PFNGLCOMPILESHADERPROC)(GLuint);
-typedef void(APIENTRY* PFNGLGETSHADERIVPROC)(GLuint, GLenum, GLint*);
-typedef void(APIENTRY* PFNGLGETSHADERINFOLOGPROC)(GLuint, GLsizei, GLsizei*, GLchar*);
-typedef GLuint(APIENTRY* PFNGLCREATEPROGRAMPROC)(void);
-typedef void(APIENTRY* PFNGLATTACHSHADERPROC)(GLuint, GLuint);
-typedef void(APIENTRY* PFNGLLINKPROGRAMPROC)(GLuint);
-typedef void(APIENTRY* PFNGLGETPROGRAMIVPROC)(GLuint, GLenum, GLint*);
-typedef void(APIENTRY* PFNGLGETPROGRAMINFOLOGPROC)(GLuint, GLsizei, GLsizei*, GLchar*);
-typedef void(APIENTRY* PFNGLUSEPROGRAMPROC)(GLuint);
-typedef GLint(APIENTRY* PFNGLGETUNIFORMLOCATIONPROC)(GLuint, const GLchar*);
-typedef void(APIENTRY* PFNGLUNIFORM1FPROC)(GLint, GLfloat);
-typedef void(APIENTRY* PFNGLUNIFORM2FPROC)(GLint, GLfloat, GLfloat);
-typedef void(APIENTRY* PFNGLUNIFORM3FPROC)(GLint, GLfloat, GLfloat, GLfloat);
-typedef void(APIENTRY* PFNGLUNIFORM4FPROC)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
-typedef void(APIENTRY* PFNGLUNIFORM1IPROC)(GLint, GLint);
-typedef void(APIENTRY* PFNGLUNIFORMMATRIX3FVPROC)(GLint, GLsizei, GLboolean, const GLfloat*);
-typedef void(APIENTRY* PFNGLACTIVETEXTUREPROC)(GLenum);
-typedef void(APIENTRY* PFNGLGENVERTEXARRAYSPROC)(GLsizei, GLuint*);
-typedef void(APIENTRY* PFNGLBINDVERTEXARRAYPROC)(GLuint);
-typedef BOOL(APIENTRY* PFNWGLSWAPINTERVALEXTPROC)(int);
-
-static PFNGLCREATESHADERPROC glCreateShader;
-static PFNGLSHADERSOURCEPROC glShaderSource;
-static PFNGLCOMPILESHADERPROC glCompileShader;
-static PFNGLGETSHADERIVPROC glGetShaderiv;
-static PFNGLGETSHADERINFOLOGPROC glGetShaderInfoLog;
-static PFNGLCREATEPROGRAMPROC glCreateProgram;
-static PFNGLATTACHSHADERPROC glAttachShader;
-static PFNGLLINKPROGRAMPROC glLinkProgram;
-static PFNGLGETPROGRAMIVPROC glGetProgramiv;
-static PFNGLGETPROGRAMINFOLOGPROC glGetProgramInfoLog;
-static PFNGLUSEPROGRAMPROC glUseProgram;
-static PFNGLGETUNIFORMLOCATIONPROC glGetUniformLocation;
-static PFNGLUNIFORM1FPROC glUniform1f;
-static PFNGLUNIFORM2FPROC glUniform2f;
-static PFNGLUNIFORM3FPROC glUniform3f;
-static PFNGLUNIFORM4FPROC glUniform4f;
-typedef void(APIENTRY* PFNGLUNIFORM4FVPROC)(GLint, GLsizei, const GLfloat*);
-static PFNGLUNIFORM4FVPROC glUniform4fv;
-static PFNGLUNIFORM1IPROC glUniform1i;
-static PFNGLUNIFORMMATRIX3FVPROC glUniformMatrix3fv;
-static PFNGLACTIVETEXTUREPROC glActiveTexture;
-static PFNGLGENVERTEXARRAYSPROC glGenVertexArrays;
-static PFNGLBINDVERTEXARRAYPROC glBindVertexArray;
-static PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT;
-
-template <typename T>
-static bool load(T& fn, const char* name) {
-    fn = (T)wglGetProcAddress(name);
-    if (!fn) fprintf(stderr, "missing GL function: %s\n", name);
-    return fn != nullptr;
-}
-
-static bool loadGL() {
-    bool ok = true;
-    ok &= load(glCreateShader, "glCreateShader");
-    ok &= load(glShaderSource, "glShaderSource");
-    ok &= load(glCompileShader, "glCompileShader");
-    ok &= load(glGetShaderiv, "glGetShaderiv");
-    ok &= load(glGetShaderInfoLog, "glGetShaderInfoLog");
-    ok &= load(glCreateProgram, "glCreateProgram");
-    ok &= load(glAttachShader, "glAttachShader");
-    ok &= load(glLinkProgram, "glLinkProgram");
-    ok &= load(glGetProgramiv, "glGetProgramiv");
-    ok &= load(glGetProgramInfoLog, "glGetProgramInfoLog");
-    ok &= load(glUseProgram, "glUseProgram");
-    ok &= load(glGetUniformLocation, "glGetUniformLocation");
-    ok &= load(glUniform1f, "glUniform1f");
-    ok &= load(glUniform2f, "glUniform2f");
-    ok &= load(glUniform3f, "glUniform3f");
-    ok &= load(glUniform4f, "glUniform4f");
-    ok &= load(glUniform4fv, "glUniform4fv");
-    ok &= load(glUniform1i, "glUniform1i");
-    ok &= load(glUniformMatrix3fv, "glUniformMatrix3fv");
-    ok &= load(glActiveTexture, "glActiveTexture");
-    ok &= load(glGenVertexArrays, "glGenVertexArrays");
-    ok &= load(glBindVertexArray, "glBindVertexArray");
-    load(wglSwapIntervalEXT, "wglSwapIntervalEXT"); // optional
-    return ok;
-}
+#include "gl.h"
 
 // ---------------------------------------------------------------- math
 
@@ -223,53 +118,6 @@ static std::string exeDir() {
     GetModuleFileNameA(nullptr, buf, MAX_PATH);
     std::string s(buf);
     return s.substr(0, s.find_last_of("\\/"));
-}
-
-static std::string readFile(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) {
-        fprintf(stderr, "cannot read %s\n", path.c_str());
-        return "";
-    }
-    std::stringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
-}
-
-static GLuint compile(GLenum type, const std::string& src, const char* label) {
-    GLuint s = glCreateShader(type);
-    const char* p = src.c_str();
-    glShaderSource(s, 1, &p, nullptr);
-    glCompileShader(s);
-    GLint ok = 0;
-    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        char log[4096];
-        glGetShaderInfoLog(s, sizeof log, nullptr, log);
-        fprintf(stderr, "%s compile error:\n%s\n", label, log);
-        return 0;
-    }
-    return s;
-}
-
-static GLuint buildProgram() {
-    std::string dir = exeDir() + "\\shaders\\";
-    GLuint vs = compile(GL_VERTEX_SHADER, readFile(dir + "globe.vert"), "vertex");
-    GLuint fs = compile(GL_FRAGMENT_SHADER, readFile(dir + "globe.frag"), "fragment");
-    if (!vs || !fs) return 0;
-    GLuint prog = glCreateProgram();
-    glAttachShader(prog, vs);
-    glAttachShader(prog, fs);
-    glLinkProgram(prog);
-    GLint ok = 0;
-    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        char log[4096];
-        glGetProgramInfoLog(prog, sizeof log, nullptr, log);
-        fprintf(stderr, "link error:\n%s\n", log);
-        return 0;
-    }
-    return prog;
 }
 
 // ---------------------------------------------------------------- world
@@ -3269,10 +3117,10 @@ int main(int argc, char** argv) {
     SetPixelFormat(dc, ChoosePixelFormat(dc, &pfd), &pfd);
     HGLRC rc = wglCreateContext(dc);
     wglMakeCurrent(dc, rc);
-    if (!loadGL()) return 1;
+    if (!gl::loadGL()) return 1;
     if (wglSwapIntervalEXT) wglSwapIntervalEXT(1);
 
-    app.program = buildProgram();
+    app.program = gl::buildProgram(exeDir() + "\\shaders\\");
     if (!app.program) return 1;
     GLuint vao;
     glGenVertexArrays(1, &vao);

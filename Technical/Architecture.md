@@ -13,6 +13,14 @@
 - Event scheduler — settlements schedule their own re-evaluations (population.h); a general queue with dependency invalidation is still to come ([[Design/Event-Driven]]) (begun)
 - Spherical spatial index — positions, distances, and trajectory intersection on a sphere ([[Design/Spherical World]]) (not started)
 
+## Modules
+
+One header per concern under `src/`, each opening with the note it implements; every executable is one translation unit that includes what it needs (`standards/general.md` §Modules).
+
+- `src/main.cpp` — the window, the render loop and the wiring between the modules below.
+- `src/gl.h` — the OpenGL entry points loaded by hand and the shader program built from `shaders\`.
+- `src/terrain.h`, `src/plates.h`, `src/hydrology.h`, `src/atmosphere.h` (with `atmosphere_geo.h`, `dynamics2.h`, `qg2.h`, `qg2geo.h`, `water2geo.h`), `src/daylight.h`, `src/population.h`, `src/technology.h`, `src/sim.h` — the world and its simulation, described in [[Technical/Globe Viewer]] and the design notes their headers name.
+
 ## External Tools & Libraries
 _None._
 

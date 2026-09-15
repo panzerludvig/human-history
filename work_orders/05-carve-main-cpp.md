@@ -1,6 +1,6 @@
 # 05 — Carve main.cpp into modules
 
-**Status:** queued (2026-09-15)
+**Status:** in progress (2026-09-15)
 
 ## Problem
 
