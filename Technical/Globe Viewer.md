@@ -137,7 +137,7 @@ World generation takes about 30 s (about 27 s of it the climate run, measured 20
 
 ## Menus and worlds
 
-Menus are native Win32 controls (buttons, a list box, static text) laid over the GL window and shown/hidden per screen. Zero dependencies, text rendering for free; they look like Windows, which is fine until the game has a visual identity.
+Menus are native Win32 controls (buttons, a list box, static text) laid over the GL window and shown/hidden per screen (`src/menus.h` owns the controls and their layout, `src/theme.h` the fonts and background they share; `main.cpp` wires what each control does). Zero dependencies, text rendering for free; they look like Windows, which is fine until the game has a visual identity.
 
 - **Main menu:** New World (opens the generation screen: seed with Random button, land %, concentration %; Generate or Enter), Load World (list of saves: Load or double-click, Delete with confirmation, Back), Quit.
 - **In game:** Esc opens the pause menu over the dimmed globe: a name box (pre-filled, Enter saves), Save World, Main Menu, Quit Game. Esc again returns to the game.

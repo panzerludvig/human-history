@@ -32,26 +32,14 @@
 #include "bmp.h"
 #include "textures.h"
 #include "overlay.h"
+#include "theme.h"
+#include "menus.h"
 
 // Generation-stage feedback on the menu status line. The build runs on the
 // UI thread, so the label is repainted synchronously.
 static void buildProgress(const char* stage);
 
 // ---------------------------------------------------------------- app state
-
-enum class Screen { MainMenu, NewWorldMenu, LoadMenu, InGame, PauseMenu };
-
-// Control IDs for the Win32 controls that make up the menus.
-enum : int {
-    ID_NEW_WORLD = 100, ID_LOAD_WORLD, ID_QUIT,
-    ID_LOAD_LIST, ID_LOAD_CONFIRM, ID_LOAD_DELETE, ID_LOAD_BACK,
-    ID_SAVE_NAME, ID_SAVE_WORLD, ID_MAIN_MENU, ID_PAUSE_QUIT,
-    ID_TITLE, ID_STATUS,
-    ID_GEN_SEED_LABEL, ID_GEN_SEED, ID_GEN_RANDOM, ID_GEN_LAND_LABEL, ID_GEN_LAND,
-    ID_GEN_CONC_LABEL, ID_GEN_CONC, ID_GEN_HINT, ID_GEN_CREATE, ID_GEN_BACK,
-    ID_SCALE_LABEL, ID_TOOLTIP,
-    ID_TIME_STEP, ID_TIME_GO, ID_DATE_LABEL,
-};
 
 // A detail window for one settlement or band, opened by clicking its marker.
 // Settlement panels are tabbed (Environment / Technology / Buildings) and
@@ -69,7 +57,7 @@ struct Panel {
 struct App {
     camera::Camera cam;
     world::World world;
-    Screen screen = Screen::MainMenu;
+    menus::Screen screen = menus::Screen::MainMenu;
     bool dragging = false;
     camera::Drag drag;
     int downX = 0, downY = 0;   // mouse-down spot, to tell a click from a drag
@@ -91,9 +79,7 @@ struct App {
     int debugMode = 0; // 0 normal, 1 plates, 2 substrate, 3 vegetation
     int octaves = 8;   // current level of detail, shared with the tooltip
     HWND hwnd = nullptr;
-    HFONT font = nullptr, titleFont = nullptr;
-    HFONT panelFont = nullptr, panelBold = nullptr; // dense panel text
-    HBRUSH bgBrush = nullptr;
+    theme::Theme theme;
     HWND panelDrag = nullptr; // panel being dragged, with the grab offset
     POINT panelDragOff{};
     HWND news = nullptr;   // the feed down the right-hand side
@@ -102,7 +88,7 @@ struct App {
     int newsPick = 0;      // which entry is open
     int newsScroll = 0;
     bool newsOpen = true;  // collapsed to a tab on the right edge when false
-    std::vector<std::pair<int, HWND>> controls;
+    menus::State menu;
 };
 static App app;
 
@@ -111,229 +97,32 @@ static void updateDateLabel();
 static void closeAllPanels();
 static void refreshPanels();
 
-static HWND control(int id) {
-    for (auto& c : app.controls)
-        if (c.first == id) return c.second;
-    return nullptr;
-}
-
-static void setStatus(const std::string& s) { SetWindowTextA(control(ID_STATUS), s.c_str()); }
-
 static void buildProgress(const char* stage) {
     fprintf(stderr, "build: %s%c", stage, 10);
     // Skip when the status line is not on screen (e.g. the argv test path).
-    HWND st = control(ID_STATUS);
+    HWND st = menus::control(app.menu, menus::ID_STATUS);
     if (!st || !IsWindowVisible(st)) return;
     SetWindowTextA(st, stage);
     UpdateWindow(st);
 }
 
-static void addControl(int id, const char* cls, const char* text, DWORD style) {
-    HWND h = CreateWindowA(cls, text, WS_CHILD | style, 0, 0, 10, 10, app.hwnd, (HMENU)(INT_PTR)id,
-                           GetModuleHandleA(nullptr), nullptr);
-    SendMessageA(h, WM_SETFONT, (WPARAM)(id == ID_TITLE ? app.titleFont : app.font), TRUE);
-    app.controls.push_back({id, h});
-}
-
-static void createControls() {
-    app.font = CreateFontA(24, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
-    app.titleFont = CreateFontA(56, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
-    app.panelFont = CreateFontA(18, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
-    app.panelBold = CreateFontA(18, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
-    overlay::createFonts(app.overlay);
-    app.bgBrush = CreateSolidBrush(RGB(8, 8, 16));
-    addControl(ID_TITLE, "STATIC", "Human History", SS_CENTER);
-    addControl(ID_STATUS, "STATIC", "", SS_CENTER);
-    addControl(ID_NEW_WORLD, "BUTTON", "New World", BS_PUSHBUTTON);
-    addControl(ID_LOAD_WORLD, "BUTTON", "Load World", BS_PUSHBUTTON);
-    addControl(ID_QUIT, "BUTTON", "Quit", BS_PUSHBUTTON);
-    addControl(ID_LOAD_LIST, "LISTBOX", "", WS_BORDER | WS_VSCROLL | LBS_NOTIFY);
-    addControl(ID_LOAD_CONFIRM, "BUTTON", "Load", BS_PUSHBUTTON);
-    addControl(ID_LOAD_DELETE, "BUTTON", "Delete", BS_PUSHBUTTON);
-    addControl(ID_LOAD_BACK, "BUTTON", "Back", BS_PUSHBUTTON);
-    addControl(ID_SAVE_NAME, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_CENTER);
-    SendMessageA(control(ID_SAVE_NAME), EM_SETLIMITTEXT, 64, 0);
-    addControl(ID_SAVE_WORLD, "BUTTON", "Save World", BS_PUSHBUTTON);
-    addControl(ID_MAIN_MENU, "BUTTON", "Main Menu", BS_PUSHBUTTON);
-    addControl(ID_PAUSE_QUIT, "BUTTON", "Quit Game", BS_PUSHBUTTON);
-    addControl(ID_GEN_SEED_LABEL, "STATIC", "Seed", SS_RIGHT);
-    addControl(ID_GEN_SEED, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL); // not ES_NUMBER: "earth" is a seed
-    addControl(ID_GEN_RANDOM, "BUTTON", "Random", BS_PUSHBUTTON);
-    addControl(ID_GEN_LAND_LABEL, "STATIC", "Land %", SS_RIGHT);
-    addControl(ID_GEN_LAND, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER);
-    addControl(ID_GEN_CONC_LABEL, "STATIC", "Concentration %", SS_RIGHT);
-    addControl(ID_GEN_CONC, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER);
-    addControl(ID_GEN_HINT, "STATIC", "Concentration: 0 = island webs and thin strips, 100 = one massive continent", SS_CENTER);
-    addControl(ID_GEN_CREATE, "BUTTON", "Generate", BS_PUSHBUTTON);
-    addControl(ID_GEN_BACK, "BUTTON", "Back", BS_PUSHBUTTON);
-    addControl(ID_SCALE_LABEL, "STATIC", "", SS_LEFT);
-    addControl(ID_TOOLTIP, "STATIC", "", SS_LEFT | SS_NOPREFIX);
-    addControl(ID_DATE_LABEL, "STATIC", "", SS_RIGHT);
-    addControl(ID_TIME_STEP, "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL);
-    addControl(ID_TIME_GO, "BUTTON", "Advance", BS_PUSHBUTTON);
-    {
-        HWND cb = control(ID_TIME_STEP);
-        for (const char* it : {"1 minute", "1 hour", "1 day", "1 month", "1 year", "10 years", "100 years"})
-            SendMessageA(cb, CB_ADDSTRING, 0, (LPARAM)it);
-        SendMessageA(cb, CB_SETCURSEL, 2, 0); // default: 1 day
-    }
-}
-
-// Map scale bar: a 1/2/5 x 10^n distance whose bar is close to a target
-// width, placed in the bottom-left corner with its label above it.
-const int SCALE_MARGIN = 24;
-struct ScaleBar {
-    double km = 0;
-    int px = 0;
-};
-static ScaleBar chooseScale(double kmPerPixel, int targetPx = 160) {
-    double raw = kmPerPixel * targetPx;
-    double mag = std::pow(10.0, std::floor(std::log10(raw)));
-    double best = mag;
-    for (double m : {1.0, 2.0, 5.0, 10.0})
-        if (m * mag <= raw) best = m * mag;
-    return {best, (int)std::lround(best / kmPerPixel)};
-}
-static std::string scaleText(double km) {
-    char buf[32];
-    if (km >= 1.0) snprintf(buf, sizeof buf, "%g km", km);
-    else snprintf(buf, sizeof buf, "%g m", km * 1000.0);
-    return buf;
-}
-
-// Position and show the controls that belong to the current screen.
-static void layoutControls() {
-    int W = app.cam.width, H = app.cam.height;
-    const int bw = 280, bh = 48, gap = 14;
-    int cx = W / 2 - bw / 2;
-    for (auto& c : app.controls) ShowWindow(c.second, SW_HIDE);
-
-    auto place = [&](int id, int x, int y, int w, int h) {
-        SetWindowPos(control(id), HWND_TOP, x, y, w, h, SWP_SHOWWINDOW);
-    };
-    auto stack = [&](std::initializer_list<int> ids, int top) {
-        int y = top;
-        for (int id : ids) {
-            place(id, cx, y, bw, bh);
-            y += bh + gap;
-        }
-        return y;
-    };
-
-    switch (app.screen) {
-    case Screen::MainMenu:
-        place(ID_TITLE, 0, H / 4 - 40, W, 70);
-        stack({ID_NEW_WORLD, ID_LOAD_WORLD, ID_QUIT}, H / 2 - bh);
-        place(ID_STATUS, 0, H - 60, W, 30);
-        break;
-    case Screen::NewWorldMenu: {
-        place(ID_TITLE, 0, H / 8, W, 70);
-        const int lw = 200, ew = 200, rh = 34, rgap = 16;
-        int x0 = W / 2 - (lw + 12 + ew) / 2;
-        int y = H / 4 + 50;
-        auto row = [&](int label, int edit, int extra) {
-            place(label, x0, y + 4, lw, rh);
-            place(edit, x0 + lw + 12, y, ew, rh);
-            if (extra) place(extra, x0 + lw + 12 + ew + 12, y - 2, 110, rh + 4);
-            y += rh + rgap;
-        };
-        row(ID_GEN_SEED_LABEL, ID_GEN_SEED, ID_GEN_RANDOM);
-        row(ID_GEN_LAND_LABEL, ID_GEN_LAND, 0);
-        row(ID_GEN_CONC_LABEL, ID_GEN_CONC, 0);
-        place(ID_GEN_HINT, 0, y, W, 30);
-        stack({ID_GEN_CREATE, ID_GEN_BACK}, y + 44);
-        place(ID_STATUS, 0, H - 60, W, 30);
-        break;
-    }
-    case Screen::LoadMenu: {
-        place(ID_TITLE, 0, H / 8, W, 70);
-        int listTop = H / 4 + 40, listH = H / 3;
-        place(ID_LOAD_LIST, cx, listTop, bw, listH);
-        stack({ID_LOAD_CONFIRM, ID_LOAD_DELETE, ID_LOAD_BACK}, listTop + listH + gap);
-        place(ID_STATUS, 0, H - 60, W, 30);
-        break;
-    }
-    case Screen::PauseMenu: {
-        int top = H / 2 - 2 * (bh + gap);
-        place(ID_SAVE_NAME, cx, top, bw, 34);
-        int bottom = stack({ID_SAVE_WORLD, ID_MAIN_MENU, ID_PAUSE_QUIT}, top + 34 + gap);
-        place(ID_STATUS, cx - 60, bottom, bw + 120, 30);
-        break;
-    }
-    case Screen::InGame: {
-        place(ID_SCALE_LABEL, SCALE_MARGIN, H - SCALE_MARGIN - 44, 110, 26);
-        // Time stepping, top right: a step-size dropdown and one Advance
-        // button. Temporary evaluation tooling: the simulation is paused
-        // unless stepped. The dropdown's height is the room its open list
-        // gets, not the closed control's height.
-        int cw = 130, bw = 100, th = 32, tg = 6;
-        place(ID_DATE_LABEL, W - cw - bw - 2 * tg - 160, 16, 150, 24);
-        place(ID_TIME_STEP, W - cw - bw - 2 * tg, 12, cw, 220);
-        place(ID_TIME_GO, W - bw - tg, 10, bw, th);
-        break;
-    }
-    }
-}
-
-static void refreshWorldList() {
-    HWND list = control(ID_LOAD_LIST);
-    SendMessageA(list, LB_RESETCONTENT, 0, 0);
-    for (auto& n : savefile::list()) SendMessageA(list, LB_ADDSTRING, 0, (LPARAM)n.c_str());
-    SendMessageA(list, LB_SETCURSEL, 0, 0);
-}
-
-// Name of the world currently selected in the load list, or empty.
-static std::string selectedWorld() {
-    HWND list = control(ID_LOAD_LIST);
-    int sel = (int)SendMessageA(list, LB_GETCURSEL, 0, 0);
-    if (sel < 0) return "";
-    char name[MAX_PATH];
-    SendMessageA(list, LB_GETTEXT, sel, (LPARAM)name);
-    return name;
-}
-
-// Turn whatever was typed into something that is safe as a file name.
-static std::string sanitizeName(std::string n) {
-    const std::string bad = "\\/:*?\"<>|";
-    for (char& ch : n)
-        if (bad.find(ch) != std::string::npos || (unsigned char)ch < 32) ch = '_';
-    size_t a = n.find_first_not_of(" ."), b = n.find_last_not_of(" .");
-    if (a == std::string::npos) return "";
-    return n.substr(a, b - a + 1);
-}
-
-static void setEditNumber(int id, double v, int decimals = 0) {
-    char buf[64];
-    snprintf(buf, sizeof buf, "%.*f", decimals, v);
-    SetWindowTextA(control(id), buf);
-}
-
-static double getEditNumber(int id) {
-    char buf[64];
-    GetWindowTextA(control(id), buf, sizeof buf);
-    return atof(buf);
-}
-
-static void fillNewWorldFields(const world::World& w) {
-    if (w.earth) SetWindowTextA(control(ID_GEN_SEED), "earth");
-    else setEditNumber(ID_GEN_SEED, (double)w.seed);
-    setEditNumber(ID_GEN_LAND, w.landPercent);
-    setEditNumber(ID_GEN_CONC, w.concentration);
-}
-
-static void setScreen(Screen s) {
+static void setScreen(menus::Screen s) {
     app.screen = s;
-    ShowWindow(control(ID_TOOLTIP), SW_HIDE);
-    if (s != Screen::InGame) closeAllPanels();
+    ShowWindow(menus::control(app.menu, menus::ID_TOOLTIP), SW_HIDE);
+    if (s != menus::Screen::InGame) closeAllPanels();
     app.dragging = false;
-    if (s == Screen::LoadMenu) refreshWorldList();
-    if (s == Screen::NewWorldMenu) fillNewWorldFields(app.world);
-    if (s == Screen::PauseMenu) SetWindowTextA(control(ID_SAVE_NAME), app.world.name.c_str());
-    layoutControls();
-    if (app.news) ShowWindow(app.news, s == Screen::InGame ? SW_SHOW : SW_HIDE);
-    if (s == Screen::InGame) { updateDateLabel(); SetFocus(app.hwnd); }
-    if (s == Screen::PauseMenu) {
-        HWND edit = control(ID_SAVE_NAME);
+    if (s == menus::Screen::LoadMenu) menus::refreshWorldList(app.menu, savefile::list());
+    if (s == menus::Screen::NewWorldMenu) menus::fillNewWorldFields(app.menu, app.world);
+    if (s == menus::Screen::PauseMenu)
+        SetWindowTextA(menus::control(app.menu, menus::ID_SAVE_NAME), app.world.name.c_str());
+    menus::layoutControls(app.menu, app.screen, app.cam.width, app.cam.height);
+    if (app.news) ShowWindow(app.news, s == menus::Screen::InGame ? SW_SHOW : SW_HIDE);
+    if (s == menus::Screen::InGame) {
+        updateDateLabel();
+        SetFocus(app.hwnd);
+    }
+    if (s == menus::Screen::PauseMenu) {
+        HWND edit = menus::control(app.menu, menus::ID_SAVE_NAME);
         SetFocus(edit);
         SendMessageA(edit, EM_SETSEL, 0, -1);
     }
@@ -344,8 +133,8 @@ static uint32_t randomSeed() { return (uint32_t)std::random_device{}(); }
 static void openNewWorldMenu() {
     app.world = world::World{};
     app.world.seed = randomSeed();
-    setStatus("");
-    setScreen(Screen::NewWorldMenu);
+    menus::setStatus(app.menu, "");
+    setScreen(menus::Screen::NewWorldMenu);
 }
 
 static void generateWorld() {
@@ -353,14 +142,16 @@ static void generateWorld() {
     {
         // A seed reading "earth", in any case, is the template globe.
         char sb[64];
-        GetWindowTextA(control(ID_GEN_SEED), sb, sizeof sb);
+        GetWindowTextA(menus::control(app.menu, menus::ID_GEN_SEED), sb, sizeof sb);
         std::string st = sb;
         for (char& ch : st) ch = (char)tolower((unsigned char)ch);
         w.earth = st.find("earth") != std::string::npos;
         w.seed = w.earth ? 1u : (uint32_t)std::clamp(atof(sb), 0.0, 4294967295.0);
     }
-    w.landPercent = (float)std::clamp(getEditNumber(ID_GEN_LAND), 0.0, 100.0);
-    w.concentration = (float)std::clamp(getEditNumber(ID_GEN_CONC), 0.0, 100.0);
+    w.landPercent =
+        (float)std::clamp(menus::getEditNumber(app.menu, menus::ID_GEN_LAND), 0.0, 100.0);
+    w.concentration =
+        (float)std::clamp(menus::getEditNumber(app.menu, menus::ID_GEN_CONC), 0.0, 100.0);
     app.world = w;
     app.genKind = 0;
     app.genState = 1;
@@ -377,7 +168,7 @@ static void finishGeneration() {
     app.genThread.join();
     app.genState = 0;
     if (!app.genOk) {
-        setStatus("Could not load " + app.genName);
+        menus::setStatus(app.menu, "Could not load " + app.genName);
         return;
     }
     textures::uploadAll(app.tex, app.world);
@@ -386,28 +177,40 @@ static void finishGeneration() {
         app.cam.lon = 0.0;
         app.cam.altitude = app.cam.maxAltitude();
     }
-    setStatus("");
-    setScreen(Screen::InGame);
+    menus::setStatus(app.menu, "");
+    setScreen(menus::Screen::InGame);
 }
 
 static void onCommand(int id) {
     if (app.genState != 0) return; // generation in progress: only the OS window moves
     switch (id) {
-    case ID_NEW_WORLD: openNewWorldMenu(); break;
-    case ID_GEN_CREATE: generateWorld(); break;
-    case ID_GEN_BACK: setScreen(Screen::MainMenu); break;
-    case ID_GEN_RANDOM: setEditNumber(ID_GEN_SEED, (double)randomSeed()); break;
-    case ID_LOAD_WORLD:
-        setStatus("");
-        setScreen(Screen::LoadMenu);
+    case menus::ID_NEW_WORLD:
+        openNewWorldMenu();
         break;
-    case ID_QUIT:
-    case ID_PAUSE_QUIT: app.running = false; break;
-    case ID_LOAD_BACK: setScreen(Screen::MainMenu); break;
-    case ID_LOAD_CONFIRM: {
-        std::string name = selectedWorld();
+    case menus::ID_GEN_CREATE:
+        generateWorld();
+        break;
+    case menus::ID_GEN_BACK:
+        setScreen(menus::Screen::MainMenu);
+        break;
+    case menus::ID_GEN_RANDOM:
+        menus::setEditNumber(app.menu, menus::ID_GEN_SEED, (double)randomSeed());
+        break;
+    case menus::ID_LOAD_WORLD:
+        menus::setStatus(app.menu, "");
+        setScreen(menus::Screen::LoadMenu);
+        break;
+    case menus::ID_QUIT:
+    case menus::ID_PAUSE_QUIT:
+        app.running = false;
+        break;
+    case menus::ID_LOAD_BACK:
+        setScreen(menus::Screen::MainMenu);
+        break;
+    case menus::ID_LOAD_CONFIRM: {
+        std::string name = menus::selectedWorld(app.menu);
         if (name.empty()) {
-            setStatus("No saved worlds");
+            menus::setStatus(app.menu, "No saved worlds");
             break;
         }
         app.genKind = 1;
@@ -419,43 +222,46 @@ static void onCommand(int id) {
         });
         break;
     }
-    case ID_LOAD_DELETE: {
-        std::string name = selectedWorld();
+    case menus::ID_LOAD_DELETE: {
+        std::string name = menus::selectedWorld(app.menu);
         if (name.empty()) {
-            setStatus("No saved worlds");
+            menus::setStatus(app.menu, "No saved worlds");
             break;
         }
         std::string q = "Delete world \"" + name + "\"? This cannot be undone.";
         if (MessageBoxA(app.hwnd, q.c_str(), "Delete World", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
             break;
         std::string path = savefile::worldsDir() + "\\" + name + ".ibw";
-        setStatus(DeleteFileA(path.c_str()) ? "Deleted " + name : "Could not delete " + name);
-        refreshWorldList();
+        menus::setStatus(app.menu, DeleteFileA(path.c_str()) ? "Deleted " + name
+                                                             : "Could not delete " + name);
+        menus::refreshWorldList(app.menu, savefile::list());
         break;
     }
-    case ID_SAVE_WORLD: {
+    case menus::ID_SAVE_WORLD: {
         char buf[128];
-        GetWindowTextA(control(ID_SAVE_NAME), buf, sizeof buf);
-        std::string name = sanitizeName(buf);
+        GetWindowTextA(menus::control(app.menu, menus::ID_SAVE_NAME), buf, sizeof buf);
+        std::string name = menus::sanitizeName(buf);
         if (name.empty()) {
-            setStatus("Enter a name for the world");
+            menus::setStatus(app.menu, "Enter a name for the world");
             break;
         }
         app.world.name = name;
-        SetWindowTextA(control(ID_SAVE_NAME), name.c_str());
-        setStatus(savefile::save(app.world, app.cam) ? "Saved as " + name : "Save failed");
+        SetWindowTextA(menus::control(app.menu, menus::ID_SAVE_NAME), name.c_str());
+        menus::setStatus(app.menu,
+                         savefile::save(app.world, app.cam) ? "Saved as " + name : "Save failed");
         break;
     }
-    case ID_TIME_GO: {
+    case menus::ID_TIME_GO: {
         static const double stepDays[] = {1.0 / 1440.0, 1.0 / 24.0, 1.0, 30.0, 365.0, 3650.0, 36500.0};
-        int sel = (int)SendMessageA(control(ID_TIME_STEP), CB_GETCURSEL, 0, 0);
+        int sel =
+            (int)SendMessageA(menus::control(app.menu, menus::ID_TIME_STEP), CB_GETCURSEL, 0, 0);
         if (sel >= 0 && sel < 7) advanceDays(stepDays[sel]);
         SetFocus(app.hwnd);
         break;
     }
-    case ID_MAIN_MENU:
-        setStatus("");
-        setScreen(Screen::MainMenu);
+    case menus::ID_MAIN_MENU:
+        menus::setStatus(app.menu, "");
+        setScreen(menus::Screen::MainMenu);
         break;
     }
 }
@@ -463,9 +269,9 @@ static void onCommand(int id) {
 inline int newsWidth(); // defined with the news feed, below
 
 static void updateTooltip(int x, int y) {
-    HWND tip = control(ID_TOOLTIP);
+    HWND tip = menus::control(app.menu, menus::ID_TOOLTIP);
     camera::Vec3 hit;
-    if (app.screen != Screen::InGame || !app.cam.hitSphere(x, y, hit)) {
+    if (app.screen != menus::Screen::InGame || !app.cam.hitSphere(x, y, hit)) {
         ShowWindow(tip, SW_HIDE);
         return;
     }
@@ -616,9 +422,9 @@ static void paintNews(HWND h) {
     HDC dc = BeginPaint(h, &ps);
     RECT rc;
     GetClientRect(h, &rc);
-    FillRect(dc, &rc, app.bgBrush);
+    FillRect(dc, &rc, app.theme.bgBrush);
     SetBkMode(dc, TRANSPARENT);
-    SelectObject(dc, app.panelBold);
+    SelectObject(dc, app.theme.panelBold);
     if (!app.newsOpen) {
         // Shut, the feed is a small square with the way back in. Whether
         // there is news at all shows as the colour of the chevron.
@@ -634,7 +440,7 @@ static void paintNews(HWND h) {
     TextOutA(dc, 12, 10, title, (int)strlen(title));
     SetTextColor(dc, RGB(255, 215, 130));
     TextOutA(dc, NEWS_CHEVRON_X, 10, ">", 1);
-    SelectObject(dc, app.panelFont);
+    SelectObject(dc, app.theme.panelFont);
     int y = NEWS_TOP;
     int maxLines = (rc.bottom - NEWS_TOP) / NEWS_LINE - 1;
     if (app.newsLevel == 0) {
@@ -793,7 +599,7 @@ static void refreshNews() {
     if (!app.news) return;
     app.newsLevel = 0;
     app.newsScroll = 0;
-    ShowWindow(app.news, app.screen == Screen::InGame ? SW_SHOW : SW_HIDE);
+    ShowWindow(app.news, app.screen == menus::Screen::InGame ? SW_SHOW : SW_HIDE);
     InvalidateRect(app.news, nullptr, TRUE);
 }
 
@@ -802,7 +608,7 @@ static void paintPanel(HWND h) {
     HDC dc = BeginPaint(h, &ps);
     RECT rc;
     GetClientRect(h, &rc);
-    FillRect(dc, &rc, app.bgBrush);
+    FillRect(dc, &rc, app.theme.bgBrush);
     SetBkMode(dc, TRANSPARENT);
     Panel* pn = panelFor(h);
     if (pn) {
@@ -824,10 +630,10 @@ static void paintPanel(HWND h) {
             if (nm[0]) snprintf(title, sizeof title, "%s %s", nm, what);
             else snprintf(title, sizeof title, "Band %u", pn->bandId);
         }
-        SelectObject(dc, app.panelBold);
+        SelectObject(dc, app.theme.panelBold);
         SetTextColor(dc, RGB(235, 235, 240));
         TextOutA(dc, PANEL_PAD, 8, title, (int)strlen(title));
-        SelectObject(dc, app.panelFont);
+        SelectObject(dc, app.theme.panelFont);
         if (pn->kind == 0)
             for (int t = 0; t < PANEL_NTABS; t++) {
                 SetTextColor(dc, pn->tab == t ? RGB(255, 225, 150) : RGB(140, 140, 155));
@@ -951,7 +757,7 @@ static void openPanel(int kind, uint32_t sid, uint32_t bandId, int tab) {
                            x, y, pw, ph, app.hwnd, nullptr, inst, nullptr);
     HWND btn = CreateWindowA("BUTTON", "X", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, pw - 34, 6, 24, 24,
                              w, (HMENU)1, inst, nullptr);
-    SendMessageA(btn, WM_SETFONT, (WPARAM)app.font, TRUE);
+    SendMessageA(btn, WM_SETFONT, (WPARAM)app.theme.font, TRUE);
     app.panels.push_back({w, kind, sid, bandId, tab > 0 ? tab : 0});
     SetWindowPos(w, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 }
@@ -959,7 +765,7 @@ static void openPanel(int kind, uint32_t sid, uint32_t bandId, int tab) {
 // A click on the globe: open a detail panel for the settlement or band whose
 // marker is under the cursor (same radii the shader draws them with).
 static void pickAt(int x, int y) {
-    if (app.screen != Screen::InGame) return;
+    if (app.screen != menus::Screen::InGame) return;
     // An event mark is hit before anything under it: it sits above the
     // marker on purpose, and it is the smaller target. It opens the history
     // of whoever it happened to, which is the whole sentence the news feed
@@ -1016,7 +822,7 @@ static std::string simDate() {
 }
 
 static void updateDateLabel() {
-    SetWindowTextA(control(ID_DATE_LABEL), simDate().c_str());
+    SetWindowTextA(menus::control(app.menu, menus::ID_DATE_LABEL), simDate().c_str());
 }
 
 static void advanceDays(double days) {
@@ -1034,11 +840,18 @@ static void advanceDays(double days) {
 
 static void onEscape() {
     switch (app.screen) {
-    case Screen::InGame: setScreen(Screen::PauseMenu); break;
-    case Screen::PauseMenu: setScreen(Screen::InGame); break;
-    case Screen::LoadMenu:
-    case Screen::NewWorldMenu: setScreen(Screen::MainMenu); break;
-    case Screen::MainMenu: break;
+    case menus::Screen::InGame:
+        setScreen(menus::Screen::PauseMenu);
+        break;
+    case menus::Screen::PauseMenu:
+        setScreen(menus::Screen::InGame);
+        break;
+    case menus::Screen::LoadMenu:
+    case menus::Screen::NewWorldMenu:
+        setScreen(menus::Screen::MainMenu);
+        break;
+    case menus::Screen::MainMenu:
+        break;
     }
 }
 
@@ -1049,20 +862,22 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         app.cam.height = std::max(1, (int)HIWORD(lp));
         app.cam.clampAltitude();
         glViewport(0, 0, app.cam.width, app.cam.height);
-        if (!app.controls.empty()) layoutControls();
+        if (!app.menu.controls.empty())
+            menus::layoutControls(app.menu, app.screen, app.cam.width, app.cam.height);
         if (app.news)
             layoutNews();
         return 0;
     case WM_COMMAND:
         if (HIWORD(wp) == BN_CLICKED) onCommand(LOWORD(wp));
-        else if (HIWORD(wp) == LBN_DBLCLK) onCommand(ID_LOAD_CONFIRM);
+        else if (HIWORD(wp) == LBN_DBLCLK)
+            onCommand(menus::ID_LOAD_CONFIRM);
         return 0;
     case WM_CTLCOLORSTATIC:
         SetTextColor((HDC)wp, RGB(230, 230, 235));
         SetBkColor((HDC)wp, RGB(8, 8, 16));
-        return (LRESULT)app.bgBrush;
+        return (LRESULT)app.theme.bgBrush;
     case WM_LBUTTONDOWN:
-        if (app.screen != Screen::InGame) return 0;
+        if (app.screen != menus::Screen::InGame) return 0;
         SetCapture(hwnd);
         SetFocus(hwnd);
         app.dragging = true;
@@ -1090,7 +905,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_MOUSEWHEEL: {
-        if (app.screen != Screen::InGame) return 0;
+        if (app.screen != menus::Screen::InGame) return 0;
         int delta = GET_WHEEL_DELTA_WPARAM(wp);
         double factor = std::pow(0.8, delta / (double)WHEEL_DELTA);
         POINT cur{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}; // screen coordinates
@@ -1101,7 +916,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_KEYDOWN:
         if (app.genState != 0) return 0;
         if (wp == VK_F2) { app.shotPath = "dbg_shot.bmp"; return 0; } // back-buffer screenshot
-        if (app.screen == Screen::InGame) {
+        if (app.screen == menus::Screen::InGame) {
             int mode = wp == 'P' ? 1 : wp == 'B' ? 2 : wp == 'V' ? 3 : wp == 'K' ? 4 : 0;
             if (mode) app.debugMode = app.debugMode == mode ? 0 : mode;
         }
@@ -1205,7 +1020,9 @@ int main(int argc, char** argv) {
     GLint uAware = glGetUniformLocation(app.program, "uAware");
     GLint uAwareCount = glGetUniformLocation(app.program, "uAwareCount");
 
-    createControls();
+    app.theme = theme::create();
+    overlay::createFonts(app.overlay);
+    menus::createControls(app.menu, app.hwnd, app.theme);
     app.news = CreateWindowA("IBNews", "", WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
                              app.cam.width - NEWS_W, 56, NEWS_W, app.cam.height - 76, app.hwnd,
                              nullptr, inst, nullptr);
@@ -1234,7 +1051,7 @@ int main(int argc, char** argv) {
         app.cam.lon = atof(argv[2]) * camera::PI / 180;
         if (argc >= 4) app.cam.altitude = atof(argv[3]) / camera::EARTH_RADIUS_KM;
         app.cam.clampAltitude();
-        setScreen(Screen::InGame);
+        setScreen(menus::Screen::InGame);
         if (argc >= 9) {
             advanceDays(atof(argv[8]) * 365.0); // fast-forward years
             int gran = 0, building = 0, fstead = 0;
@@ -1271,7 +1088,7 @@ int main(int argc, char** argv) {
         }
         if (argc >= 10) app.shotPath = argv[9];            // save a frame, then keep running
     } else {
-        setScreen(Screen::MainMenu);
+        setScreen(menus::Screen::MainMenu);
     }
 
     LARGE_INTEGER qpf, fpsT0;
@@ -1288,13 +1105,20 @@ int main(int argc, char** argv) {
                 continue;
             }
             if (m.message == WM_KEYDOWN && m.wParam == VK_RETURN) {
-                if (app.screen == Screen::PauseMenu) { onCommand(ID_SAVE_WORLD); continue; }
-                if (app.screen == Screen::NewWorldMenu) { onCommand(ID_GEN_CREATE); continue; }
+                if (app.screen == menus::Screen::PauseMenu) {
+                    onCommand(menus::ID_SAVE_WORLD);
+                    continue;
+                }
+                if (app.screen == menus::Screen::NewWorldMenu) {
+                    onCommand(menus::ID_GEN_CREATE);
+                    continue;
+                }
             }
             TranslateMessage(&m);
             DispatchMessageA(&m);
         }
-        bool showGlobe = app.screen == Screen::InGame || app.screen == Screen::PauseMenu;
+        bool showGlobe =
+            app.screen == menus::Screen::InGame || app.screen == menus::Screen::PauseMenu;
         if (showGlobe) {
             camera::Camera& c = app.cam;
             camera::Vec3 p = c.position(), f = c.forward(), rt = c.right(), u = c.up();
@@ -1367,7 +1191,7 @@ int main(int argc, char** argv) {
             glUniformMatrix3fv(uWorldRot, 1, GL_FALSE, app.world.rot);
             glUniform3f(uWorldOff, (float)app.world.offset.x, (float)app.world.offset.y,
                         (float)app.world.offset.z);
-            glUniform1f(uDim, app.screen == Screen::PauseMenu ? 0.35f : 1.0f);
+            glUniform1f(uDim, app.screen == menus::Screen::PauseMenu ? 0.35f : 1.0f);
             glUniform1f(uFreq, app.world.cp.freq);
             glUniform1f(uWarp, app.world.cp.warp);
             glUniform1f(uWebness, app.world.cp.webness);
@@ -1375,15 +1199,15 @@ int main(int argc, char** argv) {
             glUniform1i(uHasHydro, app.world.hydro.cells.empty() ? 0 : 1);
             glUniform1i(uUseEarth, app.world.earth && terrain::TEMPLATE.active ? 1 : 0);
             glUniform1i(uDebugMode, app.debugMode);
-            if (app.screen == Screen::InGame) {
-                ScaleBar sb = chooseScale(kmpp);
+            if (app.screen == menus::Screen::InGame) {
+                menus::ScaleBar sb = menus::chooseScale(kmpp);
                 // Pixel coordinates with origin bottom-left, as gl_FragCoord uses.
-                float x0 = (float)SCALE_MARGIN, y0 = (float)SCALE_MARGIN + 6;
+                float x0 = (float)menus::SCALE_MARGIN, y0 = (float)menus::SCALE_MARGIN + 6;
                 glUniform4f(uScaleBar, x0, y0, x0 + sb.px, y0);
-                std::string txt = scaleText(sb.km);
+                std::string txt = menus::scaleText(sb.km);
                 if (txt != lastScaleText) {
                     lastScaleText = txt;
-                    SetWindowTextA(control(ID_SCALE_LABEL), txt.c_str());
+                    SetWindowTextA(menus::control(app.menu, menus::ID_SCALE_LABEL), txt.c_str());
                 }
             } else {
                 glUniform4f(uScaleBar, -1, -1, -1, -1);
@@ -1391,7 +1215,8 @@ int main(int argc, char** argv) {
             // Markers and names: redrawn every frame, since they follow the
             // camera as much as the world.
             if (overlay::stale(app.overlay, app.world, app.cam, (int)app.screen)) {
-                overlay::paint(app.overlay, app.world, app.cam, app.screen == Screen::InGame);
+                overlay::paint(app.overlay, app.world, app.cam,
+                               app.screen == menus::Screen::InGame);
                 overlay::upload(app.overlay);
             }
             glBindTexture(GL_TEXTURE_2D, app.tex.hydroTex);
