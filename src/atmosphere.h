@@ -352,13 +352,6 @@ inline double cloudOf(double rh) {
 }
 constexpr double C_WATER = 1.0e8;               // ~25 m slab ocean
 constexpr double C_LAND = 3.0e6;                // thin soil; scaled by inertia
-// Winds: diagnostic Ekman-style balance r*u - f x u = -grad(P)/rho, solved
-// per cell. Integrating momentum at this grid and step is numerically
-// unstable; the balanced response keeps the same circulation (convergence on
-// heat lows, Coriolis deflection into trades and westerlies) with winds
-// bounded by construction.
-constexpr double P_PER_DEG = 120.0;             // Pa of thermal low per degC
-constexpr double FRICTION = 1.0 / (8.0 * 3600.0); // balance friction r
 constexpr double RHO = 1.2;
 // Moisture (kg/m^2 precipitable water)
 // Saturation capacity of the column, in millimetres, as a function of
@@ -568,17 +561,11 @@ inline double FRONT_SIDE_K = 4.0; // K above the neighbours for full lift, below
 // world sat at 85% humidity, which -- since cloudiness was humidity, one for
 // one -- covered the globe in cloud. A column is about half saturated in
 // life.
-constexpr double DIV_CAP_SCALE = 0.05;          // m/s of uplift for a ~46% capacity swing
 // Over land, moisture rains out progressively along its path (precipitation
 // is not withheld until a convergence line): an e-folding of ~3 days, i.e.
 // ~1300 km at typical winds. This is what makes coasts wetter than deep
 // continental interiors.
 // (LAND_RAINOUT_TAU, the 3-day e-folding, is no longer referenced anywhere.)
-// Frontal-storm rain: mid-latitude rain on Earth is mostly baroclinic storms
-// riding the temperature gradient, which steady diagnostic winds cannot
-// produce. Parameterized as rain ~ |grad T| * moisture: strong on the winter
-// storm tracks, negligible in the flat-gradient tropics.
-constexpr double K_STORM = 900.0;               // per hour, per (K/m) of gradient
 constexpr double SNOW_T = 0.5;                  // degC: colder precipitation is snow
 // Heat is transported by diffusion alone: the surface wind is the convergent
 // branch of an overturning cell, and advecting T with it refrigerates heat
@@ -1329,7 +1316,7 @@ struct Model {
     // against the mass the dynamics ended with. Summed per day.
     std::vector<double> hbNew, physRow;
     double dbgE[3] = {0, 0, 0};
-    long dbgN[3] = {0, 0, 0};                 // cell-hours at the Tb clamp, Tf clamp, flux limiter
+    long dbgN[2] = {0, 0};                    // cell-hours at the Tb clamp, Tf clamp
     double dbgX[4] = {1e9, -1e9, -1e9, 1e9};  // hP min, hP max, Tb max, Tf min
     double tRelaxPool = 0; // temperature of the mass the relaxation takes, this hour
     double wTopMean = 0;                   // its area-weighted mean: what comes back down
@@ -1363,7 +1350,7 @@ struct Model {
     std::vector<double> wvAcc;                     // PROBE: column water over time
     // probe diagnostics (an equatorial cell): daily sums of the T budget terms
     int probe = 4 * W + W / 2; // south-polar cell for the current investigation
-    double pSw = 0, pOlr = 0, pAdv = 0, pDif = 0;
+    double pSw = 0, pOlr = 0, pDif = 0;
 
     int idx(int x, int y) const { return y * W + x; }
 
@@ -2599,13 +2586,12 @@ struct Model {
         dbgE[0] += dE / wsum / DT;
         dbgE[1] += ph / wsum / DT;
         dbgE[2] += mm / wsum / DT;
-        // and where it could have gone: clamps, limiter, thickness
-        int cb = 0, cf2 = 0, sh = 0;
+        // and where it could have gone: clamps, thickness
+        int cb = 0, cf2 = 0;
         double hmin = 1e9, hmax = -1e9, tbmax = -1e9, tfmin = 1e9;
         for (int i = 0; i < W * H; i++) {
             if (nTb[i] <= -95.0 || nTb[i] >= 70.0) cb++;
             if (nTf[i] <= -95.0 || nTf[i] >= 70.0) cf2++;
-            (void)sh;
             hmin = std::min(hmin, hP[i]);
             hmax = std::max(hmax, hP[i]);
             tbmax = std::max(tbmax, nTb[i]);
@@ -2613,7 +2599,6 @@ struct Model {
         }
         dbgN[0] += cb;
         dbgN[1] += cf2;
-        dbgN[2] += sh;
         dbgX[0] = std::min(dbgX[0], hmin);
         dbgX[1] = std::max(dbgX[1], hmax);
         dbgX[2] = std::max(dbgX[2], tbmax);
@@ -2778,7 +2763,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                     "  probe T %.1f  W %.2f rain/h %.4f  day-sums: sw %+.2f olr %+.2f dif %+.2f (K/day)%c",
                     m.T[m.probe], m.Wv[m.probe], m.rainStep[m.probe], m.pSw / 30, m.pOlr / 30,
                     m.pDif / 30, 10);
-            m.pSw = m.pOlr = m.pAdv = m.pDif = 0;
+            m.pSw = m.pOlr = m.pDif = 0;
             double tmin = 1e9, tmax = -1e9, umax = 0, wmax = 0;
             for (int i = 0; i < W * H; i++) {
                 tmin = std::min(tmin, m.T[i]);
@@ -2794,10 +2779,10 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                             "  mass-mismatch %+.2f\n",
                     m.dbgE[0] / 720, m.dbgE[1] / 720, (m.dbgE[0] - m.dbgE[1]) / 720,
                     m.dbgE[2] / 720);
-            fprintf(stderr, "    clamped cell-hours: Tb %ld  Tf %ld  limiter %ld;  hP [%.0f, %.0f]  Tb max %.0f  Tf min %.0f\n",
-                    m.dbgN[0], m.dbgN[1], m.dbgN[2], m.dbgX[0], m.dbgX[1], m.dbgX[2], m.dbgX[3]);
+            fprintf(stderr, "    clamped cell-hours: Tb %ld  Tf %ld;  hP [%.0f, %.0f]  Tb max %.0f  Tf min %.0f\n",
+                    m.dbgN[0], m.dbgN[1], m.dbgX[0], m.dbgX[1], m.dbgX[2], m.dbgX[3]);
             m.dbgE[0] = m.dbgE[1] = m.dbgE[2] = 0;
-            m.dbgN[0] = m.dbgN[1] = m.dbgN[2] = 0;
+            m.dbgN[0] = m.dbgN[1] = 0;
             m.dbgX[0] = 1e9; m.dbgX[1] = -1e9; m.dbgX[2] = -1e9; m.dbgX[3] = 1e9;
         }
     }
