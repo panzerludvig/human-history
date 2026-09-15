@@ -84,7 +84,7 @@ Nothing. Independent of 01-03.
 
 ## Run
 
-**done** (pending merge), 2026-09-15. Branch `wo/04-split-population`, forked
+**done** (merged into `nightly/2026-09-15`, see below), 2026-09-15. Branch `wo/04-split-population`, forked
 from `4ac16a0`. One commit per step, in order:
 
 - `07bfdfa` step 1: `settlement.h` carved out of `population.h`; `newSettlement`
