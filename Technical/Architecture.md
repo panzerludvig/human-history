@@ -25,6 +25,7 @@ One header per concern under `src/`, each opening with the note it implements; e
 - `src/inspect.h` — what the viewer says about a place or a people, as text: the tooltip line and the panel tabs, all over a `const World&`.
 - `src/bmp.h` — the 24-bit BMP writer behind the self-screenshot.
 - `src/textures.h` — the world's layers packed and uploaded as the textures `shaders/globe.frag` samples.
+- `src/overlay.h` — the marker overlay: settlements, bands, names and event marks drawn with GDI into an image the shader lays over the globe.
 - `src/terrain.h`, `src/plates.h`, `src/hydrology.h`, `src/atmosphere.h` (with `atmosphere_geo.h`, `dynamics2.h`, `qg2.h`, `qg2geo.h`, `water2geo.h`), `src/daylight.h`, `src/population.h`, `src/technology.h`, `src/sim.h` — the world and its simulation, described in [[Technical/Globe Viewer]] and the design notes their headers name.
 
 ## External Tools & Libraries
