@@ -1,5 +1,69 @@
 # Dev Log
 
+## 2026-09-15 — Work orders become a queue for nightly runs
+
+### What was done
+Work order 10 (`work_orders/10-refine-work-order-process.md`) was shaped, one day after the directory was created and before any order had been executed by a run. The result is `Meta/Work Orders.md` (the process and its reasons), a rewritten `work_orders/README.md` (the format, a queueability checklist, what a run does, what the morning does), a Work Orders entry in `Codex.md`, a paragraph on order and nightly branches in `Meta/Git.md`, and Design and Files sections in orders 03-09. Committed as `7e2ec9d`. Order 10 stays open: its remaining questions are answered from the first two or three nights.
+
+### Decisions and reasoning
+
+**Building the game is split into day and night**
+Three phases: shaping and planning, implementation, review and rework. The developer's daytime goes to the first and third; implementation runs unattended at night on a queue written during the day. The point is that daytime is never spent waiting on code being written. This reframes what a work order is: not a refactoring ticket but the unit of work a run can finish without asking anyone, which is why the queueability checklist exists (design note at Designed or later, a probe-checkable "Done when", declared files, named dependencies).
+
+**One branch per order, merged into a nightly branch**
+Two options were weighed: every order as a revertable commit on one nightly branch, or one branch per order. The first was argued for because the probes then measure the combined world overnight and rip-out is a revert. The developer chose per-order branches so an item can be judged in isolation, and kept the nightly branch as the integration point. The compromise gives both: each `wo/NN-slug` forks from the same base as `nightly/YYYY-MM-DD`, is built and probed alone, is merged into `nightly` on a pass, and is probed again there. Passing alone and failing after the merge is the interaction case (an addition that changes the world for every other addition) and is recorded rather than hidden. A merge that does not apply cleanly is a failed order; nothing is force-resolved at night. `main` moves only by the developer's deliberate merge, which is the existing rule.
+
+**The run walks the list and does not choose**
+The number on an order is the queue position the developer set. The run takes orders top to bottom, skips only what it cannot do, and never reorders to fit more in. Optimising for count would starve the orders that touch many files; order 09 (shared constants) is the example, and its Files section says it runs alone after the orders whose files it shares. That also settles the naming question: numbers stay and reprioritising is renaming.
+
+**The launch is the instruction to commit**
+`standards/agent-use.md` says an agent never commits unasked. A night run must. The deviation is written in the README next to the rule: commits on `wo/*` and merges into that night's `nightly/*`, nothing else.
+
+**Files sections found the collisions**
+Writing what each order touches showed 05, 06 and 07 all in `main.cpp` (05 owns it for its night; 06 and 07 go on other nights) and 04 colliding with 05 through the include block (fixed by rule: `sim.h` keeps including the carved headers, so no include line outside the population files changes). Overlap is a planning smell fixed during the day, not a merge problem discovered at night.
+
+**Left provisional on purpose**
+The unit of one order per branch, the second probe on `nightly`, and how much a Run section must say are written as provisional. Order 10's own premise is that these are decided from use, and the first nights use orders 03-09 with a plain launcher script. The launcher itself is not designed yet.
+
+---
+
+## 2026-09-15 — The atmosphere's hour is a list of stages
+
+### What was done
+Work order 02 (`work_orders/02-split-atmosphere-step.md`), rewritten first: its line references predated order 01, its third step (extracting the DYN2/QG2/QG2GEO drivers out of `prescribeHour`) was handed to order 03, and the two "done when" criteria that contradicted each other — skip the discarded stages in the game, keep the sweep's output identical — are reconciled by a flag.
+
+`Model::step` in `src/atmosphere.h` (581 non-blank lines) is now a list of named stage calls: `reduceToSeaLevel`, `upperPoolMean`, `moveAir`, `divergenceAndOrography`, then per cell `solarAt`, `radiationAt`, `surfaceExchangeAt`, `evaporationAt`, `surfaceAndIceAt`, `layerBudgetsAt`, the three probes, `upliftAt`, `waterAt`, then `polarCapsAndFilter` and `probeConservation`. The stages hand each other a per-cell record of the hour's terms (`CellHour`), with what the hour and the row share in `HourCtx` and `RowCtx`. The longest stage is 82 lines. The painting left `prescribeHour` as `paintHour`; the static smoothing buffer inside `step` is the member `divTmp`, sized in `init`.
+
+`atmosphere::PROBES` (default off) is the flag. With the climate painted and the flag off — the game — only the stages whose output survives the hour run: solar geometry, surface exchange, evaporation, the rule rain, cloud, soil and the humidity mirror. The four full-vector copies that undid the discarded integration each hour are gone with it. The sweep sets the flag and runs the full column in every mode; its new `game` mode runs the game's stage set.
+
+Verified: `build\sweep.exe earth 0 rules 1` and `7 0 rules 1` print the same output as a sweep built from commit `3e87389`, to every digit, except the three lines order 01 changed (the `CLIMATE` label, the removed "clamped" term and the removed transport line). `earth 0 game 1` prints the same `CLIMATE` block, water line and rules report as `rules`; only the probe tables differ, and they are zero. Run time with the game's configuration (`build\sweep.exe earth 1 <mode> 2`, terrain included, measured through the sweep since the game prints no time; about 3 s of each is not climate): 49 s before, 30 s after for the game's stage set, 53 s for the full column. Run-to-run noise is a few seconds. `build.bat` and `build_sweep.bat` succeed with no new warnings.
+
+### Decisions and reasoning
+
+**A flag, not two code paths**
+The sweep's probes (uplift by cause, the tropical column, the zonal and polar budgets, the energy line) are what the discarded stages exist for. Removing the stages from the game while keeping the sweep honest means the sweep asks for them and the game does not; a single `step` with `if (full)` around the stages that only the probes read keeps one list of stages for both. The `game` sweep mode is the check that the surviving figures are the same either way.
+
+**The drivers stay in `prescribeHour`**
+Order 03 decides per sub-model whether DYN2, QG2, QG2GEO and WATER2 stay in the game build or go to a reference branch. Extracting one driver each first would have been work on code about to move; the painting, which stays, is what left `prescribeHour`.
+
+**Out of scope, noted**
+`build` (297 non-blank lines, with the month-end probe prints inline) and `stepDynamics` (138) have the same shape problem and are not named by the order; `Meta/Suggestions.md` has the entry.
+
+## 2026-09-15 — The physical rain path is deleted
+
+### What was done
+Work order 01 (`work_orders/01-physical-rain-path-unreachable.md`), option 1. The column water path in `src/atmosphere.h` — the three conservative moisture-transport passes, the rain against a lift-lowered ceiling with its advection and diffusion, the `WATER2` mirror that fed the two-layer mesh water, and the `RULES` flag that had made all of it unreachable — is removed, with the constants, accumulators, `Climatology` fields and probe prints that only it fed (`advF`, `difF`, `advZF`, `advMF`, `dbgClamp`, the sweep's "transport, which should sum to zero" line). The sweep's `phys` and `physgeo` modes are gone; `rules` remains as a name for the default. The sweep's summary line is labelled `CLIMATE` instead of `PHYSICAL`.
+
+Verified: `build\sweep.exe earth 0 rules 1` before and after, identical to every printed digit (err 7.1, mean 14.9, rain 2.40, evap 3.06, Wv 26.78 mm, residence 11.1 d); the baseline's "clamped" and "transport" terms were already +0.000, which is the dead path measured. `build.bat` and `build_sweep.bat` succeed with no new warnings. `grep RULES src/` finds only the comment heading and two references to it; the flag is gone.
+
+### Decisions and reasoning
+
+**Delete, not gate**
+The prescribed climate has been the game's climate since 2026-09-09 and the atmosphere is to be redone on the geodesic grid ([[Technical/Geodesic Grid]]). Gating the old path honestly would have meant resurrecting physics on the lat-lon grid that is being left behind, and adding a probe to show it differs from the painted rain — work on the wrong grid. The physics that comes back comes back on the mesh. The deleted code's last state is commit `3e87389` on `main`; the branch map in [[Meta/Git]] says so. The older prognostic atmosphere is still on `climate-wind`.
+
+**What this leaves for order 03**
+`WATER2` still compiles and the `geow` sweep mode still steps the two-layer mesh water inside `prescribeHour`, but nothing reads its rain any more. Whether `water2geo.h` stays as the seed of the mesh rewrite or goes to a reference branch is order 03's per-model decision, as that order already says.
+
 ## 2026-09-08 — The geodesic grid was on another branch
 
 ### What was done
