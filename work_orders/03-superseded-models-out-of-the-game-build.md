@@ -126,3 +126,9 @@ Done when, item 3: the `main` row of the branch map in `Meta/Git.md` names every
 Files touched outside the Files section, all forced by the deletions: `src/test_dyn2.cpp`, `build_testdyn.bat`, `src/test_qg2.cpp`, `build_testqg.bat`, `src/dbg_qg2.cpp`, `build_dbgqg.bat` (the probes of the deleted headers; leaving them would have broken item 2). `sweep.cpp` changed more than includes: its `dyn`, `qg` and `geow` mode lines are gone and the dynamics printout's condition is `atmosphere::QG2GEO` alone, because the flags they set no longer exist. `build_sweep.bat` is unchanged: the define lives in `sweep.cpp` next to the include, so the guard and the header travel together.
 
 Unsure of: `Meta/Open Threads.md` (2026-09-07 entry) still names `qg2.h`, `build_testqg.bat` and `test_qg2.exe` as a dated record; it is not in Files and was left alone. The sweep's "TWO-LEVEL DYNAMICS" table and the `d2*` field names in `Climatology` were kept as they are, since QG2GEO fills them; `d2psSd` is always zero there. `build_sweep.bat` and the other probe scripts do not create `build\` (only `build.bat` does), so a fresh checkout must run `build.bat` first or `mkdir build`; `build_testatmo.bat` creates it.
+
+**Merged into `nightly/2026-09-15`** as `cc9e166`. Second probe on `nightly` after the
+merge: `build.bat` and `build_sweep.bat` succeed; `build\sweep.exe earth 0 rules 1` prints
+the same `CLIMATE` block, water line and rules report as the baseline (err 7.1, mean 14.9,
+rain 2.40, pRain 0.9, dry 20%, cloud 45%; Wv 26.78 mm, residence 11.1 d, wind 9.3 m/s,
+RH 69%, coast 2.05 inland 1.34; evap 3.06 rain 2.40 mm/day).
