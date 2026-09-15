@@ -1,6 +1,6 @@
 # 05 — Carve main.cpp into modules
 
-**Status:** queued (2026-09-15)
+**Status:** done (2026-09-15)
 
 ## Problem
 
@@ -79,3 +79,93 @@ the F2 screenshot being pixel-identical for a fixed seed and view:
 ## Depends on
 
 Nothing. Runs in parallel with 04.
+
+## Run
+
+**Status:** done (pending merge). Branch `wo/05-carve-main`, forked from `4ac16a0`.
+
+Commits, one per step, in the order they were done (the order's steps 1-3 were reordered
+because `savefile.h` needs `World`, and `World` needs `Vec3`):
+
+- `965e11e` step 3a, `src/gl.h`
+- `b571634` step 3b, `src/camera.h`
+- `3c8b1a5` step 2, `src/world.h`
+- `cff2ae1` step 1, `src/savefile.h`, `src/test_savefile.cpp`, `build_testsavefile.bat`
+- `09d5a3c` step 4, `src/inspect.h`
+- `2d3ce73` step 5, `src/bmp.h`; the climate acceptance block deleted (sweep.exe prints it)
+- `2578a41` step 6a, `src/textures.h`
+- `99c5015` step 6b, `src/overlay.h`
+- `68697c8` step 6c, `src/menus.h`, `src/theme.h`
+- `18dbbbe` step 6d, `src/panels.h`, `src/news.h`
+- `7b2d44e` step 7a, overlay scratch and GDI objects created once
+- `b0d3e32` step 7b, `describePoint` into a caller buffer
+
+Files beyond the order's list: `src/textures.h`, `src/overlay.h`, `src/theme.h`,
+`src/menus.h`, `src/panels.h`, `src/news.h` (step 6 says "split App into overlay, menu, news
+and panel state so those move last"; moving them is what gets `main.cpp` under 1,000, and
+the texture uploads had to go somewhere too). `sim.h`, `population.h`, `technology.h` and
+`atmosphere.h` untouched.
+
+**Done when, checked:**
+
+1. `main.cpp` is 851 lines (3,600 at `4ac16a0`): includes, `App` (camera, world, screen, the
+   generation thread, one `State` per module), the wiring (`setScreen`, `generateWorld`,
+   `finishGeneration`, `onCommand`, `updateTooltip`, `goToEvent`, `pickAt`, `advanceDays`,
+   the clock), three window procedures, and `main` (window, GL context, uniforms, argv
+   harness, render loop). Passes.
+2. Screenshots: byte-identical after every one of the twelve commits. Baseline built from
+   the untouched `4ac16a0` tree; after each commit `build.bat` (7 warnings each time, the
+   pre-existing C4996 set, none new), the four views retaken and hashed. Views, all with
+   land 30, concentration 0.5, dir 0, years 0:
+   - seed 7, `20 30 12000`: `07E3EBA6E61DEE2C376968CB5B2C09DA540154FA36ADC3BC1563C920A119AF45`
+   - seed 7, `45 -10 400`: `3AB8067D06FA77DF8893A8E97A068E6BD65DF313A83FB11AB050B71BEE39924E`
+   - earth, `50 10 8000`: `2871E0EBEB98790056B8A80DD71CC1DB1EE18177E76DB64AB4EC906A8177BD0E`
+   - earth, `30 35 150`: `8971E759299B4AD3CD74791DB7B8D9A8C8A6B0E5EC963195116455705782CC89`
+   Each 2,764,854 bytes (1280x720x24 bit). Passes, 12 of 12 steps, 4 of 4 views.
+3. Round-trip probe exists and passes. Passes.
+
+**Commands run** (PowerShell, from the worktree root):
+
+    cmd /c ".\build.bat"
+    Start-Process build\humanhistory.exe -ArgumentList "20 30 12000 7 30 0.5 0 0 <shotPath>" -WorkingDirectory build
+    # ... poll until <shotPath> exists and its size is unchanged over three half-second polls, then Stop-Process
+    Get-FileHash -Algorithm SHA256 build\shot_base_N.bmp, build\shot_<step>_N.bmp   # compared per view
+    cmd /c ".\build_testsavefile.bat"
+    build\test_savefile.exe 7 3
+
+The argv list in the launch instructions matched `main.cpp`'s harness
+(`<lat> <lon> <altKm> <seed> <land%> <conc%> <debugmode> <years> <shotPath>`); note
+`conc` is a percentage, so 0.5 is half a percent. The baseline and per-step `.bmp` files
+are under `build\` in the worktree (`shot_base_N.bmp`, `shot_<step>_N.bmp`), untracked.
+
+**Probe output** (`build\test_savefile.exe 7 3`, after the final commit):
+
+    saved: seed 7, year 3.0, 401 settlements, 0 bands, 400 cultures, 6 scars, 0 ruins
+    roundtrip seed 7 year 3.0: 61352 fields compared, 0 mismatches -- PASS
+
+The first run found one mismatch, `tech.rng`: `savefile::load` restores it and then redraws
+every contact and invention clock from it (memoryless, so exact in distribution), which
+advances the generator. That is by design, so the probe checks only that the value was
+read; everything else the file carries is compared exactly (P re-summed from the cohorts,
+to a tolerance).
+
+**Unsure of:**
+
+- Step 7b (`describePoint`) is not covered by the screenshot: the tooltip is a Win32
+  control, not part of the frame. The text path was changed mechanically (same format
+  strings, same sort comparator, same 5% floor and 60-character stop) and verified by
+  reading. Worth a mouse-over in the morning.
+- The overlay's winner-per-square `unordered_map` is still a fresh local each redraw: its
+  iteration order is the draw order among overlapping markers, and a table reused across
+  frames would make a view depend on what was drawn before it. The candidate vector, the
+  mark tables and all GDI objects are reused; node allocations in the two mark maps remain.
+- `world::activeProgress`: `atmosphere::build` takes a plain function pointer for its
+  year-by-year callback, so `World::build`'s progress callback reaches it through a
+  namespace-scope pointer set for the duration of the build. Written down in `world.h`;
+  the clean fix is a context parameter on `atmosphere::build`, which order 04 owns tonight.
+- `gl.h` keeps the GL function pointers at global scope under their API names (deviation
+  from one-namespace-per-header, written in the header).
+- The `Run:` line in `Technical/Architecture.md` still lists only seven arguments; it was
+  already behind before this order and was left alone.
+- `build_testsavefile.bat` does not copy `data\` (the probe uses seed 7, not earth), unlike
+  `build.bat`; it follows `build_testresources.bat`.

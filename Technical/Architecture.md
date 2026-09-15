@@ -13,6 +13,25 @@
 - Event scheduler — settlements schedule their own re-evaluations (population.h); a general queue with dependency invalidation is still to come ([[Design/Event-Driven]]) (begun)
 - Spherical spatial index — positions, distances, and trajectory intersection on a sphere ([[Design/Spherical World]]) (not started)
 
+## Modules
+
+One header per concern under `src/`, each opening with the note it implements; every executable is one translation unit that includes what it needs (`standards/general.md` §Modules).
+
+- `src/main.cpp` — the window, the render loop and the wiring between the modules below.
+- `src/gl.h` — the OpenGL entry points loaded by hand and the shader program built from `shaders\`.
+- `src/camera.h` — the camera above the globe, its vector algebra, and the zoom and drag rules that move it.
+- `src/world.h` — a world: seed and menu parameters, and `World::build`, which derives everything from them in dependency order and reports each stage through a progress callback.
+- `src/savefile.h` — the save file: what the seed cannot regenerate, as keyed text lines; `src/test_savefile.cpp` (`build_testsavefile.bat`) round-trips a world through it.
+- `src/inspect.h` — what the viewer says about a place or a people, as text: the tooltip line and the panel tabs, all over a `const World&`.
+- `src/bmp.h` — the 24-bit BMP writer behind the self-screenshot.
+- `src/textures.h` — the world's layers packed and uploaded as the textures `shaders/globe.frag` samples.
+- `src/overlay.h` — the marker overlay: settlements, bands, names and event marks drawn with GDI into an image the shader lays over the globe.
+- `src/theme.h` — the fonts and the background brush every window shares.
+- `src/menus.h` — the native Win32 controls of every screen: what exists and where it sits; what a control does is wired in `main.cpp`.
+- `src/panels.h` — the selection panels: a tabbed detail window per settlement or band, painted and hit-tested here; the window procedure in `main.cpp` calls in.
+- `src/news.h` — the news feed: the step's events grouped by kind, painted and clicked here; "Go to" hands the event back to `main.cpp`.
+- `src/terrain.h`, `src/plates.h`, `src/hydrology.h`, `src/atmosphere.h` (with `atmosphere_geo.h`, `dynamics2.h`, `qg2.h`, `qg2geo.h`, `water2geo.h`), `src/daylight.h`, `src/population.h`, `src/technology.h`, `src/sim.h` — the world and its simulation, described in [[Technical/Globe Viewer]] and the design notes their headers name.
+
 ## External Tools & Libraries
 _None._
 
