@@ -6,7 +6,6 @@
 //   cl /O2 /openmp /EHsc /std:c++17 src\sweep.cpp /Fe:build\sweep.exe
 #include <cmath>
 #include <cstdio>
-#include <random>
 #include <string>
 #include <vector>
 #include "terrain.h"
@@ -14,6 +13,7 @@
 #define HH_QG2GEO   // the sweep carries the mesh weather; the game does not (see atmosphere::QG2GEO)
 #include "qg2geo.h"
 #include "atmosphere.h"
+#include "world.h"
 
 // What a climate should look like. Land-and-sea zonal means, by season.
 struct Target {
@@ -120,36 +120,45 @@ static Score judge(const atmosphere::Climatology& c) {
 int main(int argc, char** argv) {
     // "earth" as the seed is the template globe (see terrain::TEMPLATE).
     bool earth = argc >= 2 && _stricmp(argv[1], "earth") == 0;
-    uint32_t seed = earth ? 1u : (argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7);
-    if (earth) {
-        if (!terrain::loadTemplate("../data/earth.bin") && !terrain::loadTemplate("data/earth.bin")) {
-            fprintf(stderr, "data/earth.bin not found (run tools/make_earth.py)\n");
-            return 1;
-        }
-        terrain::TEMPLATE.active = true;
+    world::World globe;
+    globe.earth = earth;
+    globe.seed = earth ? 1u : (argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7);
+    globe.concentration = 50.0f; // land 30%, the default
+    std::string tag = earth ? "earth" : std::to_string(globe.seed);
+
+    // The atmosphere's settings, read by atmosphere::build, so they are set
+    // before the world is built. "rules" is the game's climate and the
+    // default; it stays as a mode name so old run lines keep working. The
+    // "phys" and "physgeo" modes that claimed to run the column water went
+    // with it (work order 01). The sweep is the probe, so it runs the full
+    // column in every mode; "game" runs the game's own stage set (see
+    // PROBES) so the figures that survive the painting can be checked
+    // against the full run.
+    if (argc >= 3) atmosphere::SPINUP_DAYS = atoi(argv[2]) * 365;
+    atmosphere::PROBES = true;
+    if (argc >= 4 && std::string(argv[3]) == "rules") atmosphere::PRESCRIBED = true;
+    if (argc >= 4 && std::string(argv[3]) == "game") {
+        atmosphere::PRESCRIBED = true;
+        atmosphere::PROBES = false;
     }
-    std::string tag = earth ? "earth" : std::to_string(seed);
-    float landPct = 30.0f, conc = 50.0f;
+    if (argc >= 4 && std::string(argv[3]) == "geo") atmosphere::QG2GEO = true;
+    if (argc >= 5) atmosphere::STAT_YEARS = std::max(1, atoi(argv[4]));
 
-    std::mt19937 rng(seed);
-    std::uniform_real_distribution<double> ang(0.0, 2 * 3.14159265358979), off(-2.0, 2.0);
-    double a = ang(rng), b = ang(rng), cgl = ang(rng);
-    double ca = cos(a), sa = sin(a), cb = cos(b), sb = sin(b), cc = cos(cgl), sc = sin(cgl);
-    double mm[3][3] = {
-        {ca * cb, ca * sb * sc - sa * cc, ca * sb * cc + sa * sc},
-        {sa * cb, sa * sb * sc + ca * cc, sa * sb * cc - ca * sc},
-        {-sb, cb * sc, cb * cc},
-    };
-    float rot[9];
-    for (int col = 0; col < 3; col++)
-        for (int row = 0; row < 3; row++) rot[col * 3 + row] = (float)mm[row][col];
-    terrain::V3 offset = {(float)off(rng), (float)off(rng), (float)off(rng)};
-    terrain::ContinentParams cp = terrain::paramsFor(conc / 100.0f);
-
+    // The world as the game builds it, through the climate. The hydrology
+    // reports below read the rivers as first traced, which is why the build
+    // stops before the rain reweights them.
     fprintf(stderr, "terrain once...\n");
-    plates::Field pf = plates::build(seed);
-    float seaLevel = terrain::seaLevelFor(landPct / 100.0f, cp, rot, offset, pf);
-    hydrology::Result hy = hydrology::build(cp, seaLevel, rot, offset, 12000.0f, pf);
+    globe.build(nullptr, world::Stage::Climate);
+    if (earth && !globe.earth) {
+        fprintf(stderr, "data\\earth.bin not found (run tools/make_earth.py)\n");
+        return 1;
+    }
+    const float* rot = globe.rot;
+    const terrain::V3 offset = globe.terrainOffset();
+    const terrain::ContinentParams& cp = globe.cp;
+    const plates::Field& pf = globe.plateField;
+    const hydrology::Result& hy = globe.hydro;
+    const float seaLevel = globe.seaLevel;
     {
         // The lakes, by size: how many, and the largest, so a flood of
         // France-sized lakes shows up here before it shows up on screen.
@@ -279,20 +288,8 @@ int main(int argc, char** argv) {
     // of the error that no correct value explains, which is the part that
     // names the mechanism still missing.
     {
-        if (argc >= 3) atmosphere::SPINUP_DAYS = atoi(argv[2]) * 365;
-        // "rules" is the game's climate and the default; it stays as a mode
-        // name so old run lines keep working. The "phys" and "physgeo" modes
-        // that claimed to run the column water went with it (work order 01).
-        // The sweep is the probe, so it runs the full column in every mode;
-        // "game" runs the game's own stage set (see PROBES) so the figures
-        // that survive the painting can be checked against the full run.
-        atmosphere::PROBES = true;
-        if (argc >= 4 && std::string(argv[3]) == "rules") atmosphere::PRESCRIBED = true;
-        if (argc >= 4 && std::string(argv[3]) == "game") { atmosphere::PRESCRIBED = true; atmosphere::PROBES = false; }
-        if (argc >= 4 && std::string(argv[3]) == "geo") atmosphere::QG2GEO = true;
-        if (argc >= 5) atmosphere::STAT_YEARS = std::max(1, atoi(argv[4]));
         fprintf(stderr, "spin-up %d days\n", atmosphere::SPINUP_DAYS);
-        atmosphere::Climatology c = atmosphere::build(cp, seaLevel, rot, offset, pf, hy, false);
+        const atmosphere::Climatology& c = globe.clim;
         Score s = judge(c);
         const int AW = atmosphere::W, AH = atmosphere::H;
         fprintf(stderr,

@@ -20,7 +20,7 @@ One header per concern under `src/`, each opening with the note it implements; e
 - `src/main.cpp` — the window, the render loop and the wiring between the modules below.
 - `src/gl.h` — the OpenGL entry points loaded by hand and the shader program built from `shaders\`.
 - `src/camera.h` — the camera above the globe, its vector algebra, and the zoom and drag rules that move it.
-- `src/world.h` — a world: seed and menu parameters, and `World::build`, which derives everything from them in dependency order and reports each stage through a progress callback.
+- `src/world.h` — a world: seed and menu parameters, and `World::build`, which derives everything from them in dependency order and reports each stage through a progress callback. The build stops at the `world::Stage` it is asked for (plates, sea level, hydrology, climate, rivers, settlements); the game builds through the last, and every probe that needs a world (`src/sweep.cpp`, `src/test_atmo.cpp`, `src/test_resources.cpp`, `src/transect.cpp`, `src/terrprobe.cpp`) builds it through the same call, so the probes measure the world the game draws.
 - `src/savefile.h` — the save file: what the seed cannot regenerate, as keyed text lines; `src/test_savefile.cpp` (`build_testsavefile.bat`) round-trips a world through it.
 - `src/inspect.h` — what the viewer says about a place or a people, as text: the tooltip line and the panel tabs, all over a `const World&`.
 - `src/bmp.h` — the 24-bit BMP writer behind the self-screenshot.

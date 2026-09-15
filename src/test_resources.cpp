@@ -7,11 +7,8 @@
 //   build_testresources.bat, then build\test_resources.exe [seed] [years]
 #include <cmath>
 #include <cstdio>
-#include <random>
 #include <vector>
-#include "terrain.h"
-#include "hydrology.h"
-#include "atmosphere.h"
+#include "world.h"
 #include "sim.h"
 
 struct Report {
@@ -71,43 +68,21 @@ static Report survey(const population::Field& pf, double now) {
 }
 
 int main(int argc, char** argv) {
-    uint32_t seed = argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7;
+    world::World globe;
+    globe.seed = argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7;
     int years = argc >= 3 ? atoi(argv[2]) : 500;
-    float landPct = 30.0f, conc = 50.0f;
-
-    // Same derivation as World::build (main.cpp).
-    std::mt19937 rng(seed);
-    std::uniform_real_distribution<double> ang(0.0, 2 * 3.14159265358979), off(-2.0, 2.0);
-    double a = ang(rng), b = ang(rng), cgl = ang(rng);
-    double ca = cos(a), sa = sin(a), cb = cos(b), sb = sin(b), cc = cos(cgl), sc = sin(cgl);
-    double mm[3][3] = {
-        {ca * cb, ca * sb * sc - sa * cc, ca * sb * cc + sa * sc},
-        {sa * cb, sa * sb * sc + ca * cc, sa * sb * cc - ca * sc},
-        {-sb, cb * sc, cb * cc},
-    };
-    float rot[9];
-    for (int col = 0; col < 3; col++)
-        for (int row = 0; row < 3; row++) rot[col * 3 + row] = (float)mm[row][col];
-    terrain::V3 offset = {(float)off(rng), (float)off(rng), (float)off(rng)};
-    terrain::ContinentParams cp = terrain::paramsFor(conc / 100.0f);
+    globe.concentration = 50.0f; // land 30%, the default
 
     fprintf(stderr, "terrain and climate once...\n");
-    plates::Field plf = plates::build(seed);
-    float seaLevel = terrain::seaLevelFor(landPct / 100.0f, cp, rot, offset, plf);
-    hydrology::Result hy = hydrology::build(cp, seaLevel, rot, offset, 12000.0f, plf);
-    atmosphere::Climatology clim = atmosphere::build(cp, seaLevel, rot, offset, plf, hy, false);
-    {
-        std::vector<float> annual(atmosphere::W * atmosphere::H, 0.0f);
-        std::vector<float> annualT(atmosphere::W * atmosphere::H, 0.0f);
-        for (int i = 0; i < atmosphere::W * atmosphere::H; i++)
-            for (int se = 0; se < atmosphere::SEASONS; se++) {
-                annual[i] += clim.rainMmDay[se * atmosphere::W * atmosphere::H + i] /
-                             atmosphere::SEASONS;
-                annualT[i] += clim.meanT[se * atmosphere::W * atmosphere::H + i] /
-                              atmosphere::SEASONS;
-            }
-        hydrology::reweight(hy, annual, annualT, atmosphere::W, atmosphere::H, 12000.0f);
-    }
+    globe.build(nullptr, world::Stage::Rivers);
+    const uint32_t seed = globe.seed;
+    const float* rot = globe.rot;
+    const terrain::V3 offset = globe.terrainOffset();
+    const terrain::ContinentParams& cp = globe.cp;
+    const plates::Field& plf = globe.plateField;
+    hydrology::Result& hy = globe.hydro;
+    atmosphere::Climatology& clim = globe.clim;
+    const float seaLevel = globe.seaLevel;
 
     Report out[2];
     for (int pass = 0; pass < 2; pass++) {

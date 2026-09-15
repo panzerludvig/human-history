@@ -1,6 +1,6 @@
 # 08 — One world build shared by the game and every probe
 
-**Status:** queued (2026-09-15)
+**Status:** in progress (2026-09-15)
 
 ## Problem
 
