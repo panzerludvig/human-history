@@ -30,6 +30,7 @@
 #include "savefile.h"
 #include "inspect.h"
 #include "bmp.h"
+#include "textures.h"
 
 // Generation-stage feedback on the menu status line. The build runs on the
 // UI thread, so the label is repainted synchronously.
@@ -82,14 +83,7 @@ struct App {
     int genKind = 0;            // 0 new world, 1 load
     std::string genName;
     GLuint program = 0;
-    GLuint hydroTex = 0;
-    GLuint plateTex = 0;
-    GLuint earthTex = 0; // the Earth template, when the world is one
-    GLuint popTex = 0;
-    GLuint bandTex = 0;
-    int bandRows = 0;
-    GLuint siteTex = 0;
-    int siteRows = 0;
+    textures::State tex;
     // The marker overlay: a screen-sized image drawn with GDI and laid over
     // the globe by the shader. Magenta means "nothing here".
     HDC ovDC = nullptr;
@@ -102,8 +96,6 @@ struct App {
     // the overlay; a chip belongs to a settlement or to a band, never both.
     struct MarkHit { int x, y, w, h; uint32_t sid, bandId; };
     std::vector<MarkHit> markHits;
-    GLuint climTex = 0;
-    GLuint clim2Tex = 0;
     bool running = true;
     std::string shotPath; // when set, save the next rendered frame here (testing)
     int debugMode = 0; // 0 normal, 1 plates, 2 substrate, 3 vegetation
@@ -123,94 +115,6 @@ struct App {
     std::vector<std::pair<int, HWND>> controls;
 };
 static App app;
-
-// Push the plate table to texture unit 1, bilinear so belts are smooth.
-static void uploadPlates() {
-    glActiveTexture(GL_TEXTURE1);
-    if (!app.plateTex) {
-        glGenTextures(1, &app.plateTex);
-        glBindTexture(GL_TEXTURE_2D, app.plateTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.plateTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, plates::W, plates::H, 0, GL_RGBA, GL_FLOAT,
-                 app.world.plateField.cells.data());
-    glActiveTexture(GL_TEXTURE0);
-}
-
-static std::vector<float> popTexData() {
-    std::vector<float> d(population::W * population::H * 4, 0.0f);
-    const population::Field& pf = app.world.pop;
-    for (int i = 0; i < population::W * population::H; i++) d[i * 4] = pf.K[i];
-    for (const population::Field::Ruin& r : pf.ruins) d[r.cell * 4 + 1] = -1.0f; // abandoned
-    // Green names the settlement standing on the cell (index + 1, or -1 for
-    // a ruin); everything else about it -- its people, its granaries, how far
-    // its fields reach -- lives in the site texture, one texel each, so
-    // adding another thing to draw costs a channel there and not a texture
-    // the size of the world.
-    for (size_t i = 0; i < pf.settlements.size(); i++)
-        d[pf.settlements[i].cell * 4 + 1] = (float)(i + 1);
-    // A cell holds the index of a band standing on it, not its headcount:
-    // a walking band is at a point, not in a square, and the marker is drawn
-    // at that point. Where two bands share a cell the bigger one is shown.
-    for (size_t i = 0; i < pf.bands.size(); i++) {
-        const population::Band& b = pf.bands[i];
-        int cell = sim::cellOf({b.px, b.py, b.pz});
-        int held = (int)(d[cell * 4 + 2] + 0.5f);
-        if (held && pf.bands[held - 1].P >= b.P) continue;
-        d[cell * 4 + 2] = (float)(i + 1);
-    }
-    // Alpha points from any cell holding a FARMSTEAD back to its village's
-    // cell (index + 1), so the shader's farmstead passes look at their own
-    // nine cells instead of scanning a 50 km box per pixel -- that scan was
-    // a full-screen frame-rate bill at close zoom.
-    for (const population::Settlement& s : pf.settlements)
-        for (int k = 0; k < (int)(s.farmsteads + 0.5f) && k < population::FSTEAD_MAX; k++)
-            d[sim::cellOf(sim::farmsteadPos(s.cell, k)) * 4 + 3] = (float)(s.cell + 1);
-    return d;
-}
-
-// Ten texels per settlement: its people, granaries, village field reach and
-// farmstead count; the sixteen sectors of its claim, four to a texel; then
-// each farmstead's own field radius, four to a texel. A settlement is
-// SITE_STRIDE texels along the row, so the shader indexes site*10 + k.
-constexpr int SITE_TEX_W = 256;
-constexpr int SITE_STRIDE = 10;
-static std::vector<float> siteTexData(int& rows) {
-    const std::vector<population::Settlement>& ss = app.world.pop.settlements;
-    size_t texels = ss.size() * SITE_STRIDE;
-    rows = std::max(1, (int)((texels + SITE_TEX_W - 1) / SITE_TEX_W));
-    std::vector<float> d((size_t)SITE_TEX_W * rows * 4, 0.0f);
-    for (size_t i = 0; i < ss.size(); i++) {
-        size_t o = i * SITE_STRIDE * 4;
-        d[o + 0] = std::max(ss[i].P, 1.0f);
-        d[o + 1] = ss[i].granaries;
-        d[o + 2] = ss[i].tilled[0]; // village plots, km2 (one drawn patch each)
-        d[o + 3] = ss[i].farmsteads;
-        for (int k = 0; k < population::CLAIM_SECTORS; k++) d[o + 4 + k] = ss[i].claim[k];
-        for (int k = 0; k < population::FSTEAD_MAX; k++) d[o + 20 + k] = ss[i].tilled[k + 1];
-    }
-    return d;
-}
-
-// Where every band actually is, to the metre: xyz on the unit sphere plus
-// its headcount, one texel each, in rows of BAND_TEX_W.
-constexpr int BAND_TEX_W = 256;
-static std::vector<float> bandTexData(int& rows) {
-    const std::vector<population::Band>& bs = app.world.pop.bands;
-    rows = std::max(1, ((int)bs.size() + BAND_TEX_W - 1) / BAND_TEX_W);
-    std::vector<float> d((size_t)BAND_TEX_W * rows * 4, 0.0f);
-    for (size_t i = 0; i < bs.size(); i++) {
-        d[i * 4 + 0] = bs[i].px;
-        d[i * 4 + 1] = bs[i].py;
-        d[i * 4 + 2] = bs[i].pz;
-        d[i * 4 + 3] = std::max(bs[i].P, 1.0f);
-    }
-    return d;
-}
 
 // ------------------------------------------------------- marker overlay
 //
@@ -711,137 +615,6 @@ static void uploadOverlay() {
     glActiveTexture(GL_TEXTURE0);
 }
 
-static void uploadPopulation() {
-    glActiveTexture(GL_TEXTURE2);
-    if (!app.popTex) {
-        glGenTextures(1, &app.popTex);
-        glBindTexture(GL_TEXTURE_2D, app.popTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.popTex);
-    std::vector<float> d = popTexData();
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, population::W, population::H, 0, GL_RGBA, GL_FLOAT, d.data());
-    glActiveTexture(GL_TEXTURE5);
-    if (!app.bandTex) {
-        glGenTextures(1, &app.bandTex);
-        glBindTexture(GL_TEXTURE_2D, app.bandTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.bandTex);
-    std::vector<float> bd = bandTexData(app.bandRows);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, BAND_TEX_W, app.bandRows, 0, GL_RGBA, GL_FLOAT,
-                 bd.data());
-    glActiveTexture(GL_TEXTURE6);
-    if (!app.siteTex) {
-        glGenTextures(1, &app.siteTex);
-        glBindTexture(GL_TEXTURE_2D, app.siteTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.siteTex);
-    std::vector<float> sd = siteTexData(app.siteRows);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, SITE_TEX_W, app.siteRows, 0, GL_RGBA, GL_FLOAT,
-                 sd.data());
-    glActiveTexture(GL_TEXTURE0);
-}
-
-// Climatology texture: four season bands stacked vertically, RGBA =
-// {cloud, rain mm/day, wind u, wind v}.
-static void uploadClimatology() {
-    glActiveTexture(GL_TEXTURE3);
-    if (!app.climTex) {
-        glGenTextures(1, &app.climTex);
-        glBindTexture(GL_TEXTURE_2D, app.climTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.climTex);
-    const atmosphere::Climatology& c = app.world.clim;
-    int W = atmosphere::W, H = atmosphere::H, S = atmosphere::SEASONS;
-    std::vector<float> d(W * H * S * 4);
-    for (int i = 0; i < W * H * S; i++) {
-        d[i * 4 + 0] = c.cloud[i];
-        d[i * 4 + 1] = c.rainMmDay[i];
-        d[i * 4 + 2] = c.windU[i];
-        d[i * 4 + 3] = c.windV[i];
-    }
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, W, H * S, 0, GL_RGBA, GL_FLOAT, d.data());
-    // Second climatology texture: seasonal mean temperature, snowfall, and the
-    // model's smoothed elevation (so the shader can lapse-correct to local
-    // terrain height for snow cover).
-    glActiveTexture(GL_TEXTURE4);
-    if (!app.clim2Tex) {
-        glGenTextures(1, &app.clim2Tex);
-        glBindTexture(GL_TEXTURE_2D, app.clim2Tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.clim2Tex);
-    // Alpha carries the annual water balance (rain - PET, mm/day): the
-    // shader's pond density follows it.
-    std::vector<float> balance(W * H, 0.0f);
-    for (int i = 0; i < W * H; i++) {
-        float rain = 0, tC = 0;
-        for (int se = 0; se < S; se++) {
-            rain += c.rainMmDay[se * W * H + i] / S;
-            tC += c.meanT[se * W * H + i] / S;
-        }
-        balance[i] = rain - hydrology::petMmDay(tC);
-    }
-    for (int se = 0; se < S; se++)
-        for (int i = 0; i < W * H; i++) {
-            int si = se * W * H + i;
-            d[si * 4 + 0] = c.meanT[si];
-            d[si * 4 + 1] = c.snowMmDay[si];
-            d[si * 4 + 2] = c.elev.empty() ? 0.0f : c.elev[i];
-            d[si * 4 + 3] = balance[i];
-        }
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, W, H * S, 0, GL_RGBA, GL_FLOAT, d.data());
-    glActiveTexture(GL_TEXTURE0);
-}
-
-// Push the world's hydrology table to the GPU as one RGBA32F texel per cell.
-// The Earth template, when the world is one: metres in the red channel.
-static void uploadEarth() {
-    if (!app.world.earth || !terrain::TEMPLATE.active) return;
-    glActiveTexture(GL_TEXTURE0 + 8);
-    if (!app.earthTex) {
-        glGenTextures(1, &app.earthTex);
-        glBindTexture(GL_TEXTURE_2D, app.earthTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.earthTex);
-    const terrain::Template& tp = terrain::TEMPLATE;
-    // One channel: at ETOPO5's 4320 x 2160 four channels would be 150 MB.
-    glTexImage2D(GL_TEXTURE_2D, 0, 0x822E /*GL_R32F*/, tp.w, tp.h, 0, 0x1903 /*GL_RED*/, GL_FLOAT, tp.elev.data());
-    glActiveTexture(GL_TEXTURE0);
-}
-
-static void uploadHydrology() {
-    uploadEarth();
-    uploadPlates();
-    uploadPopulation();
-    uploadClimatology();
-    if (!app.hydroTex) {
-        glGenTextures(1, &app.hydroTex);
-        glBindTexture(GL_TEXTURE_2D, app.hydroTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.hydroTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, hydrology::W, hydrology::H, 0, GL_RGBA, GL_FLOAT,
-                 app.world.hydro.cells.data());
-}
-
 static void advanceDays(double days);
 static void updateDateLabel();
 static void closeAllPanels();
@@ -1124,7 +897,7 @@ static void finishGeneration() {
         setStatus("Could not load " + app.genName);
         return;
     }
-    uploadHydrology();
+    textures::uploadAll(app.tex, app.world);
     if (app.genKind == 0) {
         app.cam.lat = 0.35;
         app.cam.lon = 0.0;
@@ -1769,7 +1542,7 @@ static void advanceDays(double days) {
     population::Field& pf = app.world.pop;
     if (pf.settlements.empty()) return;
     bool any = sim::simulate(pf, app.world.tech, app.world.hydro, app.world.clim, app.world.simTime);
-    if (any && app.popTex) uploadPopulation();
+    if (any && app.tex.popTex) textures::uploadPopulation(app.tex, app.world.pop);
     refreshPanels();
     refreshNews();
 }
@@ -1971,7 +1744,7 @@ int main(int argc, char** argv) {
             app.debugMode = d == "plates" ? 1 : d == "substrate" ? 2 : d == "vegetation" ? 3
                           : d == "population" ? 4 : d == "climate" ? 5 : 0;
         }
-        uploadHydrology();
+        textures::uploadAll(app.tex, app.world);
         app.cam.lat = atof(argv[1]) * camera::PI / 180;
         app.cam.lon = atof(argv[2]) * camera::PI / 180;
         if (argc >= 4) app.cam.altitude = atof(argv[3]) / camera::EARTH_RADIUS_KM;
@@ -2136,7 +1909,7 @@ int main(int argc, char** argv) {
                 paintOverlay();
                 uploadOverlay();
             }
-            glBindTexture(GL_TEXTURE_2D, app.hydroTex);
+            glBindTexture(GL_TEXTURE_2D, app.tex.hydroTex);
             glDrawArrays(GL_TRIANGLES, 0, 3);
             // Self-screenshot from the back buffer: defined even when the
             // window is occluded, unlike PrintWindow. Testing tooling.
