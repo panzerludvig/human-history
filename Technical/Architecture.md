@@ -31,6 +31,7 @@ One header per concern under `src/`, each opening with the note it implements; e
 - `src/panels.h` — the selection panels: a tabbed detail window per settlement or band, painted and hit-tested here; the window procedure in `main.cpp` calls in.
 - `src/news.h` — the news feed: the step's events grouped by kind, painted and clicked here; "Go to" hands the event back to `main.cpp`.
 - `src/terrain.h`, `src/plates.h`, `src/hydrology.h`, `src/atmosphere.h` (with `atmosphere_geo.h`, `dynamics2.h`, `qg2.h`, `qg2geo.h`, `water2geo.h`), `src/daylight.h`, `src/population.h`, `src/technology.h`, `src/sim.h` — the world and its simulation, described in [[Technical/Globe Viewer]] and the design notes their headers name.
+- The probes, each an executable with its own `build_*.bat` (`standards/general.md` §Verification): `src/sweep.cpp` (`build\sweep.exe`) is the climate census — one function per report, run in order or picked by name in the fifth argument, e.g. `build\sweep.exe earth 0 rules 1 review,landcover`; `src/transect.cpp`, `src/terrprobe.cpp`, `src/test_atmo.cpp`, `src/test_resources.cpp`, `src/test_savefile.cpp`, `src/test_qg2geo.cpp`, `src/gridtest.cpp`, `src/solvetest.cpp` state their run lines in their header comments.
 
 ## External Tools & Libraries
 _None._
