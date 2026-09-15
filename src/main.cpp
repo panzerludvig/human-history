@@ -3382,8 +3382,8 @@ int main(int argc, char** argv) {
                             gR += c.rainMmDay[i] * wgt(y);
                             gw += wgt(y);
                         }
-                fprintf(stderr, "WATER mm/day: evap %.2f, rain %.2f, made by clamping %.2f\n",
-                        app.world.clim.dbgEvap, app.world.clim.dbgRain, app.world.clim.dbgClamp);
+                fprintf(stderr, "WATER mm/day: evap %.2f, rain %.2f\n",
+                        app.world.clim.dbgEvap, app.world.clim.dbgRain);
                 fprintf(stderr, "CLIMATE global: mean %.1f C (target 15), rain %.2f mm/d "
                                 "(target 2.7)\n", gT / gw, gR / gw);
                 struct Spot { const char* name; float lat; int season; float want; };

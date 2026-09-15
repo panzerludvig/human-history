@@ -11,6 +11,9 @@ Each suggestion includes a timestamp and a reference to what prompted it. Ask fo
 Suggestion text.
 -->
 
+### 2026-09-15 — Work order 02, the atmosphere's hour split into stages
+Give `atmosphere::build` (297 non-blank lines) the same treatment: the month-end probe prints, the season binning and the final blur are each a seam already marked by a comment, and the "done when" of order 02 could not be applied to the whole file because of it. `stepDynamics` (138 lines) is the other candidate. A work order, not a side effect of the next atmosphere change.
+
 ### 2026-09-15 — Frame-rate bisect while drawing tilled plots
 Close-zoom frame rate is bound by the procedural terrain, not by anything drawn on it: measured on the Arc 140V at 4 km altitude, the whole field layer costs 12→15 fps while the remaining ~65 ms/frame is the 16-octave terrain evaluation (`uOctaves` ramps to 16 as km/pixel shrinks). If close zoom should run at 60 fps, the lever is terrain LOD — e.g. rendering the high-octave detail into a cached local tile texture when the camera lingers, or capping octaves and blending in a baked detail texture — a project of its own, not a fields tweak.
 

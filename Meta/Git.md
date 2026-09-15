@@ -29,7 +29,7 @@ Commit directly to `main` while the project is notes-only. Commit at the end of 
 
 | Branch | State | What it holds |
 |---|---|---|
-| `main` | **working branch** | The climate as rules of thumb (2026-09-09), the real-elevation Earth template with Natural Earth's lakes (2026-09-14), and behind their flags the prescribed climate, the sigma core, the lat-lon and geodesic quasi-geostrophic models, the two-layer water and the all-physics mode. |
+| `main` | **working branch** | The climate as rules of thumb (2026-09-09), the real-elevation Earth template with Natural Earth's lakes (2026-09-14), and behind their flags the prescribed climate, the sigma core, the lat-lon and geodesic quasi-geostrophic models and the two-layer water (`WATER2`, which since 2026-09-15 nothing reads; work order 03 decides its fate). The lat-lon column water, its moisture transport and the all-physics sweep modes (`phys`, `physgeo`) were removed on 2026-09-15 (work order 01); their last state is commit `3e87389` on this branch. |
 | `prescribed-climate` | merged into `main` 2026-09-14 | Can be deleted. |
 | `conserving-atmosphere` | 2 commits ahead of `main`, unmerged | Sea ice as a mass and the seasonal zonal probe, as they were before the prescribed climate; both were carried into `prescribed-climate` by hand. Reference only. |
 | `climate-wind` | 26 commits ahead of `main`, unmerged, forked 2026-09-01 | The prognostic atmosphere of 2026-09-02: the geodesic grid and its port (now copied across), sea ice as an object, cloud from motion, the polar cloud and lapse-rate investigations. The physics is superseded by the prescribed climate; the grid is not. |

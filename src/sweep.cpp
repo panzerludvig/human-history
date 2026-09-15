@@ -278,9 +278,15 @@ int main(int argc, char** argv) {
     // names the mechanism still missing.
     {
         if (argc >= 3) atmosphere::SPINUP_DAYS = atoi(argv[2]) * 365;
-        if (argc >= 4 && std::string(argv[3]) == "phys") atmosphere::PRESCRIBED = false;
-        if (argc >= 4 && std::string(argv[3]) == "rules") { atmosphere::PRESCRIBED = true; atmosphere::RULES = true; }
-        if (argc >= 4 && std::string(argv[3]) == "physgeo") { atmosphere::PRESCRIBED = false; atmosphere::QG2GEO = true; atmosphere::WATER2 = true; }
+        // "rules" is the game's climate and the default; it stays as a mode
+        // name so old run lines keep working. The "phys" and "physgeo" modes
+        // that claimed to run the column water went with it (work order 01).
+        // The sweep is the probe, so it runs the full column in every mode;
+        // "game" runs the game's own stage set (see PROBES) so the figures
+        // that survive the painting can be checked against the full run.
+        atmosphere::PROBES = true;
+        if (argc >= 4 && std::string(argv[3]) == "rules") atmosphere::PRESCRIBED = true;
+        if (argc >= 4 && std::string(argv[3]) == "game") { atmosphere::PRESCRIBED = true; atmosphere::PROBES = false; }
         if (argc >= 4 && std::string(argv[3]) == "dyn") atmosphere::DYN2 = true;
         if (argc >= 4 && std::string(argv[3]) == "qg") atmosphere::QG2 = true;
         if (argc >= 4 && std::string(argv[3]) == "geo") atmosphere::QG2GEO = true;
@@ -291,15 +297,15 @@ int main(int argc, char** argv) {
         Score s = judge(c);
         const int AW = atmosphere::W, AH = atmosphere::H;
         fprintf(stderr,
-                "PHYSICAL | err %6.1f | mean %5.1f rain %4.2f pRain %4.1f dry %3.0f%% cloud %3.0f%%\n"
+                "CLIMATE | err %6.1f | mean %5.1f rain %4.2f pRain %4.1f dry %3.0f%% cloud %3.0f%%\n"
                 "  eq %5.1f sub %5.1f mls %5.1f mlw %5.1f 60s %5.1f 60w %5.1f ps %5.1f pw %5.1f\n"
                 "  want   27      30       20      -5      15     -25       0     -45\n"
                 "  Wv %5.2f mm, residence %4.1f d, wind %4.1f m/s, RH %3.0f%%, coast %4.2f inland %4.2f\n"
-                "  water: evap %5.2f rain %5.2f clamped %+6.3f mm/day\n",
+                "  water: evap %5.2f rain %5.2f mm/day\n",
                 s.err, s.mean, s.rain, s.polarRain, s.desert * 100, s.cloud * 100, s.spot[0], s.spot[1],
                 s.spot[2], s.spot[3], s.spot[4], s.spot[5], s.spot[6], s.spot[7], c.dbgWv,
                 c.dbgWv / std::max(c.dbgRain, 1e-6), c.dbgWind, c.dbgRH * 100, s.coastRain,
-                s.innerRain, c.dbgEvap, c.dbgRain, c.dbgClamp);
+                s.innerRain, c.dbgEvap, c.dbgRain);
         // The tropical-ocean column, term by term, against measurement. SST
         // there is set by this balance and almost nothing else -- no
         // arrangement of continents moves it more than a few degrees -- so
@@ -864,23 +870,6 @@ int main(int argc, char** argv) {
                 fprintf(stderr,
                         "  GLOBAL, same normalisation: evap %.2f  rain %.2f  gap %+.2f mm/day\n",
                         ev / wgt, rn / wgt, ev / wgt - rn / wgt);
-                // Advection and diffusion only MOVE water, so summed over the
-                // whole planet they must come to nothing. If they do not, the
-                // transport is inventing or destroying the gap.
-                double ad = 0, di = 0, az = 0, am = 0;
-                for (int y = 0; y < AH; y++) {
-                    double cwl = std::cos(((y + 0.5) / AH - 0.5) * 3.14159265);
-                    for (int x = 0; x < AW; x++)
-                        for (int se = 0; se < atmosphere::SEASONS; se++) {
-                            int i = se * AW * AH + y * AW + x;
-                            ad += c.advF[i] * cwl; di += c.difF[i] * cwl;
-                            az += c.advZF[i] * cwl; am += c.advMF[i] * cwl;
-                        }
-                }
-                fprintf(stderr,
-                        "  transport, which should sum to zero: adv %+.3f  dif %+.3f"
-                        "  (zonal %+.3f, meridional %+.3f)\n",
-                        ad / wgt, di / wgt, az / wgt, am / wgt);
             }
         }
 

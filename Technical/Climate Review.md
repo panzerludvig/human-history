@@ -40,7 +40,7 @@ What holds: everything the rules state, the temperate west coasts, the interiors
 
 ## Survey of 2026-09-08: the equations alone
 
-The all-physics mode ([[Design/Weather]], decision of 2026-09-08): painted once at hour zero, then radiation, surface balance, ice, the boundary layer, the mesh QG weather and the two-layer water, with no ocean transport. `sweep.exe earth 0 physgeo 1`, commit `b12302b`, one spin-up year and one measured. Reference figures as in the table below.
+The all-physics mode ([[Design/Weather]], decision of 2026-09-08): painted once at hour zero, then radiation, surface balance, ice, the boundary layer, the mesh QG weather and the two-layer water, with no ocean transport. `sweep.exe earth 0 physgeo 1` (a mode removed on 2026-09-15 with the column water; last at commit `3e87389`), commit `b12302b`, one spin-up year and one measured. Reference figures as in the table below.
 
 ### The world review
 
