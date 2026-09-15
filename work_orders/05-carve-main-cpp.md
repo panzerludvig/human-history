@@ -82,7 +82,7 @@ Nothing. Runs in parallel with 04.
 
 ## Run
 
-**Status:** done (pending merge). Branch `wo/05-carve-main`, forked from `4ac16a0`.
+**Status:** done (merged into `nightly/2026-09-15`, see below). Branch `wo/05-carve-main`, forked from `4ac16a0`.
 
 Commits, one per step, in the order they were done (the order's steps 1-3 were reordered
 because `savefile.h` needs `World`, and `World` needs `Vec3`):
@@ -169,3 +169,10 @@ to a tolerance).
   already behind before this order and was left alone.
 - `build_testsavefile.bat` does not copy `data\` (the probe uses seed 7, not earth), unlike
   `build.bat`; it follows `build_testresources.bat`.
+
+**Merged into `nightly/2026-09-15`** as `b4344df`, after orders 03 and 04; the merge
+applied cleanly, including `Technical/Globe Viewer.md`, which order 04 had also touched.
+Second probe on `nightly`: `build.bat` and `build_testsavefile.bat` succeed; the four views
+retaken on the merged build are SHA-256 identical to the `4ac16a0` baseline (2,764,854
+bytes each); `build\test_savefile.exe 7 3` prints
+`roundtrip seed 7 year 3.0: 61352 fields compared, 0 mismatches -- PASS`.
