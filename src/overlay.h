@@ -33,7 +33,16 @@ struct MarkHit {
     uint32_t sid, bandId;
 };
 
-// The image, its texture, the fonts, and what the last frame was drawn for.
+// A marker candidate: where it lands on screen, its weight for the
+// thinning, and which settlement or band it is.
+struct Cand {
+    float x, y, w;
+    int idx;
+    bool band;
+};
+
+// The image, its texture, the fonts and brushes, the scratch paint works
+// in, and what the last frame was drawn for.
 struct State {
     HDC ovDC = nullptr;
     HBITMAP ovBmp = nullptr;
@@ -42,6 +51,17 @@ struct State {
     GLuint ovTex = 0;
     HFONT markerFont = nullptr, markerBold = nullptr, markBold = nullptr;
     std::vector<MarkHit> markHits; // rebuilt with the overlay
+    // Scratch for paint, kept between redraws so a camera-move frame does
+    // not allocate (standards/cpp.md §Hot paths): the candidates in view
+    // and the marks per settlement and band. The winner-per-square map is
+    // not kept: its iteration order is the draw order, and a reused table
+    // would make that depend on what was drawn before.
+    std::vector<Cand> cands;
+    std::unordered_map<uint32_t, std::vector<int>> markSite, markBand;
+    // The brushes and pen, created once with the fonts.
+    HBRUSH clearBr = nullptr, cream = nullptr, amber = nullptr, ink = nullptr;
+    HBRUSH edgeFill = nullptr, countBr = nullptr, family[5] = {};
+    HPEN edge = nullptr;
     // The overlay is a function of the camera, the world and the window, so
     // it only needs redrawing when one of those moves. Repainting and
     // uploading it costs about 2.4 ms, which is a quarter of a frame to spend
@@ -49,18 +69,6 @@ struct State {
     double lastLat = 1e9, lastLon = 1e9, lastAlt = 0, lastT = -1;
     int lastW = 0, lastH = 0, lastSettlements = -1, lastBands = -1, lastScreen = -1;
 };
-
-// Marker text is drawn without antialiasing on purpose: the overlay has
-// no alpha channel -- the shader keys on magenta -- so blended edges
-// would fringe. Crisp small type also suits a map.
-inline void createFonts(State& ov) {
-    ov.markerFont = CreateFontA(15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
-                                NONANTIALIASED_QUALITY, 0, "Segoe UI");
-    ov.markerBold = CreateFontA(14, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
-                                NONANTIALIASED_QUALITY, 0, "Segoe UI");
-    ov.markBold = CreateFontA(11, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
-                              NONANTIALIASED_QUALITY, 0, "Segoe UI"); // the count in a chip
-}
 
 // ------------------------------------------------------- marker overlay
 //
@@ -239,6 +247,27 @@ inline COLORREF markColour(int family) {
     return c[family < 0 || family > 4 ? 2 : family];
 }
 
+// The fonts, brushes and pen, created once. Marker text is drawn without
+// antialiasing on purpose: the overlay has no alpha channel -- the shader
+// keys on magenta -- so blended edges would fringe. Crisp small type also
+// suits a map.
+inline void init(State& ov) {
+    ov.markerFont = CreateFontA(15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                                NONANTIALIASED_QUALITY, 0, "Segoe UI");
+    ov.markerBold = CreateFontA(14, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                                NONANTIALIASED_QUALITY, 0, "Segoe UI");
+    ov.markBold = CreateFontA(11, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                              NONANTIALIASED_QUALITY, 0, "Segoe UI"); // the count in a chip
+    ov.clearBr = CreateSolidBrush(RGB(255, 0, 255)); // "nothing here", to the shader
+    ov.cream = CreateSolidBrush(RGB(238, 230, 208));
+    ov.amber = CreateSolidBrush(RGB(232, 176, 66));
+    ov.ink = CreateSolidBrush(RGB(96, 52, 28));
+    ov.edge = CreatePen(PS_SOLID, 1, RGB(40, 28, 18));
+    ov.edgeFill = CreateSolidBrush(RGB(40, 28, 18)); // the chip's dark rim
+    ov.countBr = CreateSolidBrush(RGB(74, 64, 52));
+    for (int f = 0; f < 5; f++) ov.family[f] = CreateSolidBrush(markColour(f));
+}
+
 constexpr int CHIP = 11;      // a mark, square
 constexpr int CHIP_GAP = 1;   // and the air between two of them
 constexpr int CHIP_SHOWN = 4; // before the rest become a number
@@ -272,10 +301,11 @@ inline void ensure(State& ov, int width, int height) {
 }
 
 // One mark: the family square, a dark edge, and the glyph cut out in cream.
-inline void drawChip(HDC dc, int kind, int x, int y, HBRUSH edgeBr, HBRUSH creamBr) {
+inline void drawChip(HDC dc, const State& ov, int kind, int x, int y, HBRUSH edgeBr,
+                     HBRUSH creamBr) {
     RECT r{x, y, x + CHIP, y + CHIP};
     FillRect(dc, &r, edgeBr);
-    HBRUSH fam = CreateSolidBrush(markColour(markFamily(kind)));
+    HBRUSH fam = ov.family[markFamily(kind)];
     RECT in{x + 1, y + 1, x + CHIP - 1, y + CHIP - 1};
     FillRect(dc, &in, fam);
     const MarkGlyph& g = MARK_GLYPH[kind];
@@ -297,17 +327,14 @@ inline void drawChip(HDC dc, int kind, int x, int y, HBRUSH edgeBr, HBRUSH cream
     run(g.fill, g.nf, creamBr);
     if (g.nc) run(g.cut, g.nc, fam); // the skull needs its sockets back
     SelectObject(dc, oldPen);
-    DeleteObject(fam);
 }
 
 // The overflow: how many marks are not shown. The only chip that holds type.
 inline void drawCountChip(HDC dc, const State& ov, int n, int x, int y, HBRUSH edgeBr) {
     RECT r{x, y, x + CHIP, y + CHIP};
     FillRect(dc, &r, edgeBr);
-    HBRUSH br = CreateSolidBrush(RGB(74, 64, 52));
     RECT in{x + 1, y + 1, x + CHIP - 1, y + CHIP - 1};
-    FillRect(dc, &in, br);
-    DeleteObject(br);
+    FillRect(dc, &in, ov.countBr);
     char t[8];
     snprintf(t, sizeof t, "%d", n > 99 ? 99 : n);
     SelectObject(dc, ov.markBold);
@@ -368,7 +395,7 @@ inline void drawMarkRow(HDC dc, State& ov, const std::vector<int>& kinds, int cx
     int w = n * CHIP + (n - 1) * CHIP_GAP;
     int x = cx - w / 2, y = bottomY - CHIP;
     for (int i = 0; i < shown; i++) {
-        drawChip(dc, kinds[i], x, y, edgeBr, creamBr);
+        drawChip(dc, ov, kinds[i], x, y, edgeBr, creamBr);
         ov.markHits.push_back({x, y, CHIP, CHIP, sid, bandId});
         x += CHIP + CHIP_GAP;
     }
@@ -386,9 +413,7 @@ inline void paint(State& ov, const world::World& w, const camera::Camera& cam, b
     if (!ov.ovDC) return;
     HDC dc = ov.ovDC;
     RECT full{0, 0, ov.ovW, ov.ovH};
-    HBRUSH clear = CreateSolidBrush(RGB(255, 0, 255)); // "nothing here", to the shader
-    FillRect(dc, &full, clear);
-    DeleteObject(clear);
+    FillRect(dc, &full, ov.clearBr);
     if (!inGame || w.pop.settlements.empty()) return;
     double kmpp = cam.kmPerPixel();
     // Close up the shader draws the houses and the walking people
@@ -409,13 +434,9 @@ inline void paint(State& ov, const world::World& w, const camera::Camera& cam, b
     // and their size steps in powers of two so a slow zoom does not churn
     // them either.
     double stepDeg = std::pow(2.0, std::round(std::log2(spacingKm / 111.32)));
-    struct Cand {
-        float x, y, w;
-        int idx;
-        bool band;
-    };
-    std::vector<Cand> cands;
-    std::unordered_map<long long, int> best;
+    std::vector<Cand>& cands = ov.cands;
+    cands.clear();
+    std::unordered_map<long long, int> best; // fresh: its order is the draw order
     auto offer = [&](float x, float y, float w, int idx, bool band, const terrain::V3& at) {
         if (x < -60 || y < -30 || x > ov.ovW + 60 || y > ov.ovH + 30) return;
         double latDeg = std::asin(std::clamp(at.z, -1.0f, 1.0f)) * 180 / camera::PI;
@@ -448,13 +469,13 @@ inline void paint(State& ov, const world::World& w, const camera::Camera& cam, b
             offer(sx, sy, b.P + 1e6f, (int)i, true, at);
     }
 
-    std::unordered_map<uint32_t, std::vector<int>> markSite, markBand;
+    std::unordered_map<uint32_t, std::vector<int>>& markSite = ov.markSite;
+    std::unordered_map<uint32_t, std::vector<int>>& markBand = ov.markBand;
+    markSite.clear();
+    markBand.clear();
     gatherMarks(pf, markSite, markBand);
-    HBRUSH cream = CreateSolidBrush(RGB(238, 230, 208));
-    HBRUSH amber = CreateSolidBrush(RGB(232, 176, 66));
-    HBRUSH ink = CreateSolidBrush(RGB(96, 52, 28));
-    HPEN edge = CreatePen(PS_SOLID, 1, RGB(40, 28, 18));
-    HBRUSH edgeFill = CreateSolidBrush(RGB(40, 28, 18)); // the chip's dark rim
+    HBRUSH cream = ov.cream, amber = ov.amber, ink = ov.ink, edgeFill = ov.edgeFill;
+    HPEN edge = ov.edge;
     // Under a few pixels the outline is the whole marker, so it goes and the
     // fill speaks for itself.
     HGDIOBJ oldPen = SelectObject(dc, mr <= 2 ? GetStockObject(NULL_PEN) : (HGDIOBJ)edge);
@@ -536,7 +557,7 @@ inline void paint(State& ov, const world::World& w, const camera::Camera& cam, b
                 terrain::V3 gp = sim::granaryPos(st.cell, g);
                 if (!camera::projectToScreen(cam, {gp.x, gp.y, gp.z}, gx, gy)) continue;
                 int px = (int)std::lround(gx), py = (int)std::lround(gy);
-                drawChip(dc, population::EV_GRANARY, px - CHIP / 2, py - CHIP - 10, edgeFill,
+                drawChip(dc, ov, population::EV_GRANARY, px - CHIP / 2, py - CHIP - 10, edgeFill,
                          cream);
                 ov.markHits.push_back({px - CHIP / 2, py - CHIP - 10, CHIP, CHIP, st.id, 0});
                 HGDIOBJ op = SelectObject(dc, edgeFill);
@@ -546,11 +567,6 @@ inline void paint(State& ov, const world::World& w, const camera::Camera& cam, b
         }
     }
     SelectObject(dc, oldPen);
-    DeleteObject(cream);
-    DeleteObject(amber);
-    DeleteObject(ink);
-    DeleteObject(edge);
-    DeleteObject(edgeFill);
 }
 
 // The overlay is a function of the camera, the world and the window, so it

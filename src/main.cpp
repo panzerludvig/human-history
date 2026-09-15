@@ -609,7 +609,7 @@ int main(int argc, char** argv) {
     GLint uAwareCount = glGetUniformLocation(app.program, "uAwareCount");
 
     app.theme = theme::create();
-    overlay::createFonts(app.overlay);
+    overlay::init(app.overlay);
     menus::createControls(app.menu, app.hwnd, app.theme);
     app.news.wnd = CreateWindowA("IBNews", "", WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
                                  app.cam.width - news::NEWS_W, 56, news::NEWS_W,
