@@ -23,6 +23,7 @@ One header per concern under `src/`, each opening with the note it implements; e
 - `src/world.h` — a world: seed and menu parameters, and `World::build`, which derives everything from them in dependency order and reports each stage through a progress callback.
 - `src/savefile.h` — the save file: what the seed cannot regenerate, as keyed text lines; `src/test_savefile.cpp` (`build_testsavefile.bat`) round-trips a world through it.
 - `src/inspect.h` — what the viewer says about a place or a people, as text: the tooltip line and the panel tabs, all over a `const World&`.
+- `src/bmp.h` — the 24-bit BMP writer behind the self-screenshot.
 - `src/terrain.h`, `src/plates.h`, `src/hydrology.h`, `src/atmosphere.h` (with `atmosphere_geo.h`, `dynamics2.h`, `qg2.h`, `qg2geo.h`, `water2geo.h`), `src/daylight.h`, `src/population.h`, `src/technology.h`, `src/sim.h` — the world and its simulation, described in [[Technical/Globe Viewer]] and the design notes their headers name.
 
 ## External Tools & Libraries

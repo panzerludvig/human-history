@@ -22,7 +22,7 @@ There is no mesh. The fragment shader draws a full-screen triangle, casts a ray 
 
 The sun is a world-space direction computed from the sim clock: it laps the globe once per day westward (solar noon at longitude 0 at 12:00) and its declination swings +-23.5 degrees over the 365-day year, peaking at the June 21 solstice — so half the globe is always in night, the terminator is a soft band, the night side renders in dim blue, and the poles get midnight sun and polar night. Purely visual for now: nothing in the simulation reads the sun. With the clock paused the sun stands still; step time to move it.
 
-For testing, F2 saves a back-buffer screenshot to dbg_shot.bmp beside the exe, and a tenth argv parameter names a BMP file: the next rendered frame is saved from the back buffer with glReadPixels, which stays correct even when the window is occluded or the desktop is not compositing (PrintWindow can return white then).
+For testing, F2 saves a back-buffer screenshot to dbg_shot.bmp beside the exe, and a tenth argv parameter names a BMP file: the next rendered frame is saved from the back buffer with glReadPixels (written by `src/bmp.h`), which stays correct even when the window is occluded or the desktop is not compositing (PrintWindow can return white then).
 
 ## Atmosphere and climatology
 

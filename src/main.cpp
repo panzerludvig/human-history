@@ -29,6 +29,7 @@
 #include "world.h"
 #include "savefile.h"
 #include "inspect.h"
+#include "bmp.h"
 
 // Generation-stage feedback on the menu status line. The build runs on the
 // UI thread, so the label is repainted synchronously.
@@ -1998,45 +1999,6 @@ int main(int argc, char** argv) {
                             ? app.world.pop.cultures[sx.culture].name
                             : "?");
             }
-            { // CLIMATE ACCEPTANCE TEST (temporary instrumentation)
-                const atmosphere::Climatology& c = app.world.clim;
-                const int AW = atmosphere::W, AH = atmosphere::H;
-                auto wgt = [&](int y) {
-                    return std::cos(((y + 0.5) / (double)AH - 0.5) * 3.14159265);
-                };
-                double gT = 0, gR = 0, gw = 0;
-                for (int y = 0; y < AH; y++)
-                    for (int x = 0; x < AW; x++)
-                        for (int se = 0; se < atmosphere::SEASONS; se++) {
-                            int i = se * AW * AH + y * AW + x;
-                            gT += c.meanT[i] * wgt(y);
-                            gR += c.rainMmDay[i] * wgt(y);
-                            gw += wgt(y);
-                        }
-                fprintf(stderr, "WATER mm/day: evap %.2f, rain %.2f\n",
-                        app.world.clim.dbgEvap, app.world.clim.dbgRain);
-                fprintf(stderr, "CLIMATE global: mean %.1f C (target 15), rain %.2f mm/d "
-                                "(target 2.7)\n", gT / gw, gR / gw);
-                struct Spot { const char* name; float lat; int season; float want; };
-                const Spot spots[] = {
-                    {"equator      ", 0, 2, 27}, {"subtropics   ", 25, 2, 30},
-                    {"mid-lat sum  ", 50, 2, 20}, {"mid-lat win  ", 50, 0, -5},
-                    {"60N summer   ", 62, 2, 15}, {"60N winter   ", 62, 0, -25},
-                    {"polar summer ", 82, 2, 0},  {"polar winter ", 82, 0, -45},
-                };
-                for (const Spot& sp : spots) {
-                    int y = std::clamp((int)((sp.lat / 180.0f + 0.5f) * AH), 0, AH - 1);
-                    double sum = 0, srain = 0;
-                    int n = 0;
-                    for (int x = 0; x < AW; x++) {
-                        sum += c.meanT[sp.season * AW * AH + y * AW + x];
-                        srain += c.rainMmDay[sp.season * AW * AH + y * AW + x];
-                        n++;
-                    }
-                    fprintf(stderr, "  %s %6.1f C (want %5.1f)  rain %.2f\n", sp.name,
-                            sum / n, sp.want, srain / n);
-                }
-            }
             double tp = std::max(totalP, 1.0);
             fprintf(stderr,
                     "people: %.0f%% children, %.0f%% men, %.0f%% women, %.0f%% elderly\n",
@@ -2182,24 +2144,8 @@ int main(int argc, char** argv) {
                 int W = app.cam.width, H = app.cam.height;
                 std::vector<unsigned char> px(W * H * 3);
                 glReadPixels(0, 0, W, H, 0x80E0 /*GL_BGR*/, GL_UNSIGNED_BYTE, px.data());
-                int rowPad = (4 - (W * 3) % 4) % 4, stride = W * 3 + rowPad;
-                unsigned int imgSize = stride * H, fileSize = 54 + imgSize;
-                unsigned char hdr[54] = {'B', 'M'};
-                *(unsigned int*)(hdr + 2) = fileSize;
-                *(unsigned int*)(hdr + 10) = 54;
-                *(unsigned int*)(hdr + 14) = 40;
-                *(int*)(hdr + 18) = W;
-                *(int*)(hdr + 22) = H; // bottom-up, matching glReadPixels
-                *(unsigned short*)(hdr + 26) = 1;
-                *(unsigned short*)(hdr + 28) = 24;
-                *(unsigned int*)(hdr + 34) = imgSize;
-                std::ofstream f(app.shotPath, std::ios::binary);
-                f.write((char*)hdr, 54);
-                unsigned char pad[4] = {};
-                for (int yy = 0; yy < H; yy++) {
-                    f.write((char*)&px[yy * W * 3], W * 3);
-                    f.write((char*)pad, rowPad);
-                }
+                if (!bmp::write(app.shotPath, W, H, px.data()))
+                    fprintf(stderr, "shot: could not write %s\n", app.shotPath.c_str());
                 fprintf(stderr, "shot: %s\n", app.shotPath.c_str());
                 app.shotPath.clear();
             }
