@@ -28,6 +28,8 @@ One header per concern under `src/`, each opening with the note it implements; e
 - `src/overlay.h` — the marker overlay: settlements, bands, names and event marks drawn with GDI into an image the shader lays over the globe.
 - `src/theme.h` — the fonts and the background brush every window shares.
 - `src/menus.h` — the native Win32 controls of every screen: what exists and where it sits; what a control does is wired in `main.cpp`.
+- `src/panels.h` — the selection panels: a tabbed detail window per settlement or band, painted and hit-tested here; the window procedure in `main.cpp` calls in.
+- `src/news.h` — the news feed: the step's events grouped by kind, painted and clicked here; "Go to" hands the event back to `main.cpp`.
 - `src/terrain.h`, `src/plates.h`, `src/hydrology.h`, `src/atmosphere.h` (with `atmosphere_geo.h`, `dynamics2.h`, `qg2.h`, `qg2geo.h`, `water2geo.h`), `src/daylight.h`, `src/population.h`, `src/technology.h`, `src/sim.h` — the world and its simulation, described in [[Technical/Globe Viewer]] and the design notes their headers name.
 
 ## External Tools & Libraries

@@ -1,7 +1,8 @@
-// Human History — version 1: view the globe, zoom, pan.
-// Win32 + OpenGL, no external dependencies. The whole globe is raycast and
-// shaded procedurally in shaders/globe.frag; this file owns the window,
-// the camera, and input.
+// Human History — the game executable: the Win32 window and its message
+// loop, the GL context and the per-frame uniforms, and the wiring between
+// the modules that do the rest (Technical/Architecture.md lists them; the
+// viewer they make up is Technical/Globe Viewer.md). The whole globe is
+// raycast and shaded procedurally in shaders/globe.frag.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -10,10 +11,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
-#include <unordered_map>
 #include <string>
 #include <vector>
-#include <fstream>
 #include <algorithm>
 #include <random>
 #include <thread>
@@ -34,25 +33,14 @@
 #include "overlay.h"
 #include "theme.h"
 #include "menus.h"
+#include "panels.h"
+#include "news.h"
 
 // Generation-stage feedback on the menu status line. The build runs on the
 // UI thread, so the label is repainted synchronously.
 static void buildProgress(const char* stage);
 
 // ---------------------------------------------------------------- app state
-
-// A detail window for one settlement or band, opened by clicking its marker.
-// Settlement panels are tabbed (Environment / Technology / Buildings) and
-// custom-painted so tabs and technology rows are clickable; every panel is
-// repositioned by dragging anywhere that isn't a click target.
-struct Panel {
-    HWND wnd = nullptr;
-    int kind = 0;       // 0 settlement, 1 band
-    uint32_t sid = 0;   // settlement identity (indices shift when one moves away)
-    uint32_t bandId = 0;
-    int tab = 0;        // 0 environment, 1 technology, 2 buildings
-    int techSel = -1;   // selected tech in the tech tab, -1 = overview list
-};
 
 struct App {
     camera::Camera cam;
@@ -62,8 +50,7 @@ struct App {
     camera::Drag drag;
     int downX = 0, downY = 0;   // mouse-down spot, to tell a click from a drag
     bool clickMoved = false;
-    std::vector<Panel> panels;
-    int panelSpawn = 0;         // cascade offset for new panels
+    panels::State panels;
     // World generation runs on a worker thread so the window stays live; the
     // menus never render the globe, so the worker owns app.world meanwhile.
     std::thread genThread;
@@ -80,22 +67,13 @@ struct App {
     int octaves = 8;   // current level of detail, shared with the tooltip
     HWND hwnd = nullptr;
     theme::Theme theme;
-    HWND panelDrag = nullptr; // panel being dragged, with the grab offset
-    POINT panelDragOff{};
-    HWND news = nullptr;   // the feed down the right-hand side
-    int newsLevel = 0;     // 0 kinds, 1 the entries of one kind, 2 one entry
-    int newsKind = 0;      // which kind is open
-    int newsPick = 0;      // which entry is open
-    int newsScroll = 0;
-    bool newsOpen = true;  // collapsed to a tab on the right edge when false
+    news::State news;
     menus::State menu;
 };
 static App app;
 
 static void advanceDays(double days);
 static void updateDateLabel();
-static void closeAllPanels();
-static void refreshPanels();
 
 static void buildProgress(const char* stage) {
     fprintf(stderr, "build: %s%c", stage, 10);
@@ -109,14 +87,14 @@ static void buildProgress(const char* stage) {
 static void setScreen(menus::Screen s) {
     app.screen = s;
     ShowWindow(menus::control(app.menu, menus::ID_TOOLTIP), SW_HIDE);
-    if (s != menus::Screen::InGame) closeAllPanels();
+    if (s != menus::Screen::InGame) panels::closeAll(app.panels);
     app.dragging = false;
     if (s == menus::Screen::LoadMenu) menus::refreshWorldList(app.menu, savefile::list());
     if (s == menus::Screen::NewWorldMenu) menus::fillNewWorldFields(app.menu, app.world);
     if (s == menus::Screen::PauseMenu)
         SetWindowTextA(menus::control(app.menu, menus::ID_SAVE_NAME), app.world.name.c_str());
     menus::layoutControls(app.menu, app.screen, app.cam.width, app.cam.height);
-    if (app.news) ShowWindow(app.news, s == menus::Screen::InGame ? SW_SHOW : SW_HIDE);
+    if (app.news.wnd) ShowWindow(app.news.wnd, s == menus::Screen::InGame ? SW_SHOW : SW_HIDE);
     if (s == menus::Screen::InGame) {
         updateDateLabel();
         SetFocus(app.hwnd);
@@ -266,8 +244,6 @@ static void onCommand(int id) {
     }
 }
 
-inline int newsWidth(); // defined with the news feed, below
-
 static void updateTooltip(int x, int y) {
     HWND tip = menus::control(app.menu, menus::ID_TOOLTIP);
     camera::Vec3 hit;
@@ -280,100 +256,11 @@ static void updateTooltip(int x, int y) {
     int wdt = 12 + (int)txt.size() * 9;
     // Keep clear of the news feed: the tooltip follows the cursor, and the
     // feed is a window above it, so an unclamped label hides two lines of news.
-    int right = app.cam.width - (app.news && IsWindowVisible(app.news) ? newsWidth() : 0) - 4;
+    int right = app.cam.width -
+                (app.news.wnd && IsWindowVisible(app.news.wnd) ? news::width(app.news) : 0) - 4;
     int tx = std::min(x + 18, right - wdt), ty = y + 22;
     if (ty + 26 > app.cam.height) ty = y - 30;
     SetWindowPos(tip, HWND_TOP, tx, ty, wdt, 26, SWP_SHOWWINDOW | SWP_NOACTIVATE);
-}
-
-// ------------------------------------------------ selection detail panels
-// Custom-painted tabbed windows. Layout constants shared by painting and
-// hit-testing; tab hit slots are fixed x-ranges so no text measuring is
-// needed to route a click.
-
-constexpr int PANEL_W = 470, PANEL_H = 330, PANEL_BAND_H = 260;
-constexpr int PANEL_PAD = 12, PANEL_TAB_Y = 36, PANEL_TAB_H = 24, PANEL_CONTENT_Y = 70,
-              PANEL_LINE_H = 21;
-// Slot starts, plus the right edge as a final entry: painting draws each
-// label at its slot and hit-testing takes the span up to the next, so the
-// two cannot disagree.
-static const int PANEL_TAB_X[6] = {12, 74, 176, 270, 356, 420};
-static const char* PANEL_TABS[5] = {"People", "Environment", "Technology", "Buildings",
-                                    "History"};
-constexpr int PANEL_NTABS = 5;
-enum : int { TAB_PEOPLE = 0, TAB_ENV, TAB_TECH, TAB_BUILT, TAB_HISTORY };
-static std::string panelContent(const Panel& pn) {
-    if (pn.kind == 1) return inspect::bandText(app.world, pn.bandId);
-    int idx = inspect::settlementIndexById(app.world.pop, pn.sid);
-    if (idx < 0) return "This settlement is gone:\nthey picked up and moved on.";
-    const population::Settlement& st = app.world.pop.settlements[idx];
-    if (pn.tab == TAB_PEOPLE) return inspect::peopleText(app.world, st);
-    if (pn.tab == TAB_ENV) return inspect::envText(app.world, st);
-    if (pn.tab == TAB_BUILT) return inspect::buildingsText(st, app.world.simTime);
-    if (pn.tab == TAB_HISTORY) return inspect::historyText(app.world, st);
-    if (pn.techSel >= 0) return inspect::techDetailText(app.world, st, idx, pn.techSel);
-    std::string out;
-    for (int t = 0; t < population::NTECH; t++)
-        out += inspect::techStateLine(st.tech[t], t, app.world.simTime) + "\n";
-    out += "\n(click a technology for details)";
-    return out;
-}
-
-static Panel* panelFor(HWND h) {
-    for (Panel& p : app.panels)
-        if (p.wnd == h) return &p;
-    return nullptr;
-}
-
-// ------------------------------------------------ the news feed
-// What happened while the clock was running, grouped by kind: click a
-// group to see its entries, an entry to see the detail, and "Go to" to
-// put the camera on whoever it happened to.
-
-constexpr int NEWS_W = 320, NEWS_LINE = 20, NEWS_TOP = 40;
-// Collapsed, the feed is a tab just wide enough for the chevron and a
-// three-character count, and wide enough to be an easy click target.
-constexpr int NEWS_TAB_W = 34;
-// The chevron sits in the top-right of the open panel. Its hit box must
-// stay clear of the title, which is the way back up a level -- these two
-// x-ranges are the invariant: [12, NEWS_W-30) is the title, and
-// [NEWS_W-26, NEWS_W-6) is the chevron.
-constexpr int NEWS_CHEVRON_X = NEWS_W - 26, NEWS_CHEVRON_R = NEWS_W - 6;
-
-inline int newsWidth() { return app.newsOpen ? NEWS_W : NEWS_TAB_W; }
-
-static void layoutNews() {
-    if (!app.news) return;
-    int w = newsWidth();
-    int h = app.newsOpen ? app.cam.height - 76 : NEWS_TAB_W; // shut: a small square
-    SetWindowPos(app.news, nullptr, app.cam.width - w, 56, w, h, SWP_NOZORDER);
-    InvalidateRect(app.news, nullptr, TRUE);
-}
-static const char* NEWS_LABEL[population::EV_KINDS][2] = {
-    {"tribe abandoned its home", "tribes abandoned their homes"},
-    {"band of colonists set out", "bands of colonists set out"},
-    {"tribe settled again", "tribes settled again"},
-    {"new settlement founded", "new settlements founded"},
-    {"band gave up and joined another", "bands gave up and joined others"},
-    {"band perished on the road", "bands perished on the road"},
-    {"raid was launched", "raids were launched"},
-    {"settlement was raided", "settlements were raided"},
-    {"raid was beaten off", "raids were beaten off"},
-    {"raiding party came home", "raiding parties came home"},
-    {"technology was invented!", "technologies were invented!"},
-    {"settlement took up a technology", "settlements took up technologies"},
-    {"granary was built", "granaries were built"},
-    {"regional herd was hunted out", "regional herds were hunted out"},
-    {"people lost a technology", "peoples lost technologies"},
-    {"farmstead was raised", "farmsteads were raised"},
-};
-
-// The entries of one kind, in order.
-static std::vector<const population::Event*> newsEntries(int kind) {
-    std::vector<const population::Event*> v;
-    for (const population::Event& e : app.world.pop.events)
-        if (e.kind == kind) v.push_back(&e);
-    return v;
 }
 
 static void openPanel(int kind, uint32_t sid, uint32_t bandId, int tab = -1); // defined below
@@ -417,349 +304,50 @@ static void goToEvent(const population::Event& e) {
     app.cam.clampAltitude();
 }
 
-static void paintNews(HWND h) {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(h, &ps);
-    RECT rc;
-    GetClientRect(h, &rc);
-    FillRect(dc, &rc, app.theme.bgBrush);
-    SetBkMode(dc, TRANSPARENT);
-    SelectObject(dc, app.theme.panelBold);
-    if (!app.newsOpen) {
-        // Shut, the feed is a small square with the way back in. Whether
-        // there is news at all shows as the colour of the chevron.
-        int total = 0;
-        for (int k = 0; k < population::EV_KINDS; k++) total += app.world.pop.eventCount[k];
-        SetTextColor(dc, total ? RGB(255, 215, 130) : RGB(140, 140, 155));
-        TextOutA(dc, 12, 7, "<", 1);
-        EndPaint(h, &ps);
-        return;
-    }
-    SetTextColor(dc, RGB(235, 235, 240));
-    const char* title = app.newsLevel == 0 ? "What happened" : "< back";
-    TextOutA(dc, 12, 10, title, (int)strlen(title));
-    SetTextColor(dc, RGB(255, 215, 130));
-    TextOutA(dc, NEWS_CHEVRON_X, 10, ">", 1);
-    SelectObject(dc, app.theme.panelFont);
-    int y = NEWS_TOP;
-    int maxLines = (rc.bottom - NEWS_TOP) / NEWS_LINE - 1;
-    if (app.newsLevel == 0) {
-        bool any = false;
-        for (int k = 0; k < population::EV_KINDS; k++) {
-            int n = app.world.pop.eventCount[k];
-            if (!n) continue;
-            any = true;
-            char line[128];
-            snprintf(line, sizeof line, "%d %s", n, NEWS_LABEL[k][n == 1 ? 0 : 1]);
-            SetTextColor(dc, RGB(255, 215, 130));
-            TextOutA(dc, 12, y, line, (int)strlen(line));
-            y += NEWS_LINE;
-        }
-        if (!any) {
-            SetTextColor(dc, RGB(140, 140, 155));
-            const char* q = "Nothing of note.";
-            TextOutA(dc, 12, y, q, (int)strlen(q));
-        }
-    } else if (app.newsLevel == 1) {
-        std::vector<const population::Event*> v = newsEntries(app.newsKind);
-        for (int i = app.newsScroll; i < (int)v.size() && y < rc.bottom - NEWS_LINE; i++) {
-            SetTextColor(dc, RGB(255, 215, 130));
-            TextOutA(dc, 12, y, v[i]->text, (int)strlen(v[i]->text));
-            y += NEWS_LINE;
-        }
-        int shown = (int)v.size() - app.newsScroll;
-        if (shown > maxLines || app.world.pop.eventCount[app.newsKind] > (int)v.size()) {
-            SetTextColor(dc, RGB(140, 140, 155));
-            char more[96];
-            snprintf(more, sizeof more, "(%d of %d; scroll with the wheel)",
-                     std::min(shown, maxLines), app.world.pop.eventCount[app.newsKind]);
-            TextOutA(dc, 12, rc.bottom - NEWS_LINE, more, (int)strlen(more));
-        }
-    } else {
-        std::vector<const population::Event*> v = newsEntries(app.newsKind);
-        if (app.newsPick < (int)v.size()) {
-            const population::Event& e = *v[app.newsPick];
-            char line[160];
-            int yr = (int)(e.t / 365.0) + 1;
-            snprintf(line, sizeof line, "Year %d", yr);
-            SetTextColor(dc, RGB(230, 230, 235));
-            TextOutA(dc, 12, y, line, (int)strlen(line));
-            y += NEWS_LINE;
-            // The text is already the human account; wrap it over two lines.
-            std::string t = e.text;
-            size_t cut = t.size() > 40 ? t.rfind(' ', 40) : std::string::npos;
-            if (cut == std::string::npos) cut = t.size();
-            std::string l1 = t.substr(0, cut), l2 = cut < t.size() ? t.substr(cut + 1) : "";
-            TextOutA(dc, 12, y, l1.c_str(), (int)l1.size());
-            y += NEWS_LINE;
-            if (l2.size()) { TextOutA(dc, 12, y, l2.c_str(), (int)l2.size()); y += NEWS_LINE; }
-            int si = inspect::settlementIndexById(app.world.pop, e.sid),
-                s2 = inspect::settlementIndexById(app.world.pop, e.sid2);
-            if (si >= 0) {
-                snprintf(line, sizeof line, "Who: %s", app.world.pop.settlements[si].name);
-                TextOutA(dc, 12, y, line, (int)strlen(line));
-                y += NEWS_LINE;
-            }
-            if (s2 >= 0) {
-                snprintf(line, sizeof line, "Other party: %s", app.world.pop.settlements[s2].name);
-                TextOutA(dc, 12, y, line, (int)strlen(line));
-                y += NEWS_LINE;
-            }
-            if (e.amount > 0) {
-                snprintf(line, sizeof line, "How many: %d", (int)e.amount);
-                TextOutA(dc, 12, y, line, (int)strlen(line));
-                y += NEWS_LINE;
-            }
-            if (e.lossHere > 0 || e.lossThem > 0) {
-                snprintf(line, sizeof line, "Dead: %d here, %d attacking",
-                         (int)std::lround(e.lossHere), (int)std::lround(e.lossThem));
-                TextOutA(dc, 12, y, line, (int)strlen(line));
-                y += NEWS_LINE;
-            }
-            if (e.bandId) { // only events where somebody set out have a band
-                bool alive = false;
-                for (const population::Band& b : app.world.pop.bands)
-                    if (b.id == e.bandId) alive = true;
-                snprintf(line, sizeof line, "%s", alive ? "The band is still out there."
-                                                        : "They are back among their people.");
-                SetTextColor(dc, RGB(140, 140, 155));
-                TextOutA(dc, 12, y, line, (int)strlen(line));
-                y += NEWS_LINE;
-            }
-            y += 6;
-            SetTextColor(dc, RGB(255, 215, 130));
-            const char* go = "[ Go to ]";
-            TextOutA(dc, 12, y, go, (int)strlen(go));
-        }
-    }
-    EndPaint(h, &ps);
-}
-
 static LRESULT CALLBACK newsProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_PAINT:
-        paintNews(h);
+        news::paint(h, app.news, app.world, app.theme);
         return 0;
     case WM_MOUSEWHEEL:
-        if (app.newsLevel == 1) {
-            app.newsScroll = std::max(0, app.newsScroll - GET_WHEEL_DELTA_WPARAM(wp) / 120);
-            InvalidateRect(h, nullptr, TRUE);
-        }
+        news::wheel(app.news, h, GET_WHEEL_DELTA_WPARAM(wp));
         return 0;
     case WM_LBUTTONDOWN: {
-        int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
-        if (!app.newsOpen) { // the whole tab opens it again
-            app.newsOpen = true;
-            layoutNews();
-            return 0;
-        }
-        if (my < NEWS_TOP && mx >= NEWS_CHEVRON_X && mx < NEWS_CHEVRON_R) {
-            app.newsOpen = false; // out of the way, without losing the news
-            layoutNews();
-            return 0;
-        }
-        if (my < NEWS_TOP) { // the title doubles as the way back
-            if (app.newsLevel > 0) app.newsLevel--;
-            app.newsScroll = 0;
-            InvalidateRect(h, nullptr, TRUE);
-            return 0;
-        }
-        int row = (my - NEWS_TOP) / NEWS_LINE;
-        if (app.newsLevel == 0) {
-            int seen = 0;
-            for (int k = 0; k < population::EV_KINDS; k++) {
-                if (!app.world.pop.eventCount[k]) continue;
-                if (seen == row) {
-                    app.newsKind = k;
-                    app.newsLevel = 1;
-                    app.newsScroll = 0;
-                    break;
-                }
-                seen++;
-            }
-        } else if (app.newsLevel == 1) {
-            std::vector<const population::Event*> v = newsEntries(app.newsKind);
-            int idx = app.newsScroll + row;
-            if (idx < (int)v.size()) {
-                app.newsPick = idx;
-                app.newsLevel = 2;
-            }
-        } else {
-            std::vector<const population::Event*> v = newsEntries(app.newsKind);
-            if (app.newsPick < (int)v.size()) goToEvent(*v[app.newsPick]);
-        }
-        InvalidateRect(h, nullptr, TRUE);
+        const population::Event* e = news::click(app.news, h, app.world.pop, GET_X_LPARAM(lp),
+                                                 GET_Y_LPARAM(lp), app.cam.width, app.cam.height);
+        if (e) goToEvent(*e);
         return 0;
     }
     }
     return DefWindowProcA(h, msg, wp, lp);
 }
 
-static void refreshNews() {
-    if (!app.news) return;
-    app.newsLevel = 0;
-    app.newsScroll = 0;
-    ShowWindow(app.news, app.screen == menus::Screen::InGame ? SW_SHOW : SW_HIDE);
-    InvalidateRect(app.news, nullptr, TRUE);
-}
-
-static void paintPanel(HWND h) {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(h, &ps);
-    RECT rc;
-    GetClientRect(h, &rc);
-    FillRect(dc, &rc, app.theme.bgBrush);
-    SetBkMode(dc, TRANSPARENT);
-    Panel* pn = panelFor(h);
-    if (pn) {
-        char title[48];
-        if (pn->kind == 0) {
-            int si = inspect::settlementIndexById(app.world.pop, pn->sid);
-            const char* nm = si >= 0 ? app.world.pop.settlements[si].name : "";
-            snprintf(title, sizeof title, "%s", nm[0] ? nm : "Settlement");
-        } else {
-            const char* nm = "";
-            const char* what = "Band";
-            for (const population::Band& bd : app.world.pop.bands)
-                if (bd.id == pn->bandId) {
-                    nm = bd.name;
-                    what = bd.purpose == population::BAND_RAID ? "raiders"
-                           : bd.colonists                      ? "colonists"
-                                                               : "on the move";
-                }
-            if (nm[0]) snprintf(title, sizeof title, "%s %s", nm, what);
-            else snprintf(title, sizeof title, "Band %u", pn->bandId);
-        }
-        SelectObject(dc, app.theme.panelBold);
-        SetTextColor(dc, RGB(235, 235, 240));
-        TextOutA(dc, PANEL_PAD, 8, title, (int)strlen(title));
-        SelectObject(dc, app.theme.panelFont);
-        if (pn->kind == 0)
-            for (int t = 0; t < PANEL_NTABS; t++) {
-                SetTextColor(dc, pn->tab == t ? RGB(255, 225, 150) : RGB(140, 140, 155));
-                TextOutA(dc, PANEL_TAB_X[t], PANEL_TAB_Y, PANEL_TABS[t],
-                         (int)strlen(PANEL_TABS[t]));
-            }
-        std::string txt = panelContent(*pn);
-        int y = pn->kind == 0 ? PANEL_CONTENT_Y : PANEL_TAB_Y;
-        int row = 0;
-        size_t pos = 0;
-        while (pos <= txt.size()) {
-            size_t e = txt.find('\n', pos);
-            std::string line =
-                txt.substr(pos, e == std::string::npos ? std::string::npos : e - pos);
-            bool clickable = pn->kind == 0 && pn->tab == TAB_TECH &&
-                             ((pn->techSel < 0 && row < population::NTECH) ||
-                              (pn->techSel >= 0 && row == 0));
-            SetTextColor(dc, clickable ? RGB(255, 215, 130) : RGB(230, 230, 235));
-            TextOutA(dc, PANEL_PAD, y, line.c_str(), (int)line.size());
-            y += PANEL_LINE_H;
-            row++;
-            if (e == std::string::npos) break;
-            pos = e + 1;
-        }
-    }
-    EndPaint(h, &ps);
-}
-
-static void refreshPanels() {
-    for (const Panel& pn : app.panels) InvalidateRect(pn.wnd, nullptr, TRUE);
-}
-
-static void closeAllPanels() {
-    std::vector<Panel> panels = app.panels; // DestroyWindow mutates app.panels
-    for (const Panel& pn : panels)
-        if (IsWindow(pn.wnd)) DestroyWindow(pn.wnd);
-    app.panels.clear();
-    app.panelSpawn = 0;
-}
-
 static LRESULT CALLBACK panelProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_PAINT:
-        paintPanel(h);
+        panels::paint(h, app.panels, app.world, app.theme);
         return 0;
     case WM_COMMAND:
         if (LOWORD(wp) == 1) DestroyWindow(h);
         return 0;
     case WM_DESTROY:
-        if (app.panelDrag == h) { ReleaseCapture(); app.panelDrag = nullptr; }
-        for (size_t i = 0; i < app.panels.size(); i++)
-            if (app.panels[i].wnd == h) { app.panels.erase(app.panels.begin() + i); break; }
+        panels::onDestroy(app.panels, h);
         return 0;
-    case WM_LBUTTONDOWN: {
-        Panel* pn = panelFor(h);
-        int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
-        SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE); // raise on grab
-        if (pn && pn->kind == 0 && my >= PANEL_TAB_Y && my < PANEL_TAB_Y + PANEL_TAB_H) {
-            for (int t = 0; t < PANEL_NTABS; t++)
-                if (mx >= PANEL_TAB_X[t] && mx < PANEL_TAB_X[t + 1] - 6) {
-                    pn->tab = t;
-                    pn->techSel = -1;
-                    InvalidateRect(h, nullptr, TRUE);
-                    return 0;
-                }
-        }
-        if (pn && pn->kind == 0 && pn->tab == TAB_TECH && my >= PANEL_CONTENT_Y) {
-            int row = (my - PANEL_CONTENT_Y) / PANEL_LINE_H;
-            if (pn->techSel < 0 && row >= 0 && row < population::NTECH) {
-                pn->techSel = row;
-                InvalidateRect(h, nullptr, TRUE);
-                return 0;
-            }
-            if (pn->techSel >= 0 && row == 0) { // "< back"
-                pn->techSel = -1;
-                InvalidateRect(h, nullptr, TRUE);
-                return 0;
-            }
-        }
-        // Anywhere else grabs the window for dragging.
-        SetCapture(h);
-        app.panelDrag = h;
-        app.panelDragOff = {mx, my};
+    case WM_LBUTTONDOWN:
+        panels::onLeftDown(app.panels, h, GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;
-    }
     case WM_MOUSEMOVE:
-        if (app.panelDrag == h) {
-            POINT c;
-            GetCursorPos(&c);
-            ScreenToClient(app.hwnd, &c);
-            SetWindowPos(h, nullptr, c.x - app.panelDragOff.x, c.y - app.panelDragOff.y, 0, 0,
-                         SWP_NOSIZE | SWP_NOZORDER);
-        }
+        panels::onMouseMove(app.panels, h, app.hwnd);
         return 0;
     case WM_LBUTTONUP:
-        if (app.panelDrag == h) {
-            ReleaseCapture();
-            app.panelDrag = nullptr;
-        }
+        panels::onLeftUp(app.panels, h);
         return 0;
     }
     return DefWindowProcA(h, msg, wp, lp);
 }
 
 static void openPanel(int kind, uint32_t sid, uint32_t bandId, int tab) {
-    for (Panel& pn : app.panels)
-        if (pn.kind == kind && pn.sid == sid && pn.bandId == bandId) {
-            if (tab >= 0 && pn.tab != tab) {
-                pn.tab = tab;
-                pn.techSel = -1;
-                InvalidateRect(pn.wnd, nullptr, TRUE);
-            }
-            SetWindowPos(pn.wnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-            return; // already open: raise it instead of stacking a twin
-        }
-    int pw = PANEL_W, ph = kind == 0 ? PANEL_H : PANEL_BAND_H;
-    int x = 16 + (app.panelSpawn % 7) * 30, y = 56 + (app.panelSpawn % 7) * 30;
-    app.panelSpawn++;
-    HINSTANCE inst = GetModuleHandleA(nullptr);
-    HWND w = CreateWindowA("IBPanel", "", WS_CHILD | WS_BORDER | WS_VISIBLE | WS_CLIPSIBLINGS,
-                           x, y, pw, ph, app.hwnd, nullptr, inst, nullptr);
-    HWND btn = CreateWindowA("BUTTON", "X", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, pw - 34, 6, 24, 24,
-                             w, (HMENU)1, inst, nullptr);
-    SendMessageA(btn, WM_SETFONT, (WPARAM)app.theme.font, TRUE);
-    app.panels.push_back({w, kind, sid, bandId, tab > 0 ? tab : 0});
-    SetWindowPos(w, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    panels::open(app.panels, app.hwnd, app.theme.font, kind, sid, bandId, tab);
 }
 
 // A click on the globe: open a detail panel for the settlement or band whose
@@ -772,7 +360,8 @@ static void pickAt(int x, int y) {
     // would have given.
     for (const overlay::MarkHit& m : app.overlay.markHits)
         if (x >= m.x - 1 && x < m.x + m.w + 1 && y >= m.y - 1 && y < m.y + m.h + 1) {
-            if (m.sid) openPanel(0, m.sid, 0, TAB_HISTORY);
+            if (m.sid)
+                openPanel(0, m.sid, 0, panels::TAB_HISTORY);
             else if (m.bandId) openPanel(1, 0, m.bandId);
             return;
         }
@@ -834,8 +423,8 @@ static void advanceDays(double days) {
     if (pf.settlements.empty()) return;
     bool any = sim::simulate(pf, app.world.tech, app.world.hydro, app.world.clim, app.world.simTime);
     if (any && app.tex.popTex) textures::uploadPopulation(app.tex, app.world.pop);
-    refreshPanels();
-    refreshNews();
+    panels::refreshAll(app.panels);
+    news::refresh(app.news, app.screen == menus::Screen::InGame);
 }
 
 static void onEscape() {
@@ -864,8 +453,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         glViewport(0, 0, app.cam.width, app.cam.height);
         if (!app.menu.controls.empty())
             menus::layoutControls(app.menu, app.screen, app.cam.width, app.cam.height);
-        if (app.news)
-            layoutNews();
+        if (app.news.wnd) news::layout(app.news, app.cam.width, app.cam.height);
         return 0;
     case WM_COMMAND:
         if (HIWORD(wp) == BN_CLICKED) onCommand(LOWORD(wp));
@@ -1023,9 +611,9 @@ int main(int argc, char** argv) {
     app.theme = theme::create();
     overlay::createFonts(app.overlay);
     menus::createControls(app.menu, app.hwnd, app.theme);
-    app.news = CreateWindowA("IBNews", "", WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
-                             app.cam.width - NEWS_W, 56, NEWS_W, app.cam.height - 76, app.hwnd,
-                             nullptr, inst, nullptr);
+    app.news.wnd = CreateWindowA("IBNews", "", WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+                                 app.cam.width - news::NEWS_W, 56, news::NEWS_W,
+                                 app.cam.height - 76, app.hwnd, nullptr, inst, nullptr);
     app.cam.clampAltitude();
 
     // Testing shortcut:
@@ -1135,7 +723,7 @@ int main(int argc, char** argv) {
                 // Awareness zones for entities with open detail panels.
                 float aw[8 * 4] = {};
                 int nAw = 0;
-                for (const Panel& pn : app.panels) {
+                for (const panels::Panel& pn : app.panels.windows) {
                     if (nAw >= 8) break;
                     terrain::V3 e{};
                     float radius = 0;
