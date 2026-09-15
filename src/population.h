@@ -371,249 +371,318 @@ inline float foodFlow(const Settlement& s, const SeasonCtx& ctx, float R, double
                     s.kWater);
 }
 
-// Integrate a settlement from its valid time to `now` and schedule the next
-// re-evaluation at the moment its state will have drifted about 5%. Famine
-// can move at percent-per-day, so steps stay short and the horizon also
-// watches for the store crossing the hoarding threshold.
-inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
-    if (K <= 0) { s.t = now; s.nextUpdate = now + 3650; return false; }
-    float herdCap = s.pasture * s.claimKm2 * HERD_PASTURE_K / SUSTAIN_R *
-                    (0.3f + 0.7f * ctx.husbExp);
-    Cohorts pop = s.pop;
-    float P = pop.total(), R = s.R, S = s.S;
-    float granaries = s.granaries, buildWork = s.buildWork;
-    float fillLo = s.fillLo, fillHi = s.fillHi, granNeed = s.granNeedYrs;
-    float starved = s.starvedYr;
-    float bows = s.bows;
-    float fuelS = s.fuelS, coldYr = s.coldYr, labFuel = s.labFuel;
+// What advance() integrates, carried through one call: copied out of the
+// settlement at the start (loadStep), stepped in place by the functions
+// below, written back at the end (storeStep). The day's own values ride
+// along so each step function takes this and the settlement, not a dozen
+// scalars.
+struct Step {
+    // Carried across the sub-steps:
+    Cohorts pop;
+    float P = 0, R = 0, S = 0;
+    float granaries = 0, buildWork = 0;
+    float fillLo = 0, fillHi = 0, granNeed = 0;
+    float starved = 0, bows = 0;
+    float fuelS = 0, coldYr = 0, labFuel = 0;
     float fuelNet = 0; // kg/day the pile last gained or lost (horizon watch)
-    float farmsteads = s.farmsteads, fsteadWork = s.fsteadWork;
-    float tillWork = s.tillWork;
-    int tillSite = s.tillSite;
+    float farmsteads = 0, fsteadWork = 0, tillWork = 0;
+    int tillSite = -1;
     float sumTilled = 0;
-    for (int i = 0; i <= FSTEAD_MAX; i++) sumTilled += s.tilled[i];
-    double cycleT = s.cycleT;
-    float lat = std::asin(std::clamp(ctx.n.z, -1.0f, 1.0f));
-    float lon = std::atan2(ctx.n.y, ctx.n.x);
-    double span = now - s.t;
-    int steps = std::clamp((int)(span / 5.0) + 1, 1, 800);
-    float hstep = (float)(span / steps);
-    for (int k = 0; k < steps && hstep > 0; k++) {
-        double tk = s.t + (k + 0.5) * hstep;
-        float capDays = storageCapDays(P, granaries);
-        float flow = foodFlow(s, ctx, R, tk);
-        // The work day (daylight.h): daylight up to the waking cap, plus a
-        // firelight extension bought by hunger. The gather budget follows
-        // the hours; the 1.5/day constant is the 12-hour baseline.
-        float phiNow = P > 1 ? flow / P : 2.0f;
-        float wh = daylight::workHours(lat, tk, needRamp(phiNow));
-        float dP, dR, dS;
-        float dStarve;
-        derivatives(P, R, S, flow, K, capDays, GATHER_SETTLED * P * wh / 12.0f, dP, dR, dS,
-                    dStarve);
-        // Heat and the labour ledger (Design/Resources.md). Warmth is a
-        // demand like food's, and burning wood only its leading mode: the
-        // herd's dung burns too, and ordinary rounds sweep up deadfall (the
-        // byproduct) which covers the cooking fire wherever there are woods
-        // at all. Only the need past that pulls dedicated cutters out of
-        // the day's budget -- whatever the food work leaves free, and
-        // nothing while hunger has the stores down to hoarding: famine
-        // pre-empts the woods. The pile fills in the mild seasons and
-        // drains in winter; when it runs dry in the cold, the hands famine
-        // would take first are taken by the cold instead.
-        float dCold = 0;
-        if (HEAT_ENABLED) {
-            float needKg = fuelNeedKg(cachedSeasonT(s, tk)) * P;
-            float budget = P * wh / 12.0f; // man-days the day holds
-            // Food's claim on the budget is the harvest actually eaten or
-            // banked, not the notional maximum: a full larder frees hands.
-            float capS = capDays * std::max(P, 1.0f);
-            float Hfood = std::min(flow, GATHER_SETTLED * budget);
-            float useful =
-                std::min(Hfood, P + std::max(capS - S, 0.0f) / std::max(hstep, 1.0f));
-            float freeMD = std::max(budget - useful / GATHER_SETTLED, 0.0f);
-            float fillNow = std::clamp(S / capS, 0.0f, 1.0f);
-            float dung = s.herd * DUNG_KG_PER_FED;
-            float byp = P * WOOD_BYPRODUCT_KG * s.sWood;
-            float capKg = FUEL_CAP_KG * std::max(P, 1.0f);
-            float gatherKg = WOOD_GATHER_KG * s.sWood; // per man-day of cutting
-            float wantKg = std::max(needKg - dung - byp, 0.0f) +
-                           std::max(capKg - fuelS, 0.0f) / FUEL_PILE_DAYS;
-            float cutMD = gatherKg > 0 && fillNow > HOARD_FILL
-                              ? std::min(wantKg / gatherKg, freeMD)
-                              : 0.0f;
-            labFuel = budget > 0 ? cutMD / budget : 0.0f;
-            float inflow = dung + byp + cutMD * gatherKg;
-            // The hearth burns around the clock; no daylight factor here.
-            float burn = std::min(needKg * hstep, fuelS + inflow * hstep);
-            float unmet = needKg > 0 ? 1.0f - burn / (needKg * hstep) : 0.0f;
-            dCold = COLD_MAX * P * unmet * unmet;
-            fuelS = std::clamp(fuelS + inflow * hstep - burn, 0.0f, capKg);
-            fuelNet = inflow - needKg;
-        }
-        starved += (dStarve + dCold) * hstep;
-        starved *= std::max(1.0f - hstep / 365.0f, 0.0f); // trailing year
-        coldYr += dCold * hstep;
-        coldYr *= std::max(1.0f - hstep / 365.0f, 0.0f);
-        // Sub-day steps see the rhythm: harvesting and eating happen inside
-        // the day's activity window, so stores hold flat through the night.
-        double a = s.t + k * (double)hstep;
-        float act = hstep >= 1.0f
-                        ? 1.0f
-                        : (float)(daylight::activeDays(lon, a, a + hstep, wh) / hstep);
-        stepCohorts(pop, phiNow, dStarve + dCold, hstep);
-        P = pop.total();
-        R = std::clamp(R + dR * hstep, 0.0f, 1.0f);
-        float cap = capDays * std::max(P, 1.0f);
-        S = std::clamp(S + dS * hstep * act, 0.0f, cap);
-        // The annual fill cycle: track the store-fill extremes and judge
-        // granary demand once a year (see the constants above). The signal
-        // also feeds need-driven invention: consecutive binding years make
-        // an unaware settlement desperate enough to invent (technology.h).
-        float fill = S / cap;
-        fillLo = std::min(fillLo, fill);
-        fillHi = std::max(fillHi, fill);
-        if (tk - cycleT >= 365.0) {
-            bool binds = fillHi > GRANARY_HI && fillLo < GRANARY_LO;
-            granNeed = binds ? granNeed + 1.0f : 0.0f;
-            if (binds && buildWork <= 0 && ctx.granExp > 0) buildWork = GRANARY_WORK;
-            // Field demand, measured yearly like the granary's: a farming
-            // people whose food binds selects the next plot and clears it,
-            // as long as there are hands to work what stands (the 8 ha a
-            // person can tend). Where the sites in hand are all tilled up,
-            // the next order is a FARMSTEAD instead: move a household out
-            // and open a new block (sim::updateFarmland decides where the
-            // next plot would go and whether the next slot is worth it).
-            bool wantsLand = ctx.farmExp > 0 && needRamp(phiNow) > 0.1f &&
-                             sumTilled < P * FARM_KM2_PER_PERSON;
-            if (wantsLand && tillWork <= 0 && s.tillSiteNext >= 0) {
-                tillSite = s.tillSiteNext;
-                tillWork = PLOT_KM2 * TILL_WORK_PER_KM2;
-            }
-            if (wantsLand && s.tillSiteNext < 0 && fsteadWork <= 0 &&
-                farmsteads < s.fsteadMax && s.fsteadNextOk)
-                fsteadWork = FSTEAD_WORK;
-            cycleT = tk;
-            fillLo = fillHi = fill;
-        }
-        // Granary building (Design/Technology.md): only the fed divert
-        // labour, expertise sets the pace, materials set the gathering; the
-        // work total itself never changes.
-        if (buildWork > 0 && ctx.granExp > 0 && fill > HOARD_FILL) {
-            buildWork -= P * GRANARY_LABOUR_SHARE * ctx.granExp * s.buildMat * hstep;
-            if (buildWork <= 0) {
-                granaries += 1;
-                buildWork = 0;
-                if (s.builtGranaries < 250) s.builtGranaries++;
-            }
-        }
-        // A farmstead goes up the same way: settled farmers know how to
-        // raise a house, so farming expertise sets the pace.
-        if (fsteadWork > 0 && ctx.farmExp > 0 && fill > HOARD_FILL) {
-            fsteadWork -= P * FSTEAD_LABOUR_SHARE * ctx.farmExp * s.buildMat * hstep;
-            if (fsteadWork <= 0) {
-                farmsteads += 1;
-                fsteadWork = 0;
-                if (s.builtFsteads < 250) s.builtFsteads++;
-            }
-        }
-        // Clearing the plot: girdle, burn, stump, break. Fire and axes, not
-        // timber, so no materials factor -- skill and hands set the pace,
-        // and famine pauses it like any other work.
-        if (tillWork > 0 && tillSite >= 0 && ctx.farmExp > 0 && fill > HOARD_FILL) {
-            tillWork -= P * TILL_LABOUR_SHARE * (0.5f + 0.5f * ctx.farmExp) * hstep;
-            if (tillWork <= 0) {
-                float cap = tillSite == 0 ? VILLAGE_FIELDS_KM2 : FSTEAD_KM2;
-                float& t = s.tilled[std::clamp(tillSite, 0, FSTEAD_MAX)];
-                float add = std::min(PLOT_KM2, cap - t);
-                t += std::max(add, 0.0f);
-                sumTilled += std::max(add, 0.0f);
-                tillWork = 0;
-                tillSite = -1;
-            }
-        }
-        // Bows: one bowyer finishes one bow in BOW_WORK_DAYS however large
-        // the settlement, so a crowd only carves more of them at once. They
-        // are made up to one per hunter and no further, and they wear out.
-        if (ctx.archExp > 0) {
-            float want = P * BOW_PER_HUNTER;
-            float rate = 0;
-            if (bows < want)
-                rate = P * BOW_LABOUR_SHARE * s.buildMat /
-                       (BOW_WORK_DAYS / std::max(ctx.archExp, 0.2f));
-            bows = std::max(bows + (rate - bows / BOW_LIFE_DAYS) * hstep, 0.0f);
-        }
-        if (s.herd > 0 && herdCap > 0)
-            s.herd = std::clamp(s.herd + HERD_GROWTH_YR / 365.0f * s.herd *
-                                             (1.0f - s.herd / herdCap) * hstep,
-                                0.0f, herdCap * 1.05f);
-        else if (herdCap <= 0)
-            s.herd = 0;
+    double cycleT = 0;
+    // This sub-step:
+    double tk = 0;     // its midpoint, sim day
+    float hstep = 0;   // its length, days
+    float capDays = 0; // storage cap at its start
+    float flow = 0;    // the land's food flow at tk, rations/day
+    float phiNow = 0;  // flow per head
+    float wh = 0;      // the work day, hours
+    float fill = 0;    // store fill at its end, 0..1
+};
+
+inline Step loadStep(const Settlement& s) {
+    Step st;
+    st.pop = s.pop;
+    st.P = st.pop.total();
+    st.R = s.R;
+    st.S = s.S;
+    st.granaries = s.granaries;
+    st.buildWork = s.buildWork;
+    st.fillLo = s.fillLo;
+    st.fillHi = s.fillHi;
+    st.granNeed = s.granNeedYrs;
+    st.starved = s.starvedYr;
+    st.bows = s.bows;
+    st.fuelS = s.fuelS;
+    st.coldYr = s.coldYr;
+    st.labFuel = s.labFuel;
+    st.farmsteads = s.farmsteads;
+    st.fsteadWork = s.fsteadWork;
+    st.tillWork = s.tillWork;
+    st.tillSite = s.tillSite;
+    for (int i = 0; i <= FSTEAD_MAX; i++) st.sumTilled += s.tilled[i];
+    st.cycleT = s.cycleT;
+    return st;
+}
+
+inline void storeStep(Settlement& s, const Step& st) {
+    s.pop = st.pop;
+    s.P = st.P;
+    s.R = st.R;
+    s.S = st.S;
+    s.granaries = st.granaries;
+    s.buildWork = st.buildWork;
+    s.fillLo = st.fillLo;
+    s.fillHi = st.fillHi;
+    s.granNeedYrs = st.granNeed;
+    s.starvedYr = st.starved;
+    s.bows = st.bows;
+    s.fuelS = st.fuelS;
+    s.coldYr = st.coldYr;
+    s.labFuel = st.labFuel;
+    s.farmsteads = st.farmsteads;
+    s.fsteadWork = st.fsteadWork;
+    s.tillWork = st.tillWork;
+    s.tillSite = (int8_t)st.tillSite;
+    s.cycleT = st.cycleT;
+}
+
+// Heat and the labour ledger (Design/Resources.md). Warmth is a demand like
+// food's, and burning wood only its leading mode: the herd's dung burns
+// too, and ordinary rounds sweep up deadfall (the byproduct) which covers
+// the cooking fire wherever there are woods at all. Only the need past that
+// pulls dedicated cutters out of the day's budget -- whatever the food work
+// leaves free, and nothing while hunger has the stores down to hoarding:
+// famine pre-empts the woods. The pile fills in the mild seasons and drains
+// in winter; when it runs dry in the cold, the hands famine would take
+// first are taken by the cold instead. Returns the cold's deaths per day.
+inline float stepHeat(const Settlement& s, Step& st) {
+    if (!HEAT_ENABLED) return 0.0f;
+    float needKg = fuelNeedKg(cachedSeasonT(s, st.tk)) * st.P;
+    float budget = st.P * st.wh / 12.0f; // man-days the day holds
+    // Food's claim on the budget is the harvest actually eaten or banked,
+    // not the notional maximum: a full larder frees hands.
+    float capS = st.capDays * std::max(st.P, 1.0f);
+    float Hfood = std::min(st.flow, GATHER_SETTLED * budget);
+    float useful = std::min(Hfood, st.P + std::max(capS - st.S, 0.0f) / std::max(st.hstep, 1.0f));
+    float freeMD = std::max(budget - useful / GATHER_SETTLED, 0.0f);
+    float fillNow = std::clamp(st.S / capS, 0.0f, 1.0f);
+    float dung = s.herd * DUNG_KG_PER_FED;
+    float byp = st.P * WOOD_BYPRODUCT_KG * s.sWood;
+    float capKg = FUEL_CAP_KG * std::max(st.P, 1.0f);
+    float gatherKg = WOOD_GATHER_KG * s.sWood; // per man-day of cutting
+    float wantKg =
+        std::max(needKg - dung - byp, 0.0f) + std::max(capKg - st.fuelS, 0.0f) / FUEL_PILE_DAYS;
+    float cutMD = gatherKg > 0 && fillNow > HOARD_FILL ? std::min(wantKg / gatherKg, freeMD) : 0.0f;
+    st.labFuel = budget > 0 ? cutMD / budget : 0.0f;
+    float inflow = dung + byp + cutMD * gatherKg;
+    // The hearth burns around the clock; no daylight factor here.
+    float burn = std::min(needKg * st.hstep, st.fuelS + inflow * st.hstep);
+    float unmet = needKg > 0 ? 1.0f - burn / (needKg * st.hstep) : 0.0f;
+    float dCold = COLD_MAX * st.P * unmet * unmet;
+    st.fuelS = std::clamp(st.fuelS + inflow * st.hstep - burn, 0.0f, capKg);
+    st.fuelNet = inflow - needKg;
+    return dCold;
+}
+
+// The annual fill cycle: track the store-fill extremes and judge granary
+// demand once a year (see the constants in settlement.h). The signal also
+// feeds need-driven invention: consecutive binding years make an unaware
+// settlement desperate enough to invent (technology.h). Field demand is
+// measured yearly the same way: a farming people whose food binds selects
+// the next plot and clears it, as long as there are hands to work what
+// stands (the 8 ha a person can tend). Where the sites in hand are all
+// tilled up, the next order is a FARMSTEAD instead: move a household out
+// and open a new block (sim::updateFarmland decides where the next plot
+// would go and whether the next slot is worth it).
+inline void stepFillCycle(const Settlement& s, const SeasonCtx& ctx, Step& st) {
+    st.fillLo = std::min(st.fillLo, st.fill);
+    st.fillHi = std::max(st.fillHi, st.fill);
+    if (!(st.tk - st.cycleT >= 365.0)) return;
+    bool binds = st.fillHi > GRANARY_HI && st.fillLo < GRANARY_LO;
+    st.granNeed = binds ? st.granNeed + 1.0f : 0.0f;
+    if (binds && st.buildWork <= 0 && ctx.granExp > 0) st.buildWork = GRANARY_WORK;
+    bool wantsLand =
+        ctx.farmExp > 0 && needRamp(st.phiNow) > 0.1f && st.sumTilled < st.P * FARM_KM2_PER_PERSON;
+    if (wantsLand && st.tillWork <= 0 && s.tillSiteNext >= 0) {
+        st.tillSite = s.tillSiteNext;
+        st.tillWork = PLOT_KM2 * TILL_WORK_PER_KM2;
     }
-    bool changed = std::fabs(P - s.P) > 0.5f || std::fabs(R - s.R) > 0.002f ||
-                   granaries != s.granaries || farmsteads != s.farmsteads;
-    // What they have been living on pulls their affinities that way, over
-    // generations. Fighting is not fed from food; it comes from raiding
-    // and being raided, and fades in peace (sim.h).
-    {
-        float plant = (s.kFoodP - s.kGame - s.kSmall) * s.meanF;
-        float game = (s.kGame + s.kSmall) * s.meanF;
-        float crop = ctx.farmFlow;
-        float stock = s.herd * 0.85f + FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp;
-        float tot = std::max(plant + game + crop + stock, 1e-3f);
-        float k = std::min((float)(span / (AFFINITY_TAU_YEARS * 365.0)), 1.0f);
-        s.aff.gather += (plant / tot - s.aff.gather) * k;
-        s.aff.hunt += (game / tot - s.aff.hunt) * k;
-        s.aff.farm += (crop / tot - s.aff.farm) * k;
-        s.aff.herd += (stock / tot - s.aff.herd) * k;
-        s.aff.fight *= std::exp(-(float)(span / (FIGHT_FORGET_YEARS * 365.0)));
+    if (wantsLand && s.tillSiteNext < 0 && st.fsteadWork <= 0 && st.farmsteads < s.fsteadMax &&
+        s.fsteadNextOk)
+        st.fsteadWork = FSTEAD_WORK;
+    st.cycleT = st.tk;
+    st.fillLo = st.fillHi = st.fill;
+}
+
+// One build clock: `work` man-days left, paid down at `rate` man-days a
+// day. True on the sub-step it reaches zero; the work total itself never
+// changes, only the pace.
+inline bool workClock(float& work, float rate, float hstep) {
+    if (work <= 0) return false;
+    work -= rate * hstep;
+    if (work > 0) return false;
+    work = 0;
+    return true;
+}
+
+// The three things a settlement builds, each on the clock above: only the
+// fed divert labour, expertise sets the pace. Granaries and farmsteads are
+// timber and stone, so local materials set the gathering; a plot is cleared
+// with fire and axes -- girdle, burn, stump, break -- so hands and skill
+// alone set its pace.
+inline void stepBuilding(Settlement& s, const SeasonCtx& ctx, Step& st) {
+    if (!(st.fill > HOARD_FILL)) return; // famine pauses every build
+    if (ctx.granExp > 0 &&
+        workClock(st.buildWork, st.P * GRANARY_LABOUR_SHARE * ctx.granExp * s.buildMat, st.hstep)) {
+        st.granaries += 1;
+        if (s.builtGranaries < 250) s.builtGranaries++;
     }
-    s.pop = pop;
-    s.P = P;
-    s.R = R;
-    s.S = S;
-    s.granaries = granaries;
-    s.buildWork = buildWork;
-    s.fillLo = fillLo;
-    s.fillHi = fillHi;
-    s.granNeedYrs = granNeed;
-    s.starvedYr = starved;
-    s.bows = bows;
-    s.fuelS = fuelS;
-    s.coldYr = coldYr;
-    s.labFuel = labFuel;
-    s.farmsteads = farmsteads;
-    s.fsteadWork = fsteadWork;
-    s.tillWork = tillWork;
-    s.tillSite = (int8_t)tillSite;
-    s.cycleT = cycleT;
-    s.t = now;
+    if (ctx.farmExp > 0 &&
+        workClock(st.fsteadWork, st.P * FSTEAD_LABOUR_SHARE * ctx.farmExp * s.buildMat, st.hstep)) {
+        st.farmsteads += 1;
+        if (s.builtFsteads < 250) s.builtFsteads++;
+    }
+    if (st.tillSite >= 0 && ctx.farmExp > 0 &&
+        workClock(st.tillWork, st.P * TILL_LABOUR_SHARE * (0.5f + 0.5f * ctx.farmExp), st.hstep)) {
+        float cap = st.tillSite == 0 ? VILLAGE_FIELDS_KM2 : FSTEAD_KM2;
+        float& t = s.tilled[std::clamp(st.tillSite, 0, FSTEAD_MAX)];
+        float add = std::min(PLOT_KM2, cap - t);
+        t += std::max(add, 0.0f);
+        st.sumTilled += std::max(add, 0.0f);
+        st.tillSite = -1;
+    }
+}
+
+// Bows: one bowyer finishes one bow in BOW_WORK_DAYS however large the
+// settlement, so a crowd only carves more of them at once. They are made
+// up to one per hunter and no further, and they wear out.
+inline void stepBows(const Settlement& s, const SeasonCtx& ctx, Step& st) {
+    if (!(ctx.archExp > 0)) return;
+    float want = st.P * BOW_PER_HUNTER;
+    float rate = 0;
+    if (st.bows < want)
+        rate = st.P * BOW_LABOUR_SHARE * s.buildMat / (BOW_WORK_DAYS / std::max(ctx.archExp, 0.2f));
+    st.bows = std::max(st.bows + (rate - st.bows / BOW_LIFE_DAYS) * st.hstep, 0.0f);
+}
+
+// The herd grows logistically toward what the pasture in the claim can
+// carry, and is gone the day there is no pasture at all.
+inline void stepHerd(Settlement& s, float herdCap, float hstep) {
+    if (s.herd > 0 && herdCap > 0)
+        s.herd = std::clamp(s.herd + HERD_GROWTH_YR / 365.0f * s.herd * (1.0f - s.herd / herdCap) *
+                                         hstep,
+                            0.0f, herdCap * 1.05f);
+    else if (herdCap <= 0)
+        s.herd = 0;
+}
+
+// What they have been living on pulls their affinities that way, over
+// generations. Fighting is not fed from food; it comes from raiding and
+// being raided, and fades in peace (raids.h).
+inline void driftAffinity(Settlement& s, const SeasonCtx& ctx, double span) {
+    float plant = (s.kFoodP - s.kGame - s.kSmall) * s.meanF;
+    float game = (s.kGame + s.kSmall) * s.meanF;
+    float crop = ctx.farmFlow;
+    float stock = s.herd * 0.85f + FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp;
+    float tot = std::max(plant + game + crop + stock, 1e-3f);
+    float k = std::min((float)(span / (AFFINITY_TAU_YEARS * 365.0)), 1.0f);
+    s.aff.gather += (plant / tot - s.aff.gather) * k;
+    s.aff.hunt += (game / tot - s.aff.hunt) * k;
+    s.aff.farm += (crop / tot - s.aff.farm) * k;
+    s.aff.herd += (stock / tot - s.aff.herd) * k;
+    s.aff.fight *= std::exp(-(float)(span / (FIGHT_FORGET_YEARS * 365.0)));
+}
+
+// Schedule the next re-evaluation at the moment the state will have drifted
+// about 5%. The horizon comes from the ANNUAL-MEAN flow: the seasonal
+// oscillation is recurring, so a settlement in seasonal equilibrium still
+// sleeps long. Famine can move at percent-per-day, so the horizon also
+// watches for the store crossing the hoarding threshold, and a draining
+// woodpile is a deadline like a draining larder.
+inline void scheduleWake(Settlement& s, float K, const SeasonCtx& ctx, float fuelNet, double now) {
     float capDays = storageCapDays(s.P, s.granaries);
-    // Horizon from the ANNUAL-MEAN flow: the seasonal oscillation is
-    // recurring, so a settlement in seasonal equilibrium still sleeps long.
     float bigEffMean = huntEff(ctx.gameG) * (1.0f + BOW_BIG_GAIN * ctx.bowCover * ctx.archExp);
-    float forageBase =
-        (s.kFoodP - s.kGame - s.kSmall) * affinityBonus(ctx.aff.gather) +
-        (s.kGame * bigEffMean + s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp)) *
-            affinityBonus(ctx.aff.hunt);
-    float meanFlow = std::min(
-        (forageBase * s.meanF + ctx.farmFlow) * s.R, s.kWater);
+    float forageBase = (s.kFoodP - s.kGame - s.kSmall) * affinityBonus(ctx.aff.gather) +
+                       (s.kGame * bigEffMean + s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp)) *
+                           affinityBonus(ctx.aff.hunt);
+    float meanFlow = std::min((forageBase * s.meanF + ctx.farmFlow) * s.R, s.kWater);
     float dP, dR, dS, dStarveMean;
-    derivatives(s.P, s.R, s.S, meanFlow, K, capDays, GATHER_SETTLED * s.P, dP, dR, dS,
-                dStarveMean);
+    derivatives(s.P, s.R, s.S, meanFlow, K, capDays, GATHER_SETTLED * s.P, dP, dR, dS, dStarveMean);
     double horizon = 1800;
-    if (std::fabs(dP) > 1e-9) horizon = std::min(horizon, 0.05 * std::max(s.P, 50.0f) / std::fabs(dP));
-    if (std::fabs(dR) > 1e-9) horizon = std::min(horizon, 0.05 * std::max(s.R, 0.1f) / std::fabs(dR));
+    if (std::fabs(dP) > 1e-9)
+        horizon = std::min(horizon, 0.05 * std::max(s.P, 50.0f) / std::fabs(dP));
+    if (std::fabs(dR) > 1e-9)
+        horizon = std::min(horizon, 0.05 * std::max(s.R, 0.1f) / std::fabs(dR));
     if (dS < -1e-9) {
         double toHoard = (s.S - HOARD_FILL * capDays * s.P) / -dS;
         if (toHoard > 0) horizon = std::min(horizon, std::max(toHoard, 15.0));
     }
-    // A draining woodpile is a deadline like a draining larder: wake by the
-    // day it runs out (and keep waking while the hearths stand cold -- the
-    // population horizon above cannot see the cold's deaths).
-    if (fuelNet < -1e-6f)
-        horizon = std::min(horizon, std::max((double)(s.fuelS / -fuelNet), 15.0));
+    // Wake by the day the pile runs out (and keep waking while the hearths
+    // stand cold -- the population horizon above cannot see the cold's
+    // deaths).
+    if (fuelNet < -1e-6f) horizon = std::min(horizon, std::max((double)(s.fuelS / -fuelNet), 15.0));
     s.nextUpdate = now + std::max(horizon, 5.0);
+}
+
+// Integrate a settlement from its valid time to `now`, in sub-steps of at
+// most five days, then schedule the next re-evaluation (scheduleWake).
+// Each sub-step: the day's food flow and work day, the derivatives, the
+// hearth, the cohorts, the stores, then the annual judgement, the builds,
+// the bows and the herd. Returns whether anything visible changed.
+inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
+    if (K <= 0) {
+        s.t = now;
+        s.nextUpdate = now + 3650;
+        return false;
+    }
+    float herdCap =
+        s.pasture * s.claimKm2 * HERD_PASTURE_K / SUSTAIN_R * (0.3f + 0.7f * ctx.husbExp);
+    Step st = loadStep(s);
+    float lat = std::asin(std::clamp(ctx.n.z, -1.0f, 1.0f));
+    float lon = std::atan2(ctx.n.y, ctx.n.x);
+    double span = now - s.t;
+    int steps = std::clamp((int)(span / 5.0) + 1, 1, 800);
+    st.hstep = (float)(span / steps);
+    for (int k = 0; k < steps && st.hstep > 0; k++) {
+        st.tk = s.t + (k + 0.5) * st.hstep;
+        st.capDays = storageCapDays(st.P, st.granaries);
+        st.flow = foodFlow(s, ctx, st.R, st.tk);
+        // The work day (daylight.h): daylight up to the waking cap, plus a
+        // firelight extension bought by hunger. The gather budget follows
+        // the hours; the 1.5/day constant is the 12-hour baseline.
+        st.phiNow = st.P > 1 ? st.flow / st.P : 2.0f;
+        st.wh = daylight::workHours(lat, st.tk, needRamp(st.phiNow));
+        float dP, dR, dS, dStarve;
+        derivatives(st.P, st.R, st.S, st.flow, K, st.capDays, GATHER_SETTLED * st.P * st.wh / 12.0f,
+                    dP, dR, dS, dStarve);
+        float dCold = stepHeat(s, st);
+        st.starved += (dStarve + dCold) * st.hstep;
+        st.starved *= std::max(1.0f - st.hstep / 365.0f, 0.0f); // trailing year
+        st.coldYr += dCold * st.hstep;
+        st.coldYr *= std::max(1.0f - st.hstep / 365.0f, 0.0f);
+        // Sub-day steps see the rhythm: harvesting and eating happen inside
+        // the day's activity window, so stores hold flat through the night.
+        double a = s.t + k * (double)st.hstep;
+        float act = st.hstep >= 1.0f
+                        ? 1.0f
+                        : (float)(daylight::activeDays(lon, a, a + st.hstep, st.wh) / st.hstep);
+        stepCohorts(st.pop, st.phiNow, dStarve + dCold, st.hstep);
+        st.P = st.pop.total();
+        st.R = std::clamp(st.R + dR * st.hstep, 0.0f, 1.0f);
+        float cap = st.capDays * std::max(st.P, 1.0f);
+        st.S = std::clamp(st.S + dS * st.hstep * act, 0.0f, cap);
+        st.fill = st.S / cap;
+        stepFillCycle(s, ctx, st);
+        stepBuilding(s, ctx, st);
+        stepBows(s, ctx, st);
+        stepHerd(s, herdCap, st.hstep);
+    }
+    bool changed = std::fabs(st.P - s.P) > 0.5f || std::fabs(st.R - s.R) > 0.002f ||
+                   st.granaries != s.granaries || st.farmsteads != s.farmsteads;
+    driftAffinity(s, ctx, span);
+    storeStep(s, st);
+    s.t = now;
+    scheduleWake(s, K, ctx, st.fuelNet, now);
     return changed;
 }
 
