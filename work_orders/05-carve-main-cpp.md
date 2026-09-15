@@ -126,19 +126,19 @@ the texture uploads had to go somewhere too). `sim.h`, `population.h`, `technolo
 
 **Commands run** (PowerShell, from the worktree root):
 
-    cmd /c ".uild.bat"
+    cmd /c ".\build.bat"
     Start-Process build\humanhistory.exe -ArgumentList "20 30 12000 7 30 0.5 0 0 <shotPath>" -WorkingDirectory build
     # ... poll until <shotPath> exists and its size is unchanged over three half-second polls, then Stop-Process
     Get-FileHash -Algorithm SHA256 build\shot_base_N.bmp, build\shot_<step>_N.bmp   # compared per view
-    cmd /c ".uild_testsavefile.bat"
-    build	est_savefile.exe 7 3
+    cmd /c ".\build_testsavefile.bat"
+    build\test_savefile.exe 7 3
 
 The argv list in the launch instructions matched `main.cpp`'s harness
 (`<lat> <lon> <altKm> <seed> <land%> <conc%> <debugmode> <years> <shotPath>`); note
 `conc` is a percentage, so 0.5 is half a percent. The baseline and per-step `.bmp` files
 are under `build\` in the worktree (`shot_base_N.bmp`, `shot_<step>_N.bmp`), untracked.
 
-**Probe output** (`build	est_savefile.exe 7 3`, after the final commit):
+**Probe output** (`build\test_savefile.exe 7 3`, after the final commit):
 
     saved: seed 7, year 3.0, 401 settlements, 0 bands, 400 cultures, 6 scars, 0 ruins
     roundtrip seed 7 year 3.0: 61352 fields compared, 0 mismatches -- PASS
