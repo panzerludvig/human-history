@@ -58,7 +58,7 @@ Parked topics and in-progress decisions that are too big for a quick note and no
 
 ## Code Standards
 
-_To be filled in once there is code._
+Rules for the code live in `standards/` at the repo root, outside the vault: `standards/general.md` (modules, naming with units, mirrored CPU/GPU code, verification by probes), `standards/cpp.md` (build, numbers, hot paths, formatting) and `standards/agent-use.md` (how corrections become rules, what an agent never does unasked). `CLAUDE.md` imports them at launch. They are repo-local for now; a rule that proves project-agnostic moves to a shared standards repo when a second code project needs it. A correction given during a session that applies beyond the task is written into these files in the same session.
 
 ---
 
