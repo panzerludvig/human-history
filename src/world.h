@@ -41,8 +41,15 @@ inline std::string exeDir() {
 }
 
 // Generation-stage feedback: the game puts it on the menu status line, a
-// probe on stderr. Called with "" when the build is done.
+// probe on stderr. Called with "" when the build is done. A probe that wants
+// no feedback passes nullptr.
 using ProgressFn = void (*)(const char* stage);
+
+// The stages of a build, in dependency order. The game builds through the
+// last; a probe stops at the stage it measures (standards/general.md
+// §Verification: the probes build the same world the game does, so the
+// chain is written once here and cut short, never copied).
+enum class Stage { Plates, SeaLevel, Hydrology, Climate, Rivers, Settlements };
 
 // Drainage area above which a cell is a river, both when the rivers are
 // first traced and when the painted rain reweights them.
@@ -72,6 +79,12 @@ struct World {
     technology::WorldState tech;
     atmosphere::Climatology clim;
 
+    // The offset as the terrain samplers take it: float, where the camera's
+    // vector is double (standards/cpp.md §Numbers).
+    terrain::V3 terrainOffset() const {
+        return {(float)offset.x, (float)offset.y, (float)offset.z};
+    }
+
     void derive() {
         std::mt19937 rng(seed);
         std::uniform_real_distribution<double> ang(0.0, 2 * camera::PI), off(-2.0, 2.0);
@@ -91,32 +104,48 @@ struct World {
     }
 
     // Everything derived from the seed, in dependency order:
-    // plates -> sea level (land %) -> hydrology -> climate -> settlements.
-    void build(ProgressFn progress) {
+    // plates -> sea level (land %) -> hydrology -> climate -> settlements,
+    // or as far as upTo says.
+    void build(ProgressFn progress, Stage upTo = Stage::Settlements) {
         derive();
         activeProgress = progress;
-        terrain::V3 off = {(float)offset.x, (float)offset.y, (float)offset.z};
+        buildStages(progress, upTo);
+        if (progress) progress("");
+        activeProgress = nullptr;
+    }
+
+    // The stages themselves; build wraps them with the progress bookkeeping.
+    void buildStages(ProgressFn progress, Stage upTo) {
+        auto say = [progress](const char* stage) {
+            if (progress) progress(stage);
+        };
+        terrain::V3 off = terrainOffset();
         terrain::TEMPLATE.active = earth;
         if (earth && terrain::TEMPLATE.elev.empty() &&
             !terrain::loadTemplate(exeDir() + "\\data\\earth.bin")) {
-            progress("data\\earth.bin is missing: generating a random world instead");
+            say("data\\earth.bin is missing: generating a random world instead");
             earth = false;
             terrain::TEMPLATE.active = false;
         }
-        progress("Shaping tectonic plates...");
+        say("Shaping tectonic plates...");
         plateField = plates::build(seed);
-        progress("Setting the sea level...");
+        if (upTo == Stage::Plates) return;
+        say("Setting the sea level...");
         seaLevel = terrain::seaLevelFor(landPercent / 100.0f, cp, rot, off, plateField);
-        progress("Tracing rivers and lakes...");
+        if (upTo == Stage::SeaLevel) return;
+        say("Tracing rivers and lakes...");
         hydro = hydrology::build(cp, seaLevel, rot, off, RIVER_THRESHOLD_KM2, plateField);
+        if (upTo == Stage::Hydrology) return;
         clim = atmosphere::build(cp, seaLevel, rot, off, plateField, hydro, false,
                                  [](int day, int total) {
+                                     if (!activeProgress) return;
                                      char b[80];
                                      snprintf(b, sizeof b, "Simulating climate... year %d of %d",
                                               day / 365 + 1, (total + 364) / 365);
                                      activeProgress(b);
                                  });
-        progress("Watering rivers from the rain...");
+        if (upTo == Stage::Climate) return;
+        say("Watering rivers from the rain...");
         {
             std::vector<float> annual(atmosphere::W * atmosphere::H, 0.0f);
             std::vector<float> annualT(atmosphere::W * atmosphere::H, 0.0f);
@@ -130,11 +159,10 @@ struct World {
             hydrology::reweight(hydro, annual, annualT, atmosphere::W, atmosphere::H,
                                 RIVER_THRESHOLD_KM2);
         }
-        progress("Placing settlements...");
+        if (upTo == Stage::Rivers) return;
+        say("Placing settlements...");
         pop = population::build(cp, seaLevel, rot, off, plateField, hydro, &clim);
         technology::init(pop, tech, seed, simTime);
-        progress("");
-        activeProgress = nullptr;
     }
 };
 

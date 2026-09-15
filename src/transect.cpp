@@ -7,40 +7,21 @@
 // actually wrong: a world can have the right amount of rain and put all of it
 // in the wrong place.
 //
-//   cl /O2 /openmp /EHsc /std:c++17 src\transect.cpp /Fe:build\transect.exe
+//   build_transect.bat, then build\transect.exe [seed]
 #include <cmath>
 #include <cstdio>
-#include <random>
 #include <string>
 #include <vector>
-#include "terrain.h"
-#include "hydrology.h"
-#include "atmosphere.h"
+#include "world.h"
 
 int main(int argc, char** argv) {
-    uint32_t seed = argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7;
-    float landPct = 30.0f, conc = 50.0f;
-
-    std::mt19937 rng(seed);
-    std::uniform_real_distribution<double> ang(0.0, 2 * 3.14159265358979), off(-2.0, 2.0);
-    double a = ang(rng), b = ang(rng), cgl = ang(rng);
-    double ca = cos(a), sa = sin(a), cb = cos(b), sb = sin(b), cc = cos(cgl), sc = sin(cgl);
-    double mm[3][3] = {
-        {ca * cb, ca * sb * sc - sa * cc, ca * sb * cc + sa * sc},
-        {sa * cb, sa * sb * sc + ca * cc, sa * sb * cc - ca * sc},
-        {-sb, cb * sc, cb * cc},
-    };
-    float rot[9];
-    for (int col = 0; col < 3; col++)
-        for (int row = 0; row < 3; row++) rot[col * 3 + row] = (float)mm[row][col];
-    terrain::V3 offset = {(float)off(rng), (float)off(rng), (float)off(rng)};
-    terrain::ContinentParams cp = terrain::paramsFor(conc / 100.0f);
+    world::World globe;
+    globe.seed = argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7;
+    globe.concentration = 50.0f; // land 30%, the default
 
     fprintf(stderr, "building...\n");
-    plates::Field pf = plates::build(seed);
-    float seaLevel = terrain::seaLevelFor(landPct / 100.0f, cp, rot, offset, pf);
-    hydrology::Result hy = hydrology::build(cp, seaLevel, rot, offset, 12000.0f, pf);
-    atmosphere::Climatology c = atmosphere::build(cp, seaLevel, rot, offset, pf, hy, false);
+    globe.build(nullptr, world::Stage::Climate);
+    const atmosphere::Climatology& c = globe.clim;
 
     const int W = atmosphere::W, H = atmosphere::H, S = atmosphere::SEASONS;
     auto at = [&](const std::vector<float>& v, int se, int x, int y) {

@@ -20,7 +20,7 @@ One header per concern under `src/`, each opening with the note it implements; e
 - `src/main.cpp` — the window, the render loop and the wiring between the modules below.
 - `src/gl.h` — the OpenGL entry points loaded by hand and the shader program built from `shaders\`.
 - `src/camera.h` — the camera above the globe, its vector algebra, and the zoom and drag rules that move it.
-- `src/world.h` — a world: seed and menu parameters, and `World::build`, which derives everything from them in dependency order and reports each stage through a progress callback.
+- `src/world.h` — a world: seed and menu parameters, and `World::build`, which derives everything from them in dependency order and reports each stage through a progress callback. The build stops at the `world::Stage` it is asked for (plates, sea level, hydrology, climate, rivers, settlements); the game builds through the last, and every probe that needs a world (`src/sweep.cpp`, `src/test_atmo.cpp`, `src/test_resources.cpp`, `src/transect.cpp`, `src/terrprobe.cpp`) builds it through the same call, so the probes measure the world the game draws.
 - `src/savefile.h` — the save file: what the seed cannot regenerate, as keyed text lines; `src/test_savefile.cpp` (`build_testsavefile.bat`) round-trips a world through it.
 - `src/inspect.h` — what the viewer says about a place or a people, as text: the tooltip line and the panel tabs, all over a `const World&`.
 - `src/bmp.h` — the 24-bit BMP writer behind the self-screenshot.
@@ -31,6 +31,7 @@ One header per concern under `src/`, each opening with the note it implements; e
 - `src/panels.h` — the selection panels: a tabbed detail window per settlement or band, painted and hit-tested here; the window procedure in `main.cpp` calls in.
 - `src/news.h` — the news feed: the step's events grouped by kind, painted and clicked here; "Go to" hands the event back to `main.cpp`.
 - `src/terrain.h`, `src/plates.h`, `src/hydrology.h`, `src/atmosphere.h` (with `atmosphere_geo.h`, `dynamics2.h`, `qg2.h`, `qg2geo.h`, `water2geo.h`), `src/daylight.h`, `src/population.h`, `src/technology.h`, `src/sim.h` — the world and its simulation, described in [[Technical/Globe Viewer]] and the design notes their headers name.
+- The probes, each an executable with its own `build_*.bat` (`standards/general.md` §Verification): `src/sweep.cpp` (`build\sweep.exe`) is the climate census — one function per report, run in order or picked by name in the fifth argument, e.g. `build\sweep.exe earth 0 rules 1 review,landcover`; `src/transect.cpp`, `src/terrprobe.cpp`, `src/test_atmo.cpp`, `src/test_resources.cpp`, `src/test_savefile.cpp`, `src/test_qg2geo.cpp`, `src/gridtest.cpp`, `src/solvetest.cpp` state their run lines in their header comments.
 
 ## External Tools & Libraries
 _None._
