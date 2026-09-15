@@ -11,6 +11,9 @@ Each suggestion includes a timestamp and a reference to what prompted it. Ask fo
 Suggestion text.
 -->
 
+### 2026-09-15 — Frame-rate bisect while drawing tilled plots
+Close-zoom frame rate is bound by the procedural terrain, not by anything drawn on it: measured on the Arc 140V at 4 km altitude, the whole field layer costs 12→15 fps while the remaining ~65 ms/frame is the 16-octave terrain evaluation (`uOctaves` ramps to 16 as km/pixel shrinks). If close zoom should run at 60 fps, the lever is terrain LOD — e.g. rendering the high-octave detail into a cached local tile texture when the camera lingers, or capping octaves and blending in a baked detail texture — a project of its own, not a fields tweak.
+
 ### 2026-09-07 — [[Technical/Climate Review]], the world review on the Earth template
 Target the water's residence time in the air as the one number to calibrate the rain rule against: 3.5 days here, 9 on Earth. The over-wet coasts and the empty interiors are both that number, and it is measured directly by the sweep (`Wv / rain`), so it carries to any world without an Earth to compare against.
 
