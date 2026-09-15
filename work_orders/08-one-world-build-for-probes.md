@@ -66,7 +66,7 @@ must build the same world the game does), `standards/cpp.md` §Shape. The probe 
 
 ## Run
 
-**Status:** done (pending merge). Branch `wo/08-one-world-build`, forked from `8c1d5e2`
+**Status:** done (merged into `nightly/2026-09-15`, see below). Branch `wo/08-one-world-build`, forked from `8c1d5e2`
 (the head of `nightly/2026-09-15` after orders 03, 04 and 05).
 
 Commits, one per step:
@@ -171,3 +171,10 @@ the reports are lakes vote score ... cloud` and exits 1.
   function); steps 1 and 3 formatted changed lines only.
 - The capture scripts and the baseline `test_atmo` built from `8c1d5e2` are under `build\`
   in the worktree (`probe_base`, `probe_step1..3`), untracked.
+
+**Merged into `nightly/2026-09-15`** as `c7ad22a`, last of the night, after 03, 04 and 05.
+Second probe on `nightly`: every `build_*.bat` succeeds; `build\sweep.exe earth 0 rules 1`,
+`build\sweep.exe 7 0 rules 1` and `build\test_resources.exe 7 40` stderr, and the
+`map_seed7.ppm` and `rain_seedearth.ppm` images, are byte-identical to the `8c1d5e2`
+baseline (32372, 19885, 24980, 55310, 55310 bytes). The probes must be run from the repo
+root, where `data/` is; run from `build\` they fail to find the Earth template.
