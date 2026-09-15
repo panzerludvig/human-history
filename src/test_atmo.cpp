@@ -1,6 +1,7 @@
 // Standalone atmosphere test: build a world's terrain pipeline, run the
 // atmosphere generator, and dump climatology maps as BMPs for inspection.
-// cl /O2 /EHsc /std:c++17 src\test_atmo.cpp /Fe:build\test_atmo.exe
+//
+//   build_testatmo.bat, then build\test_atmo.exe [seed] [outDir]
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
