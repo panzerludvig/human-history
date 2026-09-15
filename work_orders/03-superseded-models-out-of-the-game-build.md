@@ -76,7 +76,7 @@ reference code lives on a named branch in the branch map) and `standards/cpp.md`
 
 ## Run
 
-**Status:** done (pending merge). Branch `wo/03-superseded-models`, forked from `4ac16a0`.
+**Status:** done (merged into `nightly/2026-09-15`, see below). Branch `wo/03-superseded-models`, forked from `4ac16a0`.
 
 Commits, one per step:
 
