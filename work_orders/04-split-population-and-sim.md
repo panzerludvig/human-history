@@ -1,6 +1,6 @@
 # 04 — Split population.h and sim.h by concern
 
-**Status:** in progress (2026-09-15)
+**Status:** done (2026-09-15)
 
 ## Problem
 
@@ -81,3 +81,77 @@ migration order.
 ## Depends on
 
 Nothing. Independent of 01-03.
+
+## Run
+
+**done** (pending merge), 2026-09-15. Branch `wo/04-split-population`, forked
+from `4ac16a0`. One commit per step, in order:
+
+- `07bfdfa` step 1: `settlement.h` carved out of `population.h`; `newSettlement`
+  replaces both positional initialisers.
+- `ec259ab` step 2: `advance` over `population::Step`; seven step functions; one
+  `workClock` for the three build clocks.
+- `a41e4d5` step 3: `sim.h` carved into `sphere.h`, `events.h`, `claims.h`,
+  `farmland.h`, `raids.h`, `bands.h`; queue kinds are `enum class Due` with an
+  exhaustive switch; `decaySkills` to `technology.h`.
+- `60f35a6` step 4: `population::foodTerms` / `effectiveFood`, `technology::annualCtx`;
+  the four sites assemble from the terms.
+- `b3589d5` step 5: the 27 `using namespace population;` lines removed, names
+  qualified; header descriptions reworded; two vault notes updated.
+
+Probe. Baseline from the untouched tree at `4ac16a0`, then after every step:
+
+    build_testresources.bat
+    build\test_resources.exe 7 40  > build\<tag>_7_40.txt 2> build\<tag>_7_40.err
+    build\test_resources.exe 3 40  > build\<tag>_3_40.txt 2> build\<tag>_3_40.err
+
+The probe writes everything to stderr (stdout is empty for both seeds). Result after
+each of the five steps, and after the final commit: **identical** to the baseline,
+byte for byte (SHA-256 of the files compared), for both seeds. Last five lines of each:
+
+    seed 7:
+      wooded (>50%)      377    148930   0.9%
+
+    baseline by wood cover: treeless 0 /        0, sparse 26 /     1873, wooded 376 /   149174
+    baseline: 0 settlements farm (0 people); 0 km2 tilled, 0 plots being cleared; fields feed 0; 0 farmsteads stand, 0 going up
+    heat    : 0 settlements farm (0 people); 0 km2 tilled, 0 plots being cleared; fields feed 0; 0 farmsteads stand, 0 going up
+
+    seed 3:
+      wooded (>50%)      394    157614   0.8%
+
+    baseline by wood cover: treeless 0 /        0, sparse 6 /     1141, wooded 395 /   157400
+    baseline: 0 settlements farm (0 people); 0 km2 tilled, 0 plots being cleared; fields feed 0; 0 farmsteads stand, 0 going up
+    heat    : 0 settlements farm (0 people); 0 km2 tilled, 0 plots being cleared; fields feed 0; 0 farmsteads stand, 0 going up
+
+`grep -rn "using namespace" src/*.h` prints nothing. `build.bat` and
+`build_testresources.bat` succeed after every step with the same seven pre-existing
+C4996 warnings (fopen, getenv) and no new ones.
+
+Header descriptions: the first sentence of every header this order created or touched
+(`settlement.h`, `population.h`, `technology.h`, `sim.h`, `sphere.h`, `events.h`,
+`claims.h`, `farmland.h`, `raids.h`, `bands.h`) contains no "and"; that is the
+criterion applied.
+
+Unsure of, for the morning:
+
+- **One file beyond the list:** `src/sphere.h` (cellCentre, cellOf, distKm, norm3,
+  moveToward). Every carved header uses them and they belong to none of them.
+- **Namespaces:** the carved headers stay in `namespace sim` and `settlement.h` in
+  `namespace population`, because `main.cpp` (order 05) qualifies their names
+  (`sim::cellCentre`, `population::Settlement`, ...). One namespace per header holds;
+  a namespace now spans several headers.
+- **Step 4 is not quite "one function"** at the fourth site. `sim::gameTick` takes
+  every term from `foodTerms` except the herds' flow, which it multiplies in its old
+  order `(kGame * huntEff) * bows * meanF`; `f.bigGame` groups the same factors as
+  `kGame * (huntEff * bows)`, and that rounding moved the seed-7 probe by one person
+  (people 151047 -> 151048). Written next to the code as a deviation. Making the other
+  three sites match gameTick instead would push the rounding into `K` and every
+  settlement's R integration, so it was not tried.
+- **`decaySkills` moved to `technology.h`**, which therefore includes `events.h`
+  (`sim::note`) — a lower header naming a `sim` function. `gameTick` stays in `sim.h`
+  for the same reason in reverse.
+- **Two notes touched outside the Files list:** `Technical/Globe Viewer.md` (two
+  phrases) and `Design/Borders.md` (one sentence), so every path they name exists.
+- **Line endings:** `sim.h` had a UTF-8 BOM and CRLF in the working copy; the new
+  files are LF without BOM (the index is LF for all headers under `text=auto`).
+- Order 05's line references into `sim.h` and `population.h` are stale after this.
