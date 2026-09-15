@@ -73,3 +73,9 @@ After completing any instruction, if new suggestions were added, Claude should s
 ## Todo
 
 Concrete, actionable tasks live in [[Meta/Todo]] — as distinct from [[Meta/Suggestions]], which are options to consider rather than things to do. Either Claude or the user can add items; remove them once done.
+
+---
+
+## Work Orders
+
+Planned changes that a coding agent can finish unattended live in `work_orders/` at the repo root, one file per order, numbered in queue order. The developer writes and queues orders during the day, a run implements them at night on one branch per order merged into a nightly branch, and the morning review keeps, reverts or reworks each result; merging into `main` is the developer's deliberate act. The one-line test for which note a new item goes in: a todo is a task with no design, a suggestion is an option, an open thread is an undecided question, a work order is a described problem with a checkable finish line. The process and its reasons are in [[Meta/Work Orders]]; the file format and the rules a run follows are in `work_orders/README.md`.

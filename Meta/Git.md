@@ -23,6 +23,8 @@ Commit directly to `main` while the project is notes-only. Commit at the end of 
 
 **The rule, and why.** Before starting work on a branch other than the working one, or forking a new working branch, list every branch that is ahead of `main` and say in [[Meta/Open Threads]] what each holds and whether it is merged. The geodesic grid was built on `climate-wind` on 2026-09-02, the working line forked the day before, nothing in the vault mentioned the mesh, and five days of atmosphere work were then built on the grid the mesh had replaced ([[Technical/Geodesic Grid]]). Work that is not on the working branch and not in the vault does not exist.
 
+**Order and nightly branches.** A night run ([[Meta/Work Orders]]) creates `nightly/YYYY-MM-DD` from `main` and one `wo/NN-slug` branch per work order from the same base. They are side branches in the sense above, with their record kept in the order files rather than here: each order's Run section says what its branch holds and whether it reached `nightly`, and the morning review either merges `nightly` into `main` or reverts and drops. The run never merges into `main`; that is the developer's act. A night's branches are deleted once the morning review is done, so any `wo/*` or `nightly/*` branch older than the last review is an unfinished review, not reference code. Reference branches are still listed one per row below.
+
 **Branch map (2026-09-14; `prescribed-climate` merged into `main` this day, fast-forward, 37 commits):**
 
 | Branch | State | What it holds |
