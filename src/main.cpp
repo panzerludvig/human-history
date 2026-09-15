@@ -27,15 +27,7 @@
 #include "atmosphere.h"
 #include "gl.h"
 #include "camera.h"
-
-// ---------------------------------------------------------------- shaders
-
-static std::string exeDir() {
-    char buf[MAX_PATH];
-    GetModuleFileNameA(nullptr, buf, MAX_PATH);
-    std::string s(buf);
-    return s.substr(0, s.find_last_of("\\/"));
-}
+#include "world.h"
 
 // ---------------------------------------------------------------- world
 
@@ -43,91 +35,9 @@ static std::string exeDir() {
 // UI thread, so the label is repainted synchronously.
 static void buildProgress(const char* stage);
 
-// A world is a seed plus where the camera was left. The seed rotates and
-// offsets the terrain noise so every seed is a different globe.
-struct World {
-    uint32_t seed = 0;
-    bool earth = false; // the seed was "earth": the template globe (see terrain::TEMPLATE)
-    float landPercent = 30.0f;
-    float concentration = 60.0f; // 0..100: island webs .. one continent
-    std::string name;
-    float rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}; // column-major mat3 for GL
-    camera::Vec3 offset{};
-    terrain::ContinentParams cp{};
-    float seaLevel = 0;
-    hydrology::Result hydro;
-    double simTime = 0; // sim days
-    plates::Field plateField;
-    population::Field pop;
-    technology::WorldState tech;
-    atmosphere::Climatology clim;
+static std::string worldsDir() { return world::exeDir() + "\\worlds"; }
 
-    void derive() {
-        std::mt19937 rng(seed);
-        std::uniform_real_distribution<double> ang(0.0, 2 * camera::PI), off(-2.0, 2.0);
-        double a = ang(rng), b = ang(rng), c = ang(rng);
-        // Rotation = Rz(a) * Ry(b) * Rx(c), stored column-major.
-        double ca = cos(a), sa = sin(a), cb = cos(b), sb = sin(b), cc = cos(c), sc = sin(c);
-        double m[3][3] = {
-            {ca * cb, ca * sb * sc - sa * cc, ca * sb * cc + sa * sc},
-            {sa * cb, sa * sb * sc + ca * cc, sa * sb * cc - ca * sc},
-            {-sb, cb * sc, cb * cc},
-        };
-        for (int col = 0; col < 3; col++)
-            for (int row = 0; row < 3; row++) rot[col * 3 + row] = (float)m[row][col];
-        offset = {off(rng), off(rng), off(rng)};
-        cp = terrain::paramsFor(concentration / 100.0f);
-        if (name.empty()) name = earth ? "earth" : "world-" + std::to_string(seed);
-    }
-
-    // Everything derived from the seed, in dependency order:
-    // plates -> sea level (land %) -> hydrology.
-    void build() {
-        derive();
-        terrain::V3 off = {(float)offset.x, (float)offset.y, (float)offset.z};
-        terrain::TEMPLATE.active = earth;
-        if (earth && terrain::TEMPLATE.elev.empty() &&
-            !terrain::loadTemplate(exeDir() + "\\data\\earth.bin")) {
-            buildProgress("data\\earth.bin is missing: generating a random world instead");
-            earth = false;
-            terrain::TEMPLATE.active = false;
-        }
-        buildProgress("Shaping tectonic plates...");
-        plateField = plates::build(seed);
-        buildProgress("Setting the sea level...");
-        seaLevel = terrain::seaLevelFor(landPercent / 100.0f, cp, rot, off, plateField);
-        buildProgress("Tracing rivers and lakes...");
-        hydro = hydrology::build(cp, seaLevel, rot, off, /*riverThresholdKm2=*/12000.0f, plateField);
-        clim = atmosphere::build(cp, seaLevel, rot, off, plateField, hydro, false,
-                                 [](int day, int total) {
-                                     char b[80];
-                                     snprintf(b, sizeof b, "Simulating climate... year %d of %d",
-                                              day / 365 + 1, (total + 364) / 365);
-                                     buildProgress(b);
-                                 });
-        buildProgress("Watering rivers from the rain...");
-        {
-            std::vector<float> annual(atmosphere::W * atmosphere::H, 0.0f);
-            std::vector<float> annualT(atmosphere::W * atmosphere::H, 0.0f);
-            for (int i = 0; i < atmosphere::W * atmosphere::H; i++)
-                for (int se = 0; se < atmosphere::SEASONS; se++) {
-                    annual[i] += clim.rainMmDay[se * atmosphere::W * atmosphere::H + i] /
-                                 atmosphere::SEASONS;
-                    annualT[i] += clim.meanT[se * atmosphere::W * atmosphere::H + i] /
-                                  atmosphere::SEASONS;
-                }
-            hydrology::reweight(hydro, annual, annualT, atmosphere::W, atmosphere::H, 12000.0f);
-        }
-        buildProgress("Placing settlements...");
-        pop = population::build(cp, seaLevel, rot, off, plateField, hydro, &clim);
-        technology::init(pop, tech, seed, simTime);
-        buildProgress("");
-    }
-};
-
-static std::string worldsDir() { return exeDir() + "\\worlds"; }
-
-static bool saveWorld(const World& w, const camera::Camera& c) {
+static bool saveWorld(const world::World& w, const camera::Camera& c) {
     CreateDirectoryA(worldsDir().c_str(), nullptr);
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
@@ -191,10 +101,10 @@ static bool saveWorld(const World& w, const camera::Camera& c) {
     return (bool)f;
 }
 
-static bool loadWorld(const std::string& name, World& w, camera::Camera& c) {
+static bool loadWorld(const std::string& name, world::World& w, camera::Camera& c) {
     std::ifstream f(worldsDir() + "\\" + name + ".ibw");
     if (!f) return false;
-    w = World{};
+    w = world::World{};
     w.name = name;
     // Named fields, so adding a technology cannot silently shift a column.
     struct SavedSettlement {
@@ -332,7 +242,7 @@ static bool loadWorld(const std::string& name, World& w, camera::Camera& c) {
         else if (key == "altitude") f >> c.altitude;
         else { std::string skip; f >> skip; }
     }
-    w.build();
+    w.build(buildProgress);
     // Restore the saved population on top of the regenerated field; local
     // properties come from the per-cell maps, so founded settlements restore
     // the same way as original ones.
@@ -546,7 +456,7 @@ struct Panel {
 
 struct App {
     camera::Camera cam;
-    World world;
+    world::World world;
     Screen screen = Screen::MainMenu;
     bool dragging = false;
     camera::Drag drag;
@@ -1538,7 +1448,7 @@ static double getEditNumber(int id) {
     return atof(buf);
 }
 
-static void fillNewWorldFields(const World& w) {
+static void fillNewWorldFields(const world::World& w) {
     if (w.earth) SetWindowTextA(control(ID_GEN_SEED), "earth");
     else setEditNumber(ID_GEN_SEED, (double)w.seed);
     setEditNumber(ID_GEN_LAND, w.landPercent);
@@ -1566,14 +1476,14 @@ static void setScreen(Screen s) {
 static uint32_t randomSeed() { return (uint32_t)std::random_device{}(); }
 
 static void openNewWorldMenu() {
-    app.world = World{};
+    app.world = world::World{};
     app.world.seed = randomSeed();
     setStatus("");
     setScreen(Screen::NewWorldMenu);
 }
 
 static void generateWorld() {
-    World w;
+    world::World w;
     {
         // A seed reading "earth", in any case, is the template globe.
         char sb[64];
@@ -1589,7 +1499,7 @@ static void generateWorld() {
     app.genKind = 0;
     app.genState = 1;
     app.genThread = std::thread([] {
-        app.world.build();
+        app.world.build(buildProgress);
         app.genOk = true;
         app.genState = 2;
     });
@@ -1707,7 +1617,7 @@ static std::string describeMixture(const terrain::Mixture& m) {
 }
 
 static std::string describePoint(camera::Vec3 n) {
-    const World& wd = app.world;
+    const world::World& wd = app.world;
     terrain::V3 nf = {(float)n.x, (float)n.y, (float)n.z};
     terrain::V3 off = {(float)wd.offset.x, (float)wd.offset.y, (float)wd.offset.z};
     float h = terrain::heightMeters(terrain::rotate(wd.rot, nf) + off, nf, wd.cp, wd.seaLevel, app.octaves,
@@ -1958,7 +1868,7 @@ static std::string techStateLine(const population::TechState& ts, int techId, do
 // Who these people are, what they believe themselves good at, and what
 // they have to hand. The land they live on is the next tab along.
 static std::string peopleText(const population::Settlement& st) {
-    const World& wd = app.world;
+    const world::World& wd = app.world;
     double now = wd.simTime;
     char b[128];
     std::string out;
@@ -2016,7 +1926,7 @@ static std::string peopleText(const population::Settlement& st) {
 }
 
 static std::string envText(const population::Settlement& st) {
-    const World& wd = app.world;
+    const world::World& wd = app.world;
     double now = wd.simTime;
     terrain::V3 n = sim::cellCentre(st.cell);
     float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
@@ -2116,7 +2026,7 @@ static std::string historyText(const population::Settlement& st) {
 // The exact numbers behind one technology's chances here: invention weight,
 // contact odds, and every adoption gate, with the blocked one named.
 static std::string techDetailText(const population::Settlement& st, int idx, int t) {
-    const World& wd = app.world;
+    const world::World& wd = app.world;
     double now = wd.simTime;
     char b[160];
     std::string out = "< back\n";
@@ -2280,7 +2190,7 @@ static std::string buildingsText(const population::Settlement& st, double now) {
 }
 
 static std::string bandText(uint32_t bandId) {
-    const World& wd = app.world;
+    const world::World& wd = app.world;
     double now = wd.simTime;
     for (const population::Band& bd : wd.pop.bands)
         if (bd.id == bandId) {
@@ -2972,7 +2882,7 @@ int main(int argc, char** argv) {
     if (!gl::loadGL()) return 1;
     if (wglSwapIntervalEXT) wglSwapIntervalEXT(1);
 
-    app.program = gl::buildProgram(exeDir() + "\\shaders\\");
+    app.program = gl::buildProgram(world::exeDir() + "\\shaders\\");
     if (!app.program) return 1;
     GLuint vao;
     glGenVertexArrays(1, &vao);
@@ -3032,7 +2942,7 @@ int main(int argc, char** argv) {
             app.world.seed = app.world.earth ? 1u : (argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0);
             if (argc >= 6) app.world.landPercent = (float)atof(argv[5]);
             if (argc >= 7) app.world.concentration = (float)atof(argv[6]);
-            app.world.build();
+            app.world.build(buildProgress);
         }
         if (argc >= 8) {
             std::string d = argv[7];

@@ -2,7 +2,7 @@
 
 **Status:** Implemented — see [[Meta/Status Vocabulary]]
 
-Version 1 of the game: a window showing a spherical, Earth-like globe that can be zoomed with the mouse wheel and panned with left-click drag. The wheel zooms **towards the cursor** (`zoomAt`): the ground under it stays under it, so closing in on a place is aiming rather than aiming and then correcting, and wheeling back out runs the same rule in reverse, sliding that ground away as the view widens. It works by turning the globe so the anchor point returns to the same pixel -- the camera has no roll, its up is always north, so one turn leaves a little tangential drift and three settle it to under a hundredth of a pixel. A cursor off the globe or outside the window zooms to the centre as before. Code in `src/main.cpp` and the modules it wires together (listed in [[Technical/Architecture]]: `src/gl.h` loads GL and builds the program, `src/camera.h` is the camera), `shaders/globe.vert`, `shaders/globe.frag`.
+Version 1 of the game: a window showing a spherical, Earth-like globe that can be zoomed with the mouse wheel and panned with left-click drag. The wheel zooms **towards the cursor** (`zoomAt`): the ground under it stays under it, so closing in on a place is aiming rather than aiming and then correcting, and wheeling back out runs the same rule in reverse, sliding that ground away as the view widens. It works by turning the globe so the anchor point returns to the same pixel -- the camera has no roll, its up is always north, so one turn leaves a little tangential drift and three settle it to under a hundredth of a pixel. A cursor off the globe or outside the window zooms to the centre as before. Code in `src/main.cpp` and the modules it wires together (listed in [[Technical/Architecture]]: `src/gl.h` loads GL and builds the program, `src/camera.h` is the camera, `src/world.h` builds a world from its seed), `shaders/globe.vert`, `shaders/globe.frag`.
 
 ---
 
@@ -133,7 +133,7 @@ Clicking a settlement or band marker opens a detail panel (a dark child window w
 
 ## Generation feedback
 
-World generation takes about 30 s (about 27 s of it the climate run, measured 2026-09-15 through the sweep) and runs on a **worker thread**: the window stays movable and repainting, `World::build` reports its stage on the menu status line (plates, sea level, rivers, "Simulating climate... year N of 3", settlements), and the main loop polls a done flag to finish on the GL thread (texture uploads, screen switch). Commands and keys are ignored while generating; the menus never render the globe, so the worker owns `app.world` meanwhile. Stages are also logged to stderr for tests.
+World generation takes about 30 s (about 27 s of it the climate run, measured 2026-09-15 through the sweep) and runs on a **worker thread**: the window stays movable and repainting, `World::build` (`src/world.h`) reports its stage through a progress callback -- the game's puts it on the menu status line, a probe's prints it -- (plates, sea level, rivers, "Simulating climate... year N of 3", settlements), and the main loop polls a done flag to finish on the GL thread (texture uploads, screen switch). Commands and keys are ignored while generating; the menus never render the globe, so the worker owns `app.world` meanwhile. Stages are also logged to stderr for tests.
 
 ## Menus and worlds
 
@@ -141,7 +141,7 @@ Menus are native Win32 controls (buttons, a list box, static text) laid over the
 
 - **Main menu:** New World (opens the generation screen: seed with Random button, land %, concentration %; Generate or Enter), Load World (list of saves: Load or double-click, Delete with confirmation, Back), Quit.
 - **In game:** Esc opens the pause menu over the dimmed globe: a name box (pre-filled, Enter saves), Save World, Main Menu, Quit Game. Esc again returns to the game.
-- **A world** is a 32-bit seed plus the camera position. The seed derives a rotation matrix and a small offset applied to the surface normal before noise lookup, so each seed is a different globe from the same terrain code. The offset is kept within ±2 because large offsets cost float precision at deep zoom.
+- **A world** (`src/world.h`) is a 32-bit seed plus the camera position. The seed derives a rotation matrix and a small offset applied to the surface normal before noise lookup, so each seed is a different globe from the same terrain code. The offset is kept within ±2 because large offsets cost float precision at deep zoom.
 - **Save files** are plain text in `build\worlds\<name>.ibw` (`version`, `seed`, `land`, `concentration`, `lat`, `lon`, `altitude`; missing keys take defaults). A new world starts named `world-<seed>`; the name box lets you change it before saving, and the name becomes the file name (characters illegal in file names are replaced with `_`). Saving under a new name writes a new file and leaves the old one in place.
 
 ## Known limitations
