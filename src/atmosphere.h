@@ -2956,22 +2956,34 @@ inline terrain::V3 climFuzz(terrain::V3 n) {
     return {r.x / l, r.y / l, r.z / l};
 }
 
-// Bilinear sample of one season band of a climatology field at a (fuzzed)
-// unit-sphere position.
-inline float bilinearAt(const std::vector<float>& v, int season, terrain::V3 n) {
+// The climate-grid cell south-west of a (fuzzed) unit-sphere position and
+// the fractions towards its eastern and northern neighbours: the mapping
+// every bilinear sample shares (bilinearAt here, the sweep's land-masked
+// landMaskedT). x0 is unwrapped and y0 unclamped; the sampler does both.
+struct BilinearCell {
+    int x0, y0;
+    float fx, fy;
+};
+inline BilinearCell bilinearCellAt(terrain::V3 n) {
     float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
     float lon = std::atan2(n.y, n.x);
     float u = ((lon + 3.14159265f) / (2 * 3.14159265f)) * W - 0.5f;
     float vv = ((lat + 3.14159265f / 2) / 3.14159265f) * H - 0.5f;
     int x0 = (int)std::floor(u), y0 = (int)std::floor(vv);
-    float fx = u - x0, fy = vv - y0;
+    return {x0, y0, u - x0, vv - y0};
+}
+
+// Bilinear sample of one season band of a climatology field at a (fuzzed)
+// unit-sphere position.
+inline float bilinearAt(const std::vector<float>& v, int season, terrain::V3 n) {
+    const BilinearCell b = bilinearCellAt(n);
     auto at = [&](int xx, int yy) {
         xx = (xx % W + W) % W;
         yy = std::clamp(yy, 0, H - 1);
         return v[season * W * H + yy * W + xx];
     };
-    return (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) +
-           (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy;
+    return (at(b.x0, b.y0) * (1 - b.fx) + at(b.x0 + 1, b.y0) * b.fx) * (1 - b.fy) +
+           (at(b.x0, b.y0 + 1) * (1 - b.fx) + at(b.x0 + 1, b.y0 + 1) * b.fx) * b.fy;
 }
 
 inline float annualAt(const std::vector<float>& v, terrain::V3 n) {

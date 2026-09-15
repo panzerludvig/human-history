@@ -44,6 +44,39 @@ struct Score {
     double spot[8] = {};
 };
 
+// A binary PPM (P6) of w x h RGB triples, rows as the caller laid them out.
+// True if the file was opened; the sweep's images are for looking at.
+static bool writePpm(const char* name, int w, int h, const std::vector<unsigned char>& rgb) {
+    FILE* f = fopen(name, "wb");
+    if (!f) return false;
+    fprintf(f, "P6\n%d %d\n255\n", w, h);
+    fwrite(rgb.data(), 1, rgb.size(), f);
+    fclose(f);
+    return true;
+}
+
+// Potential evapotranspiration, mm/day, from the mean temperature: the same
+// formula as hydrology::petMmDay, in double. The renderer's copy is float;
+// the sweep averages its fields in double, and calling the float one here
+// moves a single pixel of map_seed7.ppm by one count of truncation, so the
+// sweep keeps this double twin rather than change its output (work order 08).
+static double petMmDay(double tC) { return std::max(0.4, 0.11 * (tC + 8.0)); }
+
+// Is there sea within two cells of climate cell i? Coast against interior,
+// for asking where on the land the rain falls.
+static bool coastalCell(const atmosphere::Climatology& c, int i) {
+    const int AW = atmosphere::W, AH = atmosphere::H;
+    const int x = i % AW, y = i / AW;
+    for (int dy = -2; dy <= 2; dy++)
+        for (int dx = -2; dx <= 2; dx++) {
+            int yy = y + dy;
+            if (yy < 0 || yy >= AH) continue;
+            int xx = ((x + dx) % AW + AW) % AW;
+            if (c.elev[yy * AW + xx] <= 0.0f) return true;
+        }
+    return false;
+}
+
 static Score judge(const atmosphere::Climatology& c) {
     const int AW = atmosphere::W, AH = atmosphere::H;
     Score s;
@@ -76,16 +109,7 @@ static Score judge(const atmosphere::Climatology& c) {
             lr += r;
             if (r < 0.5) dry += 1;
             // Coast or interior: is there sea within two cells?
-            int x = i % AW, y = i / AW;
-            bool coastal = false;
-            for (int dy = -2; dy <= 2 && !coastal; dy++)
-                for (int dx = -2; dx <= 2 && !coastal; dx++) {
-                    int yy = y + dy;
-                    if (yy < 0 || yy >= AH) continue;
-                    int xx = ((x + dx) % AW + AW) % AW;
-                    if (c.elev[yy * AW + xx] <= 0.0f) coastal = true;
-                }
-            if (coastal) {
+            if (coastalCell(c, i)) {
                 cr += r;
                 cn += 1;
             } else {
@@ -215,18 +239,13 @@ static void reportLakes(const world::World& globe) {
 static float landMaskedT(const atmosphere::Climatology& c, int season, terrain::V3 n,
                          bool& anyLand) {
     const int W = atmosphere::W, H = atmosphere::H;
-    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
-    float lon = std::atan2(n.y, n.x);
-    float u = ((lon + 3.14159265f) / (2 * 3.14159265f)) * W - 0.5f;
-    float vv = ((lat + 3.14159265f / 2) / 3.14159265f) * H - 0.5f;
-    int x0 = (int)std::floor(u), y0 = (int)std::floor(vv);
-    float fx = u - x0, fy = vv - y0;
+    const atmosphere::BilinearCell b = atmosphere::bilinearCellAt(n);
     double num = 0, den = 0;
     anyLand = false;
     for (int j = 0; j <= 1; j++)
         for (int i = 0; i <= 1; i++) {
-            int xx = ((x0 + i) % W + W) % W, yy = std::clamp(y0 + j, 0, H - 1);
-            double wgt = (i ? fx : 1 - fx) * (j ? fy : 1 - fy);
+            int xx = ((b.x0 + i) % W + W) % W, yy = std::clamp(b.y0 + j, 0, H - 1);
+            double wgt = (i ? b.fx : 1 - b.fx) * (j ? b.fy : 1 - b.fy);
             if (c.elev[yy * W + xx] <= 0.0f) continue;
             anyLand = true;
             num += c.meanT[season * W * H + yy * W + xx] * wgt;
@@ -539,17 +558,9 @@ static void reportDynamics(const world::World& globe) {
     }
     char nm[64];
     snprintf(nm, sizeof nm, "dynps_seed%s.ppm", tag.c_str());
-    if (FILE* f = fopen(nm, "wb")) {
-        fprintf(f, "P6\n%d %d\n255\n", AW, AH);
-        fwrite(pimg.data(), 1, pimg.size(), f);
-        fclose(f);
-    }
+    writePpm(nm, AW, AH, pimg);
     snprintf(nm, sizeof nm, "dynsd_seed%s.ppm", tag.c_str());
-    if (FILE* f = fopen(nm, "wb")) {
-        fprintf(f, "P6\n%d %d\n255\n", AW, AH);
-        fwrite(simg.data(), 1, simg.size(), f);
-        fclose(f);
-    }
+    writePpm(nm, AW, AH, simg);
 }
 
 // THE WORLD REVIEW, on the Earth template: named regions on every
@@ -647,7 +658,7 @@ static void reportWorldReview(const world::World& globe) {
         }
         if (n < 1) continue;
         double rain = (rn[0] + rn[1] + rn[2] + rn[3]) / 4 / n;
-        double pet = std::max(0.4, 0.11 * (t / n + 8.0));
+        double pet = petMmDay(t / n);
         float mo = (float)std::clamp(0.5 * rain / pet, 0.0, 1.0);
         // January is DJF in both hemispheres; the Earth figures are
         // January and July, not summer and winter.
@@ -676,7 +687,7 @@ static void reportWorldReview(const world::World& globe) {
                         tc = std::min(tc, (double)c.meanT[j]);
                         tw = std::max(tw, (double)c.meanT[j]);
                     }
-                    double pp = std::max(0.4, 0.11 * (tt + 8.0));
+                    double pp = petMmDay(tt);
                     float mm = (float)std::clamp(0.5 * rr / pp, 0.0, 1.0);
                     terrain::Mixture mx =
                         terrain::mixtureAt(c.elev[i], 0.0f, (float)tt, mm, 0.0f, false, 0.5f, 0.0f,
@@ -834,7 +845,7 @@ static void reportMapMoisture(const world::World& globe) {
             rain += c.rainMmDay[se * AW * AH + i] / atmosphere::SEASONS;
             t += c.meanT[se * AW * AH + i] / atmosphere::SEASONS;
         }
-        double pet = std::max(0.4, 0.11 * (t + 8.0));
+        double pet = petMmDay(t);
         double m = std::clamp(0.5 * rain / pet, 0.0, 1.0);
         double h = c.elev[i];
         for (int b = 0; b < NB; b++)
@@ -844,16 +855,7 @@ static void reportMapMoisture(const world::World& globe) {
                 tSum[b] += t;
                 n[b] += 1;
             }
-        int x = i % AW, y = i / AW;
-        bool coastal = false;
-        for (int dy = -2; dy <= 2 && !coastal; dy++)
-            for (int dx = -2; dx <= 2 && !coastal; dx++) {
-                int yy = y + dy;
-                if (yy < 0 || yy >= AH) continue;
-                int xx = ((x + dx) % AW + AW) % AW;
-                if (c.elev[yy * AW + xx] <= 0.0f) coastal = true;
-            }
-        if (coastal) {
+        if (coastalCell(c, i)) {
             cM += m;
             cN += 1;
         } else {
@@ -1313,7 +1315,7 @@ static void reportPalette(const world::World& globe) {
             tc = std::min(tc, (double)c.meanT[se * AW * AH + i]);
             tw = std::max(tw, (double)c.meanT[se * AW * AH + i]);
         }
-        double pet = std::max(0.4, 0.11 * (t + 8.0));
+        double pet = petMmDay(t);
         float mo = (float)std::clamp(0.5 * rain / pet, 0.0, 1.0) + terrain::moistureDetail(ww);
         terrain::Mixture mx =
             terrain::mixtureAt(c.elev[i], 0.0f, (float)t, std::clamp(mo, 0.0f, 1.0f), 0.0f, false,
@@ -1343,15 +1345,7 @@ static void reportPalette(const world::World& globe) {
         zR[band] += rain;
         zM[band] += mo;
         zT[band] += t;
-        bool coastal = false;
-        for (int dy = -2; dy <= 2 && !coastal; dy++)
-            for (int dx = -2; dx <= 2 && !coastal; dx++) {
-                int yy = y + dy;
-                if (yy < 0 || yy >= AH) continue;
-                int xx = ((x + dx) % AW + AW) % AW;
-                if (c.elev[yy * AW + xx] <= 0.0f) coastal = true;
-            }
-        if (coastal) {
+        if (coastalCell(c, i)) {
             cN += 1;
             if (col[1] > col[0]) cG += 1;
         } else {
@@ -1362,12 +1356,8 @@ static void reportPalette(const world::World& globe) {
     {
         char name[64];
         snprintf(name, sizeof name, "map_seed%s.ppm", tag.c_str());
-        if (FILE* f = fopen(name, "wb")) {
-            fprintf(f, "P6\n%d %d\n255\n", AW, AH);
-            fwrite(img.data(), 1, img.size(), f);
-            fclose(f);
+        if (writePpm(name, AW, AH, img))
             fprintf(stderr, "\n  (the map, in the shader's palette: %s)\n", name);
-        }
         // And the fields behind it: annual rain (dark = dry,
         // 6 mm/day = white), and the annual wind (red = east,
         // blue = west, green = north; sea darkened).
@@ -1403,24 +1393,12 @@ static void reportPalette(const world::World& globe) {
                 mimg[o + 2] = 40;
             }
             snprintf(name, sizeof name, "mask_seed%s.ppm", tag.c_str());
-            if (FILE* f = fopen(name, "wb")) {
-                fprintf(f, "P6\n%d %d\n255\n", AW, AH);
-                fwrite(mimg.data(), 1, mimg.size(), f);
-                fclose(f);
-            }
+            writePpm(name, AW, AH, mimg);
         }
         snprintf(name, sizeof name, "rain_seed%s.ppm", tag.c_str());
-        if (FILE* f = fopen(name, "wb")) {
-            fprintf(f, "P6\n%d %d\n255\n", AW, AH);
-            fwrite(rimg.data(), 1, rimg.size(), f);
-            fclose(f);
-        }
+        writePpm(name, AW, AH, rimg);
         snprintf(name, sizeof name, "wind_seed%s.ppm", tag.c_str());
-        if (FILE* f = fopen(name, "wb")) {
-            fprintf(f, "P6\n%d %d\n255\n", AW, AH);
-            fwrite(wimg.data(), 1, wimg.size(), f);
-            fclose(f);
-        }
+        writePpm(name, AW, AH, wimg);
     }
     fprintf(stderr, "\nWHAT COLOUR IS THE LAND, in the shader's own palette\n");
     fprintf(stderr, "  mean rendered land  %.2f %.2f %.2f\n", rSum / std::max(n2, 1.0),
@@ -1469,7 +1447,7 @@ static void reportLandCover(const world::World& globe) {
             tc = std::min(tc, (double)c.meanT[se * AW * AH + i]);
             tw = std::max(tw, (double)c.meanT[se * AW * AH + i]);
         }
-        double pet = std::max(0.4, 0.11 * (t + 8.0));
+        double pet = petMmDay(t);
         float m = (float)std::clamp(0.5 * rain / pet, 0.0, 1.0) + terrain::moistureDetail(w);
         terrain::Mixture mx =
             terrain::mixtureAt(c.elev[i], 0.0f, (float)t, std::clamp(m, 0.0f, 1.0f), 0.0f, false,
