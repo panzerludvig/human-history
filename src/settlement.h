@@ -1,5 +1,6 @@
-// The settlement as data: what a settlement, a band and the field they live
-// in are made of, with the constants that price them. Every rule of
+// The settlement as data: every type the population model is made of --
+// Settlement, Band, the Field they live in -- with the constants that price
+// them. Every rule of
 // Design/Population.md, Design/Migration.md, Design/Technology.md and
 // Design/Conflict.md that is a number lives here; the arithmetic that moves
 // the numbers lives in population.h (integration) and the sim headers

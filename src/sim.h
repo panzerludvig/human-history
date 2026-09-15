@@ -26,14 +26,13 @@ namespace sim {
 // 90-day schedule (plus catch-up), so it is step-size invariant. Bands are
 // too small and transient to count.
 inline void gameTick(population::Field& pf, double now) {
-    using namespace population;
     double dt = now - pf.gameT;
     if (dt <= 0 || pf.gameG.empty()) return;
     std::vector<float> draw(pf.gameG.size(), 0.0f);
-    for (const Settlement& s : pf.settlements) {
+    for (const population::Settlement& s : pf.settlements) {
         if (s.kGame <= 0 || s.P <= 1) continue;
-        SeasonCtx ctx = technology::annualCtx(s, now);
-        FoodTerms f = foodTerms(s, ctx);
+        population::SeasonCtx ctx = technology::annualCtx(s, now);
+        population::FoodTerms f = population::foodTerms(s, ctx);
         // Deviation from "the diet is defined once" (foodTerms): the herds'
         // flow is multiplied here in the order this function always used,
         // (kGame * huntEff) * bows * meanF, not f.bigGame * meanF, which
@@ -41,8 +40,8 @@ inline void gameTick(population::Field& pf, double now) {
         // differ by a rounding, and that rounding moved a 40-year probe by
         // one person; the order stays until a behaviour change is wanted.
         float g = pf.gameG[s.gRegion];
-        float gameFlow =
-            s.kGame * huntEff(g) * (1.0f + BOW_BIG_GAIN * ctx.bowCover * ctx.archExp) * s.meanF;
+        float gameFlow = s.kGame * population::huntEff(g) *
+                         (1.0f + population::BOW_BIG_GAIN * ctx.bowCover * ctx.archExp) * s.meanF;
         float total =
             f.plant * s.meanF + f.smallGame * s.meanF + gameFlow + f.farm + f.herd + f.farmyard;
         if (total <= 1e-6f) continue;
@@ -51,14 +50,17 @@ inline void gameTick(population::Field& pf, double now) {
     for (size_t r = 0; r < pf.gameG.size(); r++) {
         if (pf.gameDmax[r] <= 0) continue;
         float g = pf.gameG[r];
-        float regen = g >= GAME_FLOOR ? (1.0f - g) / (GAME_REGEN_YEARS * 365.0f) : 0.0f;
-        float depl = draw[r] / pf.gameDmax[r] / (GAME_DEPLETE_YEARS * 365.0f);
+        float regen = g >= population::GAME_FLOOR
+                          ? (1.0f - g) / (population::GAME_REGEN_YEARS * 365.0f)
+                          : 0.0f;
+        float depl = draw[r] / pf.gameDmax[r] / (population::GAME_DEPLETE_YEARS * 365.0f);
         float before = g;
         pf.gameG[r] = std::clamp(g + (regen - depl) * (float)dt, 0.0f, 1.0f);
-        if (before >= GAME_FLOOR && pf.gameG[r] < GAME_FLOOR)
-            note(pf, EV_GAME_GONE, now, 0, 0, 0, 0, "a regional herd was hunted past saving");
+        if (before >= population::GAME_FLOOR && pf.gameG[r] < population::GAME_FLOOR)
+            note(pf, population::EV_GAME_GONE, now, 0, 0, 0, 0,
+                 "a regional herd was hunted past saving");
     }
-    for (Settlement& s : pf.settlements)
+    for (population::Settlement& s : pf.settlements)
         if (s.kGame > 0) s.gameNow = pf.gameG[s.gRegion];
     pf.gameT = now;
 }
@@ -76,9 +78,9 @@ inline population::SeasonCtx seasonCtx(const population::Settlement& s, const hy
 // Runs once, after the event loop, so indices stay valid while events are
 // being processed; panels track settlements by id, not index.
 inline void sweepDeparted(population::Field& pf, double now) {
-    using namespace population;
     for (int i = (int)pf.ruins.size() - 1; i >= 0; i--)
-        if (now - pf.ruins[i].abandoned > RUIN_LIFE_DAYS) pf.ruins.erase(pf.ruins.begin() + i);
+        if (now - pf.ruins[i].abandoned > population::RUIN_LIFE_DAYS)
+            pf.ruins.erase(pf.ruins.begin() + i);
     int n = (int)pf.settlements.size();
     bool any = false;
     for (int i = 0; i < n && !any; i++) any = pf.settlements[i].leaving;
@@ -97,7 +99,7 @@ inline void sweepDeparted(population::Field& pf, double now) {
         for (int j : pf.neighbours[i])
             if (nu[j] >= 0) nb[nu[i]].push_back(nu[j]);
     }
-    std::vector<Settlement> keep;
+    std::vector<population::Settlement> keep;
     keep.reserve(k);
     for (int i = 0; i < n; i++)
         if (nu[i] >= 0) keep.push_back(pf.settlements[i]);
@@ -128,7 +130,6 @@ struct Ev {
 // step size leaves the whole world exact at the displayed moment.
 inline bool simulate(population::Field& pf, technology::WorldState& ws, const hydrology::Result& hy,
                      const atmosphere::Climatology& clim, double now) {
-    using namespace population;
     if (pf.settlements.empty()) return false;
     bool changed = false;
 
@@ -147,17 +148,19 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
     ws.sink = &sink;
 
     auto pushSettlement = [&](int i) {
-        const Settlement& s = pf.settlements[i];
+        const population::Settlement& s = pf.settlements[i];
         if (s.nextUpdate < 1e17) q.push({s.nextUpdate, Due::SettlementWake, i, 0});
-        for (int t = 0; t < NTECH; t++)
+        for (int t = 0; t < population::NTECH; t++)
             if (s.nextTech[t] < 1e17) q.push({s.nextTech[t], Due::ContactDraw, i, t});
     };
-    auto pushBand = [&](const Band& b) { q.push({b.nextUpdate, Due::BandStep, (int)b.id, 0}); };
+    auto pushBand = [&](const population::Band& b) {
+        q.push({b.nextUpdate, Due::BandStep, (int)b.id, 0});
+    };
     for (int i = 0; i < (int)pf.settlements.size(); i++) pushSettlement(i);
-    for (const Band& b : pf.bands) pushBand(b);
-    for (int t = 0; t < NTECH; t++)
+    for (const population::Band& b : pf.bands) pushBand(b);
+    for (int t = 0; t < population::NTECH; t++)
         if (ws.nextEvent[t] < 1e17) q.push({ws.nextEvent[t], Due::InventionClock, 0, t});
-    if (!pf.gameG.empty()) q.push({pf.gameT + GAME_TICK_DAYS, Due::GameTick, 0, 0});
+    if (!pf.gameG.empty()) q.push({pf.gameT + population::GAME_TICK_DAYS, Due::GameTick, 0, 0});
 
     while (!q.empty() && q.top().t <= now) {
         pf.peakBands = std::max(pf.peakBands, pf.bands.size()); // high-water mark
@@ -178,7 +181,8 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
                     char txt[96];
                     snprintf(txt, sizeof txt, "%s invented %s!", pf.settlements[wi].name,
                              technology::techName(ev.tech));
-                    note(pf, EV_INVENTED, t, pf.settlements[wi].id, 0, 0, (float)ev.tech, txt);
+                    note(pf, population::EV_INVENTED, t, pf.settlements[wi].id, 0, 0,
+                         (float)ev.tech, txt);
                 }
                 fprintf(stderr, "tech: %s invented at settlement %d, day %.0f\n",
                         technology::techName(ev.tech), wi, t);
@@ -188,7 +192,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
             break;
         }
         case Due::SettlementWake: {
-            Settlement& s = pf.settlements[ev.idx];
+            population::Settlement& s = pf.settlements[ev.idx];
             if (t != s.nextUpdate) continue;
             technology::decaySkills(pf, ws, ev.idx, t);
             growClaim(pf, ev.idx, t);
@@ -205,7 +209,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
             break;
         }
         case Due::ContactDraw: {
-            Settlement& s = pf.settlements[ev.idx];
+            population::Settlement& s = pf.settlements[ev.idx];
             if (t != s.nextTech[ev.tech]) continue;
             if (!s.techFires[ev.tech]) {
                 technology::redraw(pf, ev.idx, ws, ev.tech, t);
@@ -225,7 +229,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
                     char txt[96];
                     snprintf(txt, sizeof txt, "%s took up %s", s.name,
                              technology::techName(ev.tech));
-                    note(pf, EV_ADOPTED, t, s.id, 0, 0, (float)ev.tech, txt);
+                    note(pf, population::EV_ADOPTED, t, s.id, 0, 0, (float)ev.tech, txt);
                 }
                 fprintf(stderr, "tech: settlement %d starts %s, day %.0f\n", ev.idx,
                         technology::techName(ev.tech), t);
@@ -235,9 +239,9 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
             break;
         }
         case Due::GameTick: {
-            if (std::fabs(t - (pf.gameT + GAME_TICK_DAYS)) > 1e-6) continue; // stale
+            if (std::fabs(t - (pf.gameT + population::GAME_TICK_DAYS)) > 1e-6) continue; // stale
             gameTick(pf, t);
-            q.push({pf.gameT + GAME_TICK_DAYS, Due::GameTick, 0, 0});
+            q.push({pf.gameT + population::GAME_TICK_DAYS, Due::GameTick, 0, 0});
             break;
         }
         case Due::BandStep: {
@@ -263,7 +267,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
     // the step size -- minute steps show the world in full detail, big steps
     // aggregate through the event loop above first (Design/Event-Driven).
     for (int i = 0; i < (int)pf.settlements.size(); i++) {
-        Settlement& s = pf.settlements[i];
+        population::Settlement& s = pf.settlements[i];
         if (!s.leaving && s.t < now - 1e-9) {
             technology::decaySkills(pf, ws, i, now);
             growClaim(pf, i, now);

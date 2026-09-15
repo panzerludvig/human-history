@@ -1,6 +1,6 @@
 # Borders
 
-How a settlement comes to hold ground, how far it holds it, and what happens when two claims meet. Rules live in `src/sim.h` (`growClaim`, `roomKm`, `claimFits`, `wantedReachKm`) and `src/population.h` (the constants and the yield curve). Drawn by `borderNear` in `shaders/globe.frag`.
+How a settlement comes to hold ground, how far it holds it, and what happens when two claims meet. Rules live in `src/claims.h` (`growClaim`, `roomKm`, `claimFits`, `wantedReachKm`) and `src/settlement.h` (the constants and the yield curve). Drawn by `borderNear` in `shaders/globe.frag`.
 
 ## What a claim is
 

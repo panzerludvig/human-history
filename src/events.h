@@ -14,19 +14,18 @@ namespace sim {
 inline void note(population::Field& pf, int kind, double t, uint32_t sid, uint32_t sid2,
                  uint32_t bandId, float amount, const char* text, float lossHere = 0,
                  float lossThem = 0) {
-    using namespace population;
-    if (kind < 0 || kind >= EV_KINDS) return;
+    if (kind < 0 || kind >= population::EV_KINDS) return;
     pf.eventCount[kind]++;
-    if (pf.eventCount[kind] > EVENTS_KEPT_PER_KIND) return;
-    Event e;
+    if (pf.eventCount[kind] > population::EVENTS_KEPT_PER_KIND) return;
+    population::Event e;
     e.kind = (uint8_t)kind;
     e.t = t;
     e.lossHere = lossHere;
     e.lossThem = lossThem;
     // Note where it happened while the people involved are still findable:
     // they may be gone by the time anyone reads this.
-    int at = indexById(pf, sid);
-    if (at < 0) at = indexById(pf, sid2);
+    int at = population::indexById(pf, sid);
+    if (at < 0) at = population::indexById(pf, sid2);
     if (at >= 0) e.cell = pf.settlements[at].cell;
     e.sid = sid;
     e.sid2 = sid2;

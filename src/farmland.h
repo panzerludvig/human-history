@@ -1,7 +1,7 @@
-// The ground plan of a settlement: the golden-angle spiral on which its
-// houses, granaries, farmsteads and plots stand, defined once here and
-// mirrored exactly in shaders/globe.frag so the map draws what the
-// simulation enforces. The fields are priced where they stand, so what the
+// The ground plan of a settlement: the golden-angle spiral on which every
+// built thing -- houses, granaries, farmsteads, plots -- stands, defined
+// once here, mirrored exactly in shaders/globe.frag so the map draws what
+// the simulation enforces. The fields are priced where they stand, so what the
 // standing plots feed (Settlement::farmK) is computed here as well.
 // Design/Technology.md (farming, farmsteads, tilled land).
 #pragma once
@@ -62,22 +62,22 @@ inline terrain::V3 farmsteadPos(int cell, int k) {
 // slots the claim can hold, and whether the next slot is worth building on.
 // Recomputed on every wake; a few map lookups.
 inline void updateFarmland(population::Field& pf, population::Settlement& s) {
-    using namespace population;
     float k = s.sFarm * s.tilled[0];
-    int next = (s.sFarm > 0.05f && s.tilled[0] < VILLAGE_FIELDS_KM2 - 0.01f) ? 0 : -1;
-    int n = std::min((int)(s.farmsteads + 0.5f), FSTEAD_MAX);
+    int next = (s.sFarm > 0.05f && s.tilled[0] < population::VILLAGE_FIELDS_KM2 - 0.01f) ? 0 : -1;
+    int n = std::min((int)(s.farmsteads + 0.5f), population::FSTEAD_MAX);
     for (int i = 0; i < n; i++) {
         float suit = pf.sFarmMap[cellOf(farmsteadPos(s.cell, i))];
         k += suit * s.tilled[i + 1];
-        if (next < 0 && suit > 0.05f && s.tilled[i + 1] < FSTEAD_KM2 - 0.01f) next = i + 1;
+        if (next < 0 && suit > 0.05f && s.tilled[i + 1] < population::FSTEAD_KM2 - 0.01f)
+            next = i + 1;
     }
-    s.farmK = k * TILLED_YIELD_PKM2;
+    s.farmK = k * population::TILLED_YIELD_PKM2;
     s.tillSiteNext = (int8_t)next;
     // How far out the farmstead spiral stays inside the claim: slots are
     // taken in order, so the first one past the border ends the count.
     terrain::V3 c = cellCentre(s.cell);
     int slots = 0;
-    for (int i = 0; i < FSTEAD_MAX; i++) {
+    for (int i = 0; i < population::FSTEAD_MAX; i++) {
         terrain::V3 q = farmsteadPos(s.cell, i);
         if (distKm(q, c) > claimReach(s, q)) break;
         slots = i + 1;

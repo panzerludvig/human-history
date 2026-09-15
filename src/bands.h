@@ -45,7 +45,6 @@ inline float seasonalT(const atmosphere::Climatology& c, terrain::V3 n, float hL
 // gate founding too, or a band would choose a target it then refuses.
 inline float moverCap(const population::Field& pf, int cell, float farmExp, float husbExp,
                       double now, float fishExp = 0, float movers = 300.0f) {
-    using namespace population;
     float food = pf.kFoodPMap[cell];
     if (food <= 0) return 0;
     // What a farming mover could make of this ground: the fields their
@@ -54,11 +53,11 @@ inline float moverCap(const population::Field& pf, int cell, float farmExp, floa
     food += population::TILLED_YIELD_PKM2 * pf.sFarmMap[cell] * farmExp *
             std::min(movers * population::FARM_KM2_PER_PERSON, population::VILLAGE_FIELDS_KM2);
     if (husbExp > 0)
-        food += pf.pastureMap[cell] * FORAGE_KM2 * HERD_PASTURE_K / SUSTAIN_R *
-                (0.3f + 0.7f * husbExp) * 0.85f;
+        food += pf.pastureMap[cell] * population::FORAGE_KM2 * population::HERD_PASTURE_K /
+                population::SUSTAIN_R * (0.3f + 0.7f * husbExp) * 0.85f;
     // The water counts even to people with no gear -- anyone can take fish
     // from a bank -- and counts for much more to people who can weir it.
-    food += pf.kFishMap[cell] * fishEff(fishExp);
+    food += pf.kFishMap[cell] * population::fishEff(fishExp);
     return std::min(food, pf.kWaterMap[cell]);
 }
 
@@ -92,12 +91,12 @@ inline float moverCapRoom(const population::Field& pf, int cell, float farmExp, 
 inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t& rng,
                         float radiusKm, double now, float farmExp = 0, float husbExp = 0,
                         float* estOut = nullptr, float movers = 0, float fishExp = 0) {
-    using namespace population;
     bool skilled = farmExp > 0 || husbExp > 0 || fishExp > 0;
     float lat0 = std::asin(std::clamp(from.z, -1.0f, 1.0f));
     float dLat = radiusKm / 6371.0f;
-    int y0 = std::max((int)(((lat0 - dLat) + 3.14159265f / 2) / 3.14159265f * H), 1);
-    int y1 = std::min((int)(((lat0 + dLat) + 3.14159265f / 2) / 3.14159265f * H) + 1, H - 2);
+    int y0 = std::max((int)(((lat0 - dLat) + 3.14159265f / 2) / 3.14159265f * population::H), 1);
+    int y1 = std::min((int)(((lat0 + dLat) + 3.14159265f / 2) / 3.14159265f * population::H) + 1,
+                      population::H - 2);
     // Cheap scoring pass (chord distance, no spacing checks), then the
     // expensive spacing check only on the best few in score order.
     struct Cand {
@@ -107,18 +106,18 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
     Cand top[24];
     int nTop = 0;
     for (int y = y0; y <= y1; y += 2)
-        for (int x = 0; x < W; x += 2) {
-            int cell = y * W + x;
+        for (int x = 0; x < population::W; x += 2) {
+            int cell = y * population::W + x;
             // Cheap exact rejections first -- this scan runs over thousands
             // of cells per search and every search is a settlement deciding
             // its future. Water caps any mover's capacity, and a mover with
             // no skills is worth exactly K.
-            if (pf.kWaterMap[cell] < MIN_SETTLEMENT_K) continue;
-            if (!skilled && pf.K[cell] < MIN_SETTLEMENT_K) continue;
+            if (pf.kWaterMap[cell] < population::MIN_SETTLEMENT_K) continue;
+            if (!skilled && pf.K[cell] < population::MIN_SETTLEMENT_K) continue;
             float cap = skilled ? moverCap(pf, cell, farmExp, husbExp, now, fishExp,
                                            movers > 0 ? movers : 300.0f)
                                 : pf.K[cell];
-            if (cap < MIN_SETTLEMENT_K) continue;
+            if (cap < population::MIN_SETTLEMENT_K) continue;
             terrain::V3 n = cellCentre(cell);
             float dot = terrain::dot(from, n);
             float d = 6371.0f * std::sqrt(std::max(2.0f - 2.0f * dot, 0.0f)); // chord ~ arc
@@ -140,8 +139,8 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
     // open country outbids a gap of the same soil, and the frontier fills
     // before the spaces behind it.
     for (int k = 0; k < nTop; k++) {
-        float room = std::min(roomKm(pf, cellCentre(top[k].cell)), CLAIM_CAP_KM);
-        if (room < CLAIM_FLOOR_KM) {
+        float room = std::min(roomKm(pf, cellCentre(top[k].cell)), population::CLAIM_CAP_KM);
+        if (room < population::CLAIM_FLOOR_KM) {
             top[k] = top[--nTop];
             k--;
             continue;
@@ -150,8 +149,8 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
         // room there is: valuing a target at the largest claim anyone could
         // ever hold made every prospect outbid home three to one, and whole
         // settlements marched off rather than sending colonists.
-        top[k].est *=
-            claimFactor(std::min(wantedReachKm(pf, top[k].cell, movers, SUSTAIN_R), room));
+        top[k].est *= claimFactor(
+            std::min(wantedReachKm(pf, top[k].cell, movers, population::SUSTAIN_R), room));
     }
     while (nTop > 0) {
         int bi = 0;
@@ -159,7 +158,7 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
             if (top[k].est > top[bi].est) bi = k;
         int cell = top[bi].cell;
         float scar = population::cellCondition(pf, cell, now);
-        if (scar * top[bi].est >= MIN_SETTLEMENT_K) {
+        if (scar * top[bi].est >= population::MIN_SETTLEMENT_K) {
             if (estOut) *estOut = top[bi].est * scar; // the rumour, not the truth
             return cell;
         }
@@ -212,36 +211,36 @@ inline float drinkableAt(const population::Field& pf, const hydrology::Result& h
 inline void integrateBand(population::Band& b, float flowBase, double span, bool resting,
                           const atmosphere::Climatology& clim, terrain::V3 n, float h,
                           double startT, float drinkable, float thirst) {
-    using namespace population;
     float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
     float lon = std::atan2(n.y, n.x);
     int steps = std::clamp((int)(span / 2.0) + 1, 1, 60);
     float dt = (float)(span / steps);
-    float gather = resting ? GATHER_SETTLED : GATHER_MOVING;
+    float gather = resting ? population::GATHER_SETTLED : population::GATHER_MOVING;
     for (int k = 0; k < steps && dt > 0; k++) {
         double tk = startT + (k + 0.5) * dt;
         // A migrating band is never content: full firelight extension.
         float wh = daylight::workHours(lat, tk, 1.0f);
         float flow = flowBase * atmosphere::forageFactor(atmosphere::seasonalTempC(clim, n, h, tk));
         float H = std::min(flow, gather * b.P * wh / 12.0f);
-        float cap = CAP_DAYS_BAND * std::max(b.P, 1.0f);
+        float cap = population::CAP_DAYS_BAND * std::max(b.P, 1.0f);
         float fill = std::clamp(b.S / cap, 0.0f, 1.0f);
-        float excl = std::clamp(1.0f - fill / HOARD_FILL, 0.0f, 1.0f);
+        float excl = std::clamp(1.0f - fill / population::HOARD_FILL, 0.0f, 1.0f);
         float shortfall = b.P > 0 ? std::clamp(1.0f - H / b.P, 0.0f, 1.0f) : 0.0f;
         double a = startT + k * (double)dt;
         float act = dt >= 1.0f ? 1.0f : (float)(daylight::activeDays(lon, a, a + dt, wh) / dt);
-        bandStarve(b.pop, STARVE_MAX * b.P * excl * shortfall * dt);
+        population::bandStarve(b.pop, population::STARVE_MAX * b.P * excl * shortfall * dt);
         b.P = b.pop.total();
-        b.S = std::clamp(b.S + (H - b.P) * dt * act, 0.0f, CAP_DAYS_BAND * std::max(b.P, 1.0f));
+        b.S = std::clamp(b.S + (H - b.P) * dt * act, 0.0f,
+                         population::CAP_DAYS_BAND * std::max(b.P, 1.0f));
         // Water: drink what is here, carry away the surplus, spend the rest
         // out of the skins. Dry, and the ground giving nothing, kills fast.
         // The skins hold what they hold; in the heat that is fewer days.
-        float wCap = CAP_WATER_DAYS * std::max(b.P, 1.0f);
+        float wCap = population::CAP_WATER_DAYS * std::max(b.P, 1.0f);
         float need = b.P * thirst; // fewer mouths, less water, same heat
         b.water = std::clamp(b.water + (drinkable - need) * dt, 0.0f, wCap);
         if (b.water <= 0.0f && drinkable < need) {
             float dry = std::clamp(1.0f - drinkable / std::max(need, 1.0f), 0.0f, 1.0f);
-            bandStarve(b.pop, THIRST_DEATH_RATE * b.P * dry * dt);
+            population::bandStarve(b.pop, population::THIRST_DEATH_RATE * b.P * dry * dt);
             b.P = b.pop.total();
         }
     }
@@ -251,8 +250,8 @@ inline void integrateBand(population::Band& b, float flowBase, double span, bool
 inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
                             const hydrology::Result& hy, const atmosphere::Climatology& clim,
                             const population::Band& b, int cell, double now) {
-    using namespace population;
-    Settlement s = newSettlement(cell, b.pop, b.P, cellCondition(pf, cell, now), now);
+    population::Settlement s =
+        population::newSettlement(cell, b.pop, b.P, population::cellCondition(pf, cell, now), now);
     // A community that picked up and moved keeps its identity along with
     // its name; only colonists are somebody new.
     s.id = b.sid ? b.sid : pf.nextSettlementId++;
@@ -287,17 +286,17 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     // allows: a community that walked here with five hundred people does not
     // wait a century to work enough ground to feed them.
     float take = std::min(wantedReachKm(pf, cell, s.P, population::SUSTAIN_R),
-                          std::min(roomKm(pf, cellCentre(cell)), CLAIM_CAP_KM));
-    take = std::max(take, CLAIM_FLOOR_KM);
-    for (int k = 0; k < CLAIM_SECTORS; k++) s.claim[k] = take;
+                          std::min(roomKm(pf, cellCentre(cell)), population::CLAIM_CAP_KM));
+    take = std::max(take, population::CLAIM_FLOOR_KM);
+    for (int k = 0; k < population::CLAIM_SECTORS; k++) s.claim[k] = take;
     applyClaim(pf, s);
     updateFarmland(pf, s);
-    s.S = std::min(b.S, CAP_DAYS_SETTLED * b.P);
-    for (int t = 0; t < NTECH; t++) s.tech[t] = b.tech[t];
-    if (s.tech[TECH_HUSBANDRY].practising) {
+    s.S = std::min(b.S, population::CAP_DAYS_SETTLED * b.P);
+    for (int t = 0; t < population::NTECH; t++) s.tech[t] = b.tech[t];
+    if (s.tech[population::TECH_HUSBANDRY].practising) {
         // Herders arrive with stock driven along the march, not a bare
         // seed: enough to feed a share of the arrivals while it grows.
-        float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
+        float hExp = technology::expertise(s.tech[population::TECH_HUSBANDRY], now);
         s.herd = std::max(technology::HERD_SEED, 0.25f * b.P * hExp);
     }
     atmosphere::seasonProfile(clim, cellCentre(cell), std::max(hy.heightM[cell], 0.0f), s.tSeason,
@@ -308,11 +307,11 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     pf.neighbours.push_back({});
     terrain::V3 n = cellCentre(cell);
     for (int j = 0; j < idx; j++)
-        if (distKm(n, cellCentre(pf.settlements[j].cell)) <= CONTACT_KM) {
+        if (distKm(n, cellCentre(pf.settlements[j].cell)) <= population::CONTACT_KM) {
             pf.neighbours[idx].push_back(j);
             pf.neighbours[j].push_back(idx);
         }
-    for (int t = 0; t < NTECH; t++) {
+    for (int t = 0; t < population::NTECH; t++) {
         technology::redraw(pf, idx, ws, t, now);
         for (int j : pf.neighbours[idx]) technology::redraw(pf, j, ws, t, now);
         technology::scheduleInvention(pf, ws, t, now);
@@ -335,10 +334,9 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
 // travels with it.
 inline bool mergeBand(population::Field& pf, technology::WorldState& ws, const population::Band& b,
                       double now) {
-    using namespace population;
     terrain::V3 n = {b.px, b.py, b.pz};
     int ti = -1;
-    float td = CONTACT_KM;
+    float td = population::CONTACT_KM;
     for (int i = 0; i < (int)pf.settlements.size(); i++) {
         if (pf.settlements[i].leaving) continue; // that place is being abandoned
         float d = distKm(n, cellCentre(pf.settlements[i].cell));
@@ -348,12 +346,12 @@ inline bool mergeBand(population::Field& pf, technology::WorldState& ws, const p
         }
     }
     if (ti < 0) return false;
-    Settlement& t = pf.settlements[ti];
+    population::Settlement& t = pf.settlements[ti];
     t.pop.add(b.pop);
     t.P = t.pop.total();
     t.bows += b.bows;
-    t.S = std::min(t.S + b.S, CAP_DAYS_SETTLED * t.P);
-    for (int tc = 0; tc < NTECH; tc++) {
+    t.S = std::min(t.S + b.S, population::CAP_DAYS_SETTLED * t.P);
+    for (int tc = 0; tc < population::NTECH; tc++) {
         if (b.tech[tc].aware && !t.tech[tc].aware) {
             t.tech[tc].aware = true;
             technology::redraw(pf, ti, ws, tc, now);
@@ -365,8 +363,9 @@ inline bool mergeBand(population::Field& pf, technology::WorldState& ws, const p
             t.tech[tc].practising = true;
             t.tech[tc].practiceT = b.tech[tc].practiceT;
             t.nextTech[tc] = 1e18;
-            if (tc == TECH_HUSBANDRY && t.herd <= 0) t.herd = technology::HERD_SEED;
-            if (tc == TECH_FARMING) technology::redraw(pf, ti, ws, TECH_GRANARY, now);
+            if (tc == population::TECH_HUSBANDRY && t.herd <= 0) t.herd = technology::HERD_SEED;
+            if (tc == population::TECH_FARMING)
+                technology::redraw(pf, ti, ws, population::TECH_GRANARY, now);
             for (int j : pf.neighbours[ti]) technology::redraw(pf, j, ws, tc, now);
             technology::scheduleInvention(pf, ws, tc, now);
         }
@@ -384,8 +383,7 @@ inline bool mergeBand(population::Field& pf, technology::WorldState& ws, const p
 // arrive, re-target, or give up. Returns false if the band no longer exists.
 inline bool stepBand(population::Field& pf, technology::WorldState& ws, const hydrology::Result& hy,
                      const atmosphere::Climatology& clim, int bi, double now) {
-    using namespace population;
-    Band& b = pf.bands[bi];
+    population::Band& b = pf.bands[bi];
     terrain::V3 pos = {b.px, b.py, b.pz};
     double span = now - b.t;
     b.t = now;
@@ -393,29 +391,30 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws, const hy
     double startT = b.t - span; // b.t was already moved to now
     // 0 on water: crossings cost stores. The game-borne share of the cell's
     // yield follows the regional pool's health, like a settlement's does.
-    float flowBase = pf.K[hereCell] * SUSTAIN_R;
+    float flowBase = pf.K[hereCell] * population::SUSTAIN_R;
     if (flowBase > 0 && pf.kFoodPMap[hereCell] > 0 && !pf.gameG.empty()) {
         float g = pf.gameG[population::gameRegion(hereCell)];
-        float scale = (pf.kFoodPMap[hereCell] - pf.kGameMap[hereCell] * (1.0f - huntEff(g))) /
-                      pf.kFoodPMap[hereCell];
+        float scale =
+            (pf.kFoodPMap[hereCell] - pf.kGameMap[hereCell] * (1.0f - population::huntEff(g))) /
+            pf.kFoodPMap[hereCell];
         flowBase *= std::max(scale, 0.0f);
     }
     // Thirst rises with the heat, so the same skins go less far in the south.
     float hHere0 = std::max(hy.heightM[hereCell], 0.0f);
-    float thirst = thirstFactor(seasonalT(clim, pos, hHere0, now - span * 0.5));
+    float thirst = population::thirstFactor(seasonalT(clim, pos, hHere0, now - span * 0.5));
     integrateBand(b, flowBase, span, b.resting, clim, pos, hHere0, startT,
                   drinkableAt(pf, hy, clim, pos, hereCell, now - span * 0.5, b.P * thirst), thirst);
-    if (b.P < BAND_MIN_P) {
+    if (b.P < population::BAND_MIN_P) {
         if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
         pf.bands.erase(pf.bands.begin() + bi);
         return false;
     }
     // A raiding party has somewhere to be and does not settle en route:
     // outward to its mark, then home with whatever it took.
-    if (b.purpose == BAND_RAID) {
-        int hi = indexById(pf, b.homeId);
+    if (b.purpose == population::BAND_RAID) {
+        int hi = population::indexById(pf, b.homeId);
         if (!b.returning) {
-            int ti = indexById(pf, b.targetId);
+            int ti = population::indexById(pf, b.targetId);
             if (ti < 0)
                 b.returning = true; // they moved on; nothing to rob
             else {
@@ -431,13 +430,14 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws, const hy
             }
             b.targetCell = pf.settlements[hi].cell;
             if (distKm(pos, cellCentre(b.targetCell)) < 20.0f) {
-                Settlement& h = pf.settlements[hi];
+                population::Settlement& h = pf.settlements[hi];
                 h.pop.add(b.pop); // the survivors, back among their people
                 h.aff.fight = std::max(h.aff.fight, b.aff.fight);
                 h.P = h.pop.total();
                 h.bows += b.bows;
                 h.herd += b.lootHerd;
-                h.S = std::min(h.S + b.S + b.loot, storageCapDays(h.P, h.granaries) * h.P);
+                h.S = std::min(h.S + b.S + b.loot,
+                               population::storageCapDays(h.P, h.granaries) * h.P);
                 {
                     char txt[96];
                     snprintf(txt, sizeof txt, "%s raiders came home with %d rations, %d livestock",
@@ -461,8 +461,8 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws, const hy
         float lat = std::asin(std::clamp(pos.z, -1.0f, 1.0f));
         float lonB = std::atan2(pos.y, pos.x);
         float lh = daylight::travelHours(lat, now - span * 0.5);
-        float km =
-            BAND_SPEED_KM_DAY / 12.0f * lh * (float)daylight::activeDays(lonB, now - span, now, lh);
+        float km = population::BAND_SPEED_KM_DAY / 12.0f * lh *
+                   (float)daylight::activeDays(lonB, now - span, now, lh);
         float factor = 1.0f;
         bool water =
             hy.heightM[hereCell] <= 0 || hy.cells[hereCell].lakeLevel > hydrology::NO_LAKE + 1;
@@ -478,14 +478,14 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws, const hy
         b.pz = pos.z;
     }
     int cell = cellOf(pos);
-    if (b.purpose == BAND_RAID) { // no resting, no founding: keep marching
-        b.nextUpdate = now + BAND_STEP_DAYS;
+    if (b.purpose == population::BAND_RAID) { // no resting, no founding: keep marching
+        b.nextUpdate = now + population::BAND_STEP_DAYS;
         return true;
     }
-    float fill = b.S / (CAP_DAYS_BAND * std::max(b.P, 1.0f));
+    float fill = b.S / (population::CAP_DAYS_BAND * std::max(b.P, 1.0f));
     if (b.resting) {
         if (fill >= 0.95f || now - b.restStart > 90.0) b.resting = false;
-    } else if (fill < 0.3f && pf.K[cell] * SUSTAIN_R > b.P) {
+    } else if (fill < 0.3f && pf.K[cell] * population::SUSTAIN_R > b.P) {
         b.resting = true;
         b.restStart = now;
     }
@@ -497,21 +497,22 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws, const hy
     // it a group that left because the valley could not feed three hundred
     // would happily re-found on that same valley the next day: leaving was
     // judged against its population, settling against a fixed threshold.
-    float fExp = technology::expertise(b.tech[TECH_FARMING], now);
-    float hExp = technology::expertise(b.tech[TECH_HUSBANDRY], now);
-    float qExp = technology::expertise(b.tech[TECH_FISHING], now);
+    float fExp = technology::expertise(b.tech[population::TECH_FARMING], now);
+    float hExp = technology::expertise(b.tech[population::TECH_HUSBANDRY], now);
+    float qExp = technology::expertise(b.tech[population::TECH_FISHING], now);
     auto canHold = [&](int c) { return moverCapRoom(pf, c, fExp, hExp, now, b.P, qExp) >= b.P; };
     if (distKm(pos, tgt) < 20.0f) {
         // Arrived: the rumour meets reality.
         if (pf.settlementAt[cell] < 0 &&
-            moverCap(pf, cell, fExp, hExp, now, qExp, b.P) >= MIN_SETTLEMENT_K && canHold(cell) &&
-            claimFits(pf, pos)) {
+            moverCap(pf, cell, fExp, hExp, now, qExp, b.P) >= population::MIN_SETTLEMENT_K &&
+            canHold(cell) && claimFits(pf, pos)) {
             foundSettlement(pf, ws, hy, clim, b, cell, now);
             done = true;
         } else {
             double rest = b.resting ? now - b.restStart : 0.0;
-            int nt = bestProspect(pf, pos, ws.rng, bandAwareKm(rest, prominenceM(hy, clim, cell)),
-                                  now, fExp, hExp, nullptr, b.P, qExp);
+            int nt = bestProspect(pf, pos, ws.rng,
+                                  population::bandAwareKm(rest, prominenceM(hy, clim, cell)), now,
+                                  fExp, hExp, nullptr, b.P, qExp);
             if (nt >= 0)
                 b.targetCell = nt;
             else {
@@ -520,10 +521,10 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws, const hy
             }
         }
     } else if (!b.resting && pf.settlementAt[cell] < 0 &&
-               moverCap(pf, cell, fExp, hExp, now, qExp, b.P) >= MIN_SETTLEMENT_K &&
+               moverCap(pf, cell, fExp, hExp, now, qExp, b.P) >= population::MIN_SETTLEMENT_K &&
                claimFits(pf, pos) && canHold(cell) &&
                moverCapRoom(pf, cell, fExp, hExp, now, b.P, qExp) >=
-                   hopeRatio(now - b.setOut) *
+                   population::hopeRatio(now - b.setOut) *
                        moverCapRoom(pf, b.targetCell, fExp, hExp, now, b.P, qExp)) {
         // Ground under their feet, judged against where they were going:
         // early on it has to be clearly better to be worth giving up the
@@ -535,7 +536,7 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws, const hy
         pf.bands.erase(pf.bands.begin() + bi);
         return false;
     }
-    b.nextUpdate = now + BAND_STEP_DAYS;
+    b.nextUpdate = now + population::BAND_STEP_DAYS;
     return true;
 }
 
@@ -550,8 +551,7 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws, const hy
 inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& ws,
                                  const hydrology::Result& hy, const atmosphere::Climatology& clim,
                                  int si, double now) {
-    using namespace population;
-    Settlement& s = pf.settlements[si];
+    population::Settlement& s = pf.settlements[si];
     if (s.leaving) return;
     float keff = technology::effectiveK(s, now);
     float phi = s.P > 1 ? keff * s.R / s.P : 2.0f;
@@ -563,13 +563,13 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     // sharply seasonal site can read comfortable on the year while the lean
     // season still kills, and people dying of hunger is food limiting
     // growth in the plainest possible sense.)
-    bool bleeding = s.starvedYr > STARVE_NOTICE * std::max(s.P, 1.0f);
-    bool foodLimited = phi < PHI_CONTENT || bleeding;
+    bool bleeding = s.starvedYr > population::STARVE_NOTICE * std::max(s.P, 1.0f);
+    bool foodLimited = phi < population::PHI_CONTENT || bleeding;
     // Sustained hunger for need-driven invention: a genuine shortfall
     // (phi < NEED_HUNGRY_PHI), not the comfort glide. Checked before every
     // early return so small settlements get desperate too; leaving or
     // splitting does not reset it -- neither cures desperation by itself.
-    if (phi >= NEED_HUNGRY_PHI && !bleeding)
+    if (phi >= population::NEED_HUNGRY_PHI && !bleeding)
         s.hungrySince = -1;
     else if (s.hungrySince < 0)
         s.hungrySince = now;
@@ -586,10 +586,10 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     // early wake; at the ordinary equilibrium glide every settlement is
     // nominally scarce, and re-deciding the whole world every two years
     // costs far more than it is worth.
-    bool starving = phi < NEED_HUNGRY_PHI || bleeding;
+    bool starving = phi < population::NEED_HUNGRY_PHI || bleeding;
     if (s.scarceSince < 0) {
         s.scarceSince = now;
-        if (starving) s.nextUpdate = std::min(s.nextUpdate, now + SPLIT_AFTER_DAYS);
+        if (starving) s.nextUpdate = std::min(s.nextUpdate, now + population::SPLIT_AFTER_DAYS);
         return;
     }
     // Never schedule into the past: a deadline that has already gone by
@@ -597,7 +597,8 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     // matching), rewinding the settlement's clock instead of advancing it.
     // Real hunger restores the short cadence: things got worse, so they
     // look again in earnest.
-    if (phi < NEED_HUNGRY_PHI || bleeding) s.lookAgainDays = SPLIT_AFTER_DAYS;
+    if (phi < population::NEED_HUNGRY_PHI || bleeding)
+        s.lookAgainDays = population::SPLIT_AFTER_DAYS;
     if (starving)
         s.nextUpdate = std::min(s.nextUpdate, std::max(s.scarceSince + s.lookAgainDays, now + 5.0));
     if (now - s.scarceSince < s.lookAgainDays) return;
@@ -611,15 +612,16 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     // is what makes a border worth having, and being hemmed in the thing
     // that turns pressure into a journey and eventually into a fight.
     if (growClaim(pf, si, now)) return;
-    if (s.P < BAND_MIN_P) return; // too few to survive any journey
-    float fExp = technology::expertise(s.tech[TECH_FARMING], now);
-    float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
-    float qExp = technology::expertise(s.tech[TECH_FISHING], now);
+    if (s.P < population::BAND_MIN_P) return; // too few to survive any journey
+    float fExp = technology::expertise(s.tech[population::TECH_FARMING], now);
+    float hExp = technology::expertise(s.tech[population::TECH_HUSBANDRY], now);
+    float qExp = technology::expertise(s.tech[population::TECH_FISHING], now);
     terrain::V3 home = cellCentre(s.cell);
     float est = 0;
-    int tgt = bestProspect(pf, home, ws.rng,
-                           settlementAwareKm(now - s.founded, prominenceM(hy, clim, s.cell)), now,
-                           fExp, hExp, &est, s.P, qExp);
+    int tgt =
+        bestProspect(pf, home, ws.rng,
+                     population::settlementAwareKm(now - s.founded, prominenceM(hy, clim, s.cell)),
+                     now, fExp, hExp, &est, s.P, qExp);
     bool wasStuck = s.noProspect; // the last survey came up empty too
     s.noProspect = tgt < 0;
     if (tgt < 0) {
@@ -627,7 +629,7 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
         // where raiding comes from -- but only once it is clear there is no
         // land to be had, not on the first disappointing look around.
         bool raided = wasStuck && maybeRaid(pf, ws, si, now);
-        s.lookAgainDays = std::min(s.lookAgainDays * 2.0, LOOK_BACKOFF_MAX);
+        s.lookAgainDays = std::min(s.lookAgainDays * 2.0, population::LOOK_BACKOFF_MAX);
         (void)raided;
         return;
     }
@@ -638,18 +640,20 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     // than promised is a real outcome -- the band re-evaluates on arrival
     // against this same measure, so nobody marches toward ground they would
     // refuse when they got there.
-    float targetSupport = est * SUSTAIN_R;
+    float targetSupport = est * population::SUSTAIN_R;
     float homeSupport = keff * s.R; // what this place carries in its present state
-    float anchor = 1.0f + RELOC_ANCHOR_GRANARY * s.granaries + RELOC_ANCHOR_FARM * fExp +
-                   RELOC_ANCHOR_FSTEAD * s.farmsteads;
+    float anchor = 1.0f + population::RELOC_ANCHOR_GRANARY * s.granaries +
+                   population::RELOC_ANCHOR_FARM * fExp +
+                   population::RELOC_ANCHOR_FSTEAD * s.farmsteads;
     bool wholeGroup = targetSupport >= s.P && targetSupport >= anchor * homeSupport;
-    if (!wholeGroup && s.P < SPLIT_MIN_P) { // nowhere for all, too few to divide: endure
-        s.lookAgainDays = std::min(s.lookAgainDays * 2.0, LOOK_BACKOFF_MAX);
+    if (!wholeGroup &&
+        s.P < population::SPLIT_MIN_P) { // nowhere for all, too few to divide: endure
+        s.lookAgainDays = std::min(s.lookAgainDays * 2.0, population::LOOK_BACKOFF_MAX);
         return;
     }
-    s.lookAgainDays = SPLIT_AFTER_DAYS; // something came of it: keep looking
+    s.lookAgainDays = population::SPLIT_AFTER_DAYS; // something came of it: keep looking
 
-    Band b{};
+    population::Band b{};
     b.id = pf.nextBandId++;
     b.px = home.x;
     b.py = home.y;
@@ -659,24 +663,26 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     b.colonists = !wholeGroup; // a splinter, not the town on the move
     for (int i = 0; i < 16; i++) b.name[i] = s.name[i];
     b.pop = s.pop;
-    if (!wholeGroup) b.pop.scale(SPLIT_SHARE);
+    if (!wholeGroup) b.pop.scale(population::SPLIT_SHARE);
     b.P = b.pop.total();
-    b.S = std::min((wholeGroup ? s.S : s.S * SPLIT_SHARE), CAP_DAYS_BAND * b.P);
-    b.water = CAP_WATER_DAYS * b.P;                      // nobody sets out with empty skins
-    b.bows = wholeGroup ? s.bows : s.bows * SPLIT_SHARE; // people take their bows
+    b.S = std::min((wholeGroup ? s.S : s.S * population::SPLIT_SHARE),
+                   population::CAP_DAYS_BAND * b.P);
+    b.water = population::CAP_WATER_DAYS * b.P; // nobody sets out with empty skins
+    b.bows = wholeGroup ? s.bows : s.bows * population::SPLIT_SHARE; // people take their bows
     b.targetCell = tgt;
     b.setOut = now;
     b.fromCell = s.cell;
     b.t = now;
-    b.nextUpdate = now + BAND_STEP_DAYS;
-    for (int t = 0; t < NTECH; t++) b.tech[t] = s.tech[t];
+    b.nextUpdate = now + population::BAND_STEP_DAYS;
+    for (int t = 0; t < population::NTECH; t++) b.tech[t] = s.tech[t];
     if (wholeGroup) {
         b.sid = s.id; // they are still themselves, wherever they end up
         // The land remembers what it was left in; only a place that was
         // invested in leaves anything to find.
-        markScar(pf, s.cell, s.R, now, s.id);
-        if (s.granaries >= 1.0f || s.farmsteads >= 1.0f || now - s.founded > RUIN_MIN_AGE_DAYS) {
-            Field::Ruin r{s.cell, now, {}};
+        population::markScar(pf, s.cell, s.R, now, s.id);
+        if (s.granaries >= 1.0f || s.farmsteads >= 1.0f ||
+            now - s.founded > population::RUIN_MIN_AGE_DAYS) {
+            population::Field::Ruin r{s.cell, now, {}};
             for (int i = 0; i < 16; i++) r.name[i] = s.name[i];
             pf.ruins.push_back(r);
         }
@@ -692,16 +698,16 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
         // that keeps its cohorts is a settlement that comes back to life on
         // the next wake -- with its knowledge, its hunger and its vote in
         // the world's inventions.
-        s.pop = Cohorts{};
+        s.pop = population::Cohorts{};
         s.P = 0;
         s.S = 0;
         s.herd = 0;
         s.nextUpdate = 1e18;
-        for (int t = 0; t < NTECH; t++) s.nextTech[t] = 1e18;
+        for (int t = 0; t < population::NTECH; t++) s.nextTech[t] = 1e18;
         {
             char txt[96];
             snprintf(txt, sizeof txt, "%s abandoned their home and set out", s.name);
-            note(pf, EV_RELOCATE, now, s.id, 0, b.id, b.P, txt);
+            note(pf, population::EV_RELOCATE, now, s.id, 0, b.id, b.P, txt);
         }
         logAt("settlement moves on", si, home, b.P, now);
     } else {
@@ -712,7 +718,7 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
         {
             char txt[96];
             snprintf(txt, sizeof txt, "%d colonists left %s", (int)b.P, s.name);
-            note(pf, EV_SPLIT, now, s.id, 0, b.id, b.P, txt);
+            note(pf, population::EV_SPLIT, now, s.id, 0, b.id, b.P, txt);
         }
         logAt("split from settlement", si, home, b.P, now);
     }

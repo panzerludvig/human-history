@@ -1,5 +1,5 @@
 // Raiding (Design/Conflict.md): the answer for a people that must move or
-// divide and has nowhere to go. Who is worth robbing, whether a party sets
+// divide with nowhere to go. Who is worth robbing, whether a party sets
 // out, what a fight costs when it reaches them. The party itself is a Band
 // with a purpose; its march is bands.h.
 #pragma once
@@ -20,11 +20,11 @@ namespace sim {
 // bonus any more; the advantage is the population itself.
 inline float fightStrength(const population::Cohorts& c, float bows, float archExp,
                            float fightAff = 0) {
-    using namespace population;
-    float able = cohortStrength(c);
-    float cover = bowCoverage(bows, std::max(c.M, 1.0f)); // bows are carried by the men
-    return able * (FIGHT_UNARMED + (1.0f - FIGHT_UNARMED) * cover * archExp) *
-           affinityBonus(fightAff);
+    float able = population::cohortStrength(c);
+    float cover = population::bowCoverage(bows, std::max(c.M, 1.0f)); // bows are carried by the men
+    return able *
+           (population::FIGHT_UNARMED + (1.0f - population::FIGHT_UNARMED) * cover * archExp) *
+           population::affinityBonus(fightAff);
 }
 
 // The raid: reached them, now settle it. Heavily chanced -- a party twice
@@ -33,17 +33,16 @@ inline float fightStrength(const population::Cohorts& c, float bows, float archE
 // limited by what can be carried, except livestock, which walks itself.
 inline void resolveRaid(population::Field& pf, technology::WorldState& ws, population::Band& b,
                         int ti, double now) {
-    using namespace population;
-    Settlement& t = pf.settlements[ti];
-    float aExp = technology::expertise(b.tech[TECH_ARCHERY], now);
-    float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
-    float A = fightStrength(b.pop, b.bows, aExp, b.aff.fight) * RAID_INITIATIVE;
+    population::Settlement& t = pf.settlements[ti];
+    float aExp = technology::expertise(b.tech[population::TECH_ARCHERY], now);
+    float dExp = technology::expertise(t.tech[population::TECH_ARCHERY], now);
+    float A = fightStrength(b.pop, b.bows, aExp, b.aff.fight) * population::RAID_INITIATIVE;
     float D = fightStrength(t.pop, t.bows, dExp, t.aff.fight);
-    double pa = std::pow(std::max(A, 1e-3f), RAID_ODDS_POWER);
-    double pd = std::pow(std::max(D, 1e-3f), RAID_ODDS_POWER);
+    double pa = std::pow(std::max(A, 1e-3f), population::RAID_ODDS_POWER);
+    double pd = std::pow(std::max(D, 1e-3f), population::RAID_ODDS_POWER);
     bool won = technology::urand(ws.rng) < pa / (pa + pd);
-    float lossA = won ? RAID_LOSS_WINNER : RAID_LOSS_LOSER;
-    float lossD = won ? RAID_LOSS_LOSER : RAID_LOSS_WINNER;
+    float lossA = won ? population::RAID_LOSS_WINNER : population::RAID_LOSS_LOSER;
+    float lossD = won ? population::RAID_LOSS_LOSER : population::RAID_LOSS_WINNER;
     // The men are the ones in the fight; a few of the rest are caught up
     // in it. A settlement that loses its men is crippled for a generation,
     // and the flows above are what let that scar heal slowly.
@@ -60,16 +59,16 @@ inline void resolveRaid(population::Field& pf, technology::WorldState& ws, popul
     int deadA = (int)std::lround(std::max(beforeA - b.P, 0.0f));
     int deadD = (int)std::lround(std::max(beforeD - t.P, 0.0f));
     if (won) {
-        float carry = b.P * LOOT_CARRY_DAYS;
-        b.loot = std::min(t.S * LOOT_STORE_SHARE, carry);
-        b.lootHerd = t.herd * LOOT_HERD_SHARE;
+        float carry = b.P * population::LOOT_CARRY_DAYS;
+        b.loot = std::min(t.S * population::LOOT_STORE_SHARE, carry);
+        b.lootHerd = t.herd * population::LOOT_HERD_SHARE;
         t.S = std::max(t.S - b.loot, 0.0f);
         t.herd = std::max(t.herd - b.lootHerd, 0.0f);
     }
     // Both sides learn the trade, whichever way it went. Being raided
     // makes a people dangerous, not merely poorer.
-    b.aff.fight += (1.0f - b.aff.fight) * FIGHT_LEARN;
-    t.aff.fight += (1.0f - t.aff.fight) * FIGHT_LEARN;
+    b.aff.fight += (1.0f - b.aff.fight) * population::FIGHT_LEARN;
+    t.aff.fight += (1.0f - t.aff.fight) * population::FIGHT_LEARN;
     {
         char txt[96];
         if (won)
@@ -94,16 +93,16 @@ inline void resolveRaid(population::Field& pf, technology::WorldState& ws, popul
 // people you know about -- and livestock counts double, being wealth that
 // carries itself home.
 inline int raidTarget(const population::Field& pf, int si, double now, float strength) {
-    using namespace population;
-    const Settlement& s = pf.settlements[si];
+    const population::Settlement& s = pf.settlements[si];
     int best = -1;
     float bestScore = 0;
     for (int j : pf.neighbours[si]) {
-        const Settlement& t = pf.settlements[j];
-        if (t.leaving || t.P < BAND_MIN_P) continue;
-        float prize = t.S * LOOT_STORE_SHARE + t.herd * LOOT_HERD_SHARE * LOOT_CARRY_DAYS;
-        if (prize < RAID_WORTH_IT) continue; // not worth the walk
-        float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
+        const population::Settlement& t = pf.settlements[j];
+        if (t.leaving || t.P < population::BAND_MIN_P) continue;
+        float prize = t.S * population::LOOT_STORE_SHARE +
+                      t.herd * population::LOOT_HERD_SHARE * population::LOOT_CARRY_DAYS;
+        if (prize < population::RAID_WORTH_IT) continue; // not worth the walk
+        float dExp = technology::expertise(t.tech[population::TECH_ARCHERY], now);
         float def = fightStrength(t.pop, t.bows, dExp, t.aff.fight);
         float score = prize / std::max(def, 1.0f);
         if (score > bestScore) {
@@ -115,8 +114,8 @@ inline int raidTarget(const population::Field& pf, int si, double now, float str
     // real weight, a settlement defends far better than its headcount
     // suggests, so this rejects most neighbours outright.
     if (best >= 0) {
-        const Settlement& t = pf.settlements[best];
-        float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
+        const population::Settlement& t = pf.settlements[best];
+        float dExp = technology::expertise(t.tech[population::TECH_ARCHERY], now);
         if (fightStrength(t.pop, t.bows, dExp, t.aff.fight) > strength) return -1;
     }
     return best;
@@ -125,20 +124,20 @@ inline int raidTarget(const population::Field& pf, int si, double now, float str
 // Nowhere to go, and hungry: the third answer. Sends a party to rob the
 // best neighbour within reach. Returns true if one set out.
 inline bool maybeRaid(population::Field& pf, technology::WorldState& ws, int si, double now) {
-    using namespace population;
-    Settlement& s = pf.settlements[si];
-    if (s.pop.M * RAID_MEN_SHARE < RAID_MIN_P) return false;
-    float archExp = technology::expertise(s.tech[TECH_ARCHERY], now);
-    Cohorts party{};
-    party.M = s.pop.M * RAID_MEN_SHARE; // the men go; the rest stay
+    population::Settlement& s = pf.settlements[si];
+    if (s.pop.M * population::RAID_MEN_SHARE < population::RAID_MIN_P) return false;
+    float archExp = technology::expertise(s.tech[population::TECH_ARCHERY], now);
+    population::Cohorts party{};
+    party.M = s.pop.M * population::RAID_MEN_SHARE; // the men go; the rest stay
     float strength =
-        fightStrength(party, s.bows * RAID_MEN_SHARE, archExp, s.aff.fight) * RAID_INITIATIVE;
+        fightStrength(party, s.bows * population::RAID_MEN_SHARE, archExp, s.aff.fight) *
+        population::RAID_INITIATIVE;
     int ti = raidTarget(pf, si, now, strength);
     if (ti < 0) return false;
     terrain::V3 home = cellCentre(s.cell);
-    Band b{};
+    population::Band b{};
     b.id = pf.nextBandId++;
-    b.purpose = BAND_RAID;
+    b.purpose = population::BAND_RAID;
     b.homeId = s.id;
     b.targetId = pf.settlements[ti].id;
     b.px = home.x;
@@ -149,13 +148,13 @@ inline bool maybeRaid(population::Field& pf, technology::WorldState& ws, int si,
     for (int i = 0; i < 16; i++) b.name[i] = s.name[i];
     b.pop = party;
     b.P = party.total();
-    b.bows = s.bows * RAID_MEN_SHARE;
-    b.S = std::min(s.S * RAID_MEN_SHARE, CAP_DAYS_BAND * b.P);
-    b.water = CAP_WATER_DAYS * b.P; // nobody sets out with empty skins
+    b.bows = s.bows * population::RAID_MEN_SHARE;
+    b.S = std::min(s.S * population::RAID_MEN_SHARE, population::CAP_DAYS_BAND * b.P);
+    b.water = population::CAP_WATER_DAYS * b.P; // nobody sets out with empty skins
     b.targetCell = pf.settlements[ti].cell;
     b.t = now;
-    b.nextUpdate = now + BAND_STEP_DAYS;
-    for (int t = 0; t < NTECH; t++) b.tech[t] = s.tech[t];
+    b.nextUpdate = now + population::BAND_STEP_DAYS;
+    for (int t = 0; t < population::NTECH; t++) b.tech[t] = s.tech[t];
     s.pop.M -= party.M;
     s.P = s.pop.total();
     s.S -= b.S;
@@ -165,7 +164,7 @@ inline bool maybeRaid(population::Field& pf, technology::WorldState& ws, int si,
         char txt[96];
         snprintf(txt, sizeof txt, "%s sent %d warriors against %s", s.name, (int)b.P,
                  pf.settlements[ti].name);
-        note(pf, EV_RAID_LAUNCH, now, s.id, pf.settlements[ti].id, b.id, b.P, txt);
+        note(pf, population::EV_RAID_LAUNCH, now, s.id, pf.settlements[ti].id, b.id, b.P, txt);
     }
     logAt("raiding party leaves settlement", si, home, b.P, now);
     return true;

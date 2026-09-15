@@ -1,6 +1,6 @@
 // The population model of Design/Population.md as arithmetic: the carrying
 // capacity the terrain offers, computed once for every cell by build, then
-// the people, land condition and stores of each settlement integrated
+// each settlement's state -- people, land condition, stores -- integrated
 // against it by advance, at scheduled re-evaluations rather than ticks. The
 // data these functions work on is settlement.h; the decisions taken between
 // wakes (claims, journeys, raids) are the sim headers.
