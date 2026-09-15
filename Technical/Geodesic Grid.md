@@ -1,6 +1,6 @@
 # Geodesic Grid
 
-**Status:** Implemented (the grid and its operators); the atmosphere on it is a reference port that no longer compiles — see [[Meta/Status Vocabulary]]
+**Status:** Implemented (the grid and its operators) — see [[Meta/Status Vocabulary]]
 
 An icosahedron subdivided five times and projected onto the sphere, with the cells being the dual hexagons and twelve pentagons at the original corners. It exists because the climate model's latitude-longitude grid is singular at the poles: a cell's width goes as the cosine of latitude, so at 80 degrees a cell is 36 km wide against 208 km at the equator, and no single time step can be stable everywhere. Every polar failure the model has had traces to that one fact — cap rows acting as infinite reservoirs, a zonal filter that removed every mode except the jet, curvature terms, and (on 2026-09-07) a 70 m/s jet reaching the 80 degree wall of the quasi-geostrophic model and blowing up in four hours.
 
@@ -8,7 +8,7 @@ An icosahedron subdivided five times and projected onto the sphere, with the cel
 
 - `src/geodesic.h` — the grid (`geodesic::build(level)`), 3D tangent vectors, and the operators `grad`, `div`, `lap`, `advect`, each one loop over a cell's five or six neighbours with no special cases.
 - `src/gridtest.cpp`, `build_gridtest.bat` — the self-test: mesh uniformity, operators against closed form, the stable step.
-- `src/atmosphere_geo.h`, `src/geosweep.cpp`, `build_geosweep.bat` — the atmosphere of 2026-09-02 ported to the mesh, including its constants and helpers from `atmosphere.h`. It targets that day's physics (`H_UPPER`, `RHO_UPPER`) and does not compile against the two-layer, prescribed `atmosphere.h` of today. It is kept as the worked example of how the port is done, not as code to build.
+- The atmosphere of 2026-09-02 ported to the mesh (`atmosphere_geo.h`, `geosweep.cpp`, `build_geosweep.bat`) targeted that day's physics and had stopped compiling against the two-layer, prescribed `atmosphere.h`; it was removed from `main` on 2026-09-15 (work order 03). Its last state is commit `4ac16a0`, listed in the branch map in [[Meta/Git]]; it remains the worked example of how a port is done.
 
 ## What the self-test measures (run of 2026-09-08)
 

@@ -1,6 +1,6 @@
 # 03 — Take the superseded models out of the game build
 
-**Status:** queued (2026-09-15)
+**Status:** in progress (2026-09-15)
 
 ## Problem
 
