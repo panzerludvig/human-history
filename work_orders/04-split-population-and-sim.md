@@ -155,3 +155,9 @@ Unsure of, for the morning:
 - **Line endings:** `sim.h` had a UTF-8 BOM and CRLF in the working copy; the new
   files are LF without BOM (the index is LF for all headers under `text=auto`).
 - Order 05's line references into `sim.h` and `population.h` are stale after this.
+
+**Merged into `nightly/2026-09-15`** as `0d245e2`, after order 03. Second probe on
+`nightly`: `build.bat` and `build_testresources.bat` succeed; `build\test_resources.exe 7 40`
+and `3 40` stderr byte-identical to the `4ac16a0` baseline (`fc /b`: no differences;
+24980 and 7729 bytes). The probe writes only to stderr; capturing it through PowerShell's
+`2>` wraps lines and breaks the comparison, so capture through `cmd /c`.
