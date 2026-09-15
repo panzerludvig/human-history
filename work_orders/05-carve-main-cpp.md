@@ -1,6 +1,6 @@
 # 05 — Carve main.cpp into modules
 
-**Status:** open (2026-09-15)
+**Status:** queued (2026-09-15)
 
 ## Problem
 
@@ -32,6 +32,8 @@ Violates `standards/general.md` §Modules and `standards/cpp.md` §Shape.
 - Per-frame allocation: `paintOverlay` 1303-1341 allocates three containers and six GDI
   objects per redraw and `overlayStale` (1437) is true on every camera-move frame;
   `describePoint` allocates on every mouse move (3199).
+- Line references checked against commit `9f598d3` on 2026-09-15, after orders 01 and 02
+  landed.
 
 ## Design
 
@@ -69,7 +71,9 @@ the F2 screenshot being pixel-identical for a fixed seed and view:
 
 - `main.cpp` is under 1,000 lines and holds only Win32 plumbing, the render loop and the
   wiring between modules.
-- F2 screenshots for two seeds and views are byte-identical before and after.
+- F2 screenshots for two seeds and views are byte-identical before and after. Headless:
+  the tenth argument (`main.cpp:3421`) saves a frame to that path and keeps running, so the
+  probe waits for the file and then kills the process.
 - A save/load round-trip probe exists and passes.
 
 ## Depends on

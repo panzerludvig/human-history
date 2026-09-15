@@ -1,10 +1,10 @@
 # 09 — One name for each shared constant; thresholds derived from their tables
 
-**Status:** open (2026-09-15)
+**Status:** open (2026-09-15) — runs alone, after the orders whose files it shares have merged
 
 ## Problem
 
-Pi is spelled as a literal about 180 times in five spellings. Earth radius, days per year,
+Pi is spelled as a literal on about 140 lines in five spellings. Earth radius, days per year,
 the 6.5 lapse rate, the row-cosine expression, the 0.85 herd factor and "never" as a time
 each recur ten to twenty times with a named constant already present somewhere. Three
 vector types exist. Several thresholds are literals compared against tables whose maximum
@@ -15,15 +15,15 @@ Violates `standards/general.md` §Names carry units and §Thresholds and clocks,
 
 ## Evidence
 
-- Pi: `3.14159265` about 135 sites, `3.14159265f` 33, three other spellings; named only at
+- Pi: `3.14159265` about 120 sites, `3.14159265f` 21, three other spellings; named only at
   `src/qg2geo.h:43` and `src/main.cpp:147`. Row cosine
-  `std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265)` 17 times in `atmosphere.h`
+  `std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265)` 14 times in `atmosphere.h`
   though `latRad` already holds it.
 - Earth radius: `main.cpp:148` `EARTH_RADIUS_KM`, `atmosphere.h` `R_EARTH`, literal
   `6371` in `sim.h:58, 597, 611`, `terrain.h:449`, `population.h` (5 sites),
-  `sweep.cpp:362`, `globe.frag`.
-- Lapse: `PRE_LAPSE = 6.5` at `atmosphere.h:766`; literal at 1885, 1932, 1976, 2099, 3293,
-  3303, 3322, 3343, 3380.
+  `sweep.cpp:368`, `globe.frag`.
+- Lapse: `PRE_LAPSE = 6.5` at `atmosphere.h:752`; literal at 1854, 1901, 1945, 2138, 3177,
+  3187 (order 02 removed three sites).
 - Days per year: `technology.h:11` `YEAR`; literal `365` throughout `population.h`,
   `sim.h`, `main.cpp`. "Never": `1e18`/`1e17` at `population.h:617`, `sim.h:1350-1351,
   1432, 1443-1451` vs `technology::INF_T`.
@@ -41,6 +41,8 @@ Violates `standards/general.md` §Names carry units and §Thresholds and clocks,
   atmosphere state.
 - `enum class` candidates: `Panel::kind`, `tab`, `debugMode`, `genKind`, `newsLevel`
   (`main.cpp:826, 3215, 3339`); event kinds (`sim.h:1432`).
+- Line references checked against commit `9f598d3` on 2026-09-15, after orders 01 and 02
+  landed.
 
 ## Design
 

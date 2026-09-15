@@ -1,6 +1,6 @@
 # 06 — Close the CPU/GPU drifts and mark every mirror
 
-**Status:** open (2026-09-15)
+**Status:** open (2026-09-15) — waits for a night without 05, which owns `main.cpp`
 
 ## Problem
 
@@ -21,20 +21,22 @@ Violates `standards/general.md` §Mirrored code.
   frozen while the globe draws a ramp.
 - **Stale name.** `src/sim.h:566` cites `granaryNear` in the shader; it is now `hutsNear`
   (`globe.frag:422-450`).
-- **Diurnal peak.** `main.cpp:2007` peaks at 14:00, `atmosphere.h:967` at 15:00.
+- **Diurnal peak.** `main.cpp:2007` peaks at 14:00, `atmosphere.h:952` at 15:00.
 - **No comment either side:** `atmosphere::bilinearAt/seasonalAt/annualAt`
-  (`atmosphere.h:3248-3269`) vs `climSample/climAnnual` (`globe.frag:660-676`), where the
+  (`atmosphere.h:3130-3157`) vs `climSample/climAnnual` (`globe.frag:660-676`), where the
   CPU clamps rows to `[0, H-1]` and the shader clamps to `[0.02, 0.98]`;
   `sim::cellCentre/cellOf` (`sim.h:38-43`) vs `globe.frag:291`.
 - **One-sided comments:** `terrain.h:59-176` noise stack, `templateHeight/heightMeters`
-  (252, 270), `derivedTempC` and kin (`atmosphere.h:3289-3367`).
+  (252, 270), `derivedTempC` and kin (`atmosphere.h:3173-3251`).
 - **Dead mirrors:** `globe.frag:818 temperatureC`, `:823 moistureAt` have no callers in
   the shader.
 - **Constants duplicated with no check:** `HW/HH` (`globe.frag:49` vs `hydrology.h:18`),
   `SITE_STRIDE` (`main.cpp:897` vs `globe.frag:302`), `HUT_KMPP/WALK_KMPP`
   (`main.cpp:944` vs `globe.frag:375`), `NSUB/NCOV`, `NO_LAKE`, `CRUST_WEIGHT`.
 - The 4-season interpolation `fmod(t,365)/365*4-0.5` is written out at `main.cpp:2020`,
-  `atmosphere.h:3270`, `globe.frag:666`.
+  `atmosphere.h:3154`, `globe.frag:666`.
+- Line references checked against commit `9f598d3` on 2026-09-15, after orders 01 and 02
+  landed.
 
 ## Design
 

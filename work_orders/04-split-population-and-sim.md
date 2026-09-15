@@ -1,6 +1,6 @@
 # 04 — Split population.h and sim.h by concern
 
-**Status:** open (2026-09-15)
+**Status:** queued (2026-09-15)
 
 ## Problem
 
@@ -36,6 +36,8 @@ and §Shape (`advance` is 241 lines; its seven blocks are already functions in s
   `population.h:750`, `claimant` `sim.h:145`, `roomKm` `sim.h:168`, `bestProspect`
   `sim.h:418`, and `build`'s stencils `population.h:887-1008`. Everything else works on
   unit vectors.
+- Line references checked against commit `9f598d3` on 2026-09-15, after orders 01 and 02
+  landed.
 
 ## Design
 

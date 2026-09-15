@@ -57,7 +57,8 @@ An order moves from `open` to `queued` when all of these hold:
 
 1. Fork `nightly/YYYY-MM-DD` from `main`.
 2. For each `queued` order in numeric order: set `in progress`; fork `wo/NN-slug` from
-   the same base; implement; build; run the probe named in Done when.
+   the same base, or from the current `nightly` head when the order depends on one merged
+   earlier that night; implement; build; run the probe named in Done when.
 3. If it passes, merge the order branch into `nightly` and run the probe again there. If
    that passes too, the order is `done`. If the merge does not apply cleanly or the
    second probe fails, the order is `failed`, the branch is left as is, and `nightly` is

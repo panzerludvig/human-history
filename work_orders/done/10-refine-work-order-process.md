@@ -1,6 +1,6 @@
 # 10 — Refine the work-order process
 
-**Status:** open (2026-09-15)
+**Status:** done (2026-09-15)
 
 ## Problem
 
@@ -49,3 +49,12 @@ into `README.md`:
 ## Depends on
 
 Experience from any two of 01-09.
+
+## Review
+
+Closed 2026-09-15, before any night had run. Answered by `Meta/Work Orders.md`,
+`work_orders/README.md` and the Codex entry (Dev Log 2026-09-15, "Work orders become a
+queue for nightly runs"); the seven questions are answered there, the last three marked
+provisional. Line references in 03-09 were re-checked against commit `9f598d3` after
+orders 01 and 02 landed and the shifted ones corrected. What the first nights change is
+written into the README directly, not into a reopened order.

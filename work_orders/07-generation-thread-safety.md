@@ -1,6 +1,6 @@
 # 07 — Make the world-generation thread safe
 
-**Status:** open (2026-09-15)
+**Status:** open (2026-09-15) — waits for 05 to be merged into `main`
 
 ## Problem
 
@@ -22,6 +22,8 @@ and stays in `main.cpp`; that permits it, it does not permit unsynchronised shar
 - `src/main.cpp:1919` — the load path writes `app.cam` from the worker.
 - `src/main.cpp:3587` — `simDate()` reads `app.world.simTime` on the main thread regardless
   of screen.
+- Line references checked against commit `9f598d3` on 2026-09-15, after orders 01 and 02
+  landed.
 
 ## Design
 

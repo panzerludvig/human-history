@@ -1,6 +1,6 @@
 # 08 — One world build shared by the game and every probe
 
-**Status:** open (2026-09-15)
+**Status:** queued (2026-09-15)
 
 ## Problem
 
@@ -19,14 +19,16 @@ Violates `standards/general.md` §Modules and `standards/cpp.md` §Shape.
 - Build-chain copies: `main.cpp:331-336` (`World::build`) and the same five probes.
 - `sweep.cpp:1-4` header vs `sweep.cpp:272` "The sweep is no longer a sweep."
 - Report blocks in `sweep.cpp`: lake census 151-195; land/sea vote 231-268; tropical
-  column 311-335; contrast/transport 348-698; map moisture 705-746; height decomposition
-  755-792; uplift 800-885; full-res cover 895-1046; raster 1050-1068; land cover and PPM
-  writers 1073-1320; zonal profile 1330-1349; cloud 1358-1410.
+  column 317-341; contrast/transport 354-704; map moisture 711-752; height decomposition
+  761-798; uplift 806-874; full-res cover 884-1035; raster 1039-1057; land cover and PPM
+  writers 1062-1309; zonal profile 1319-1338; cloud 1347-1399.
 - Re-implemented helpers: `landMaskedT` 202-223 is `atmosphere::bilinearAt` with a mask;
-  coastal test at 77-83, 726-732, 1235-1241; `pet = max(0.4, 0.11*(t+8))` at 577, 603,
-  717, 1095, 1205 (see `hydrology::petMmDay`, `main.cpp:1553`); PPM writer inlined at
-  490, 492, 1248, 1287, 1290, 1292; lake flood-fill walked twice with a `W*H` visited
+  coastal test at 77-83, 732-738, 1224-1230; `pet = max(0.4, 0.11*(t+8))` at 583, 609,
+  723, 1084, 1194 (see `hydrology::petMmDay`, `main.cpp:1553`); PPM writer inlined at
+  496, 498, 1237, 1276, 1279, 1281; lake flood-fill walked twice with a `W*H` visited
   vector per big lake at 172.
+- Line references checked against commit `9f598d3` on 2026-09-15, after orders 01 and 02
+  landed.
 
 ## Design
 
