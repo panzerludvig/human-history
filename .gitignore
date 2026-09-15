@@ -1,3 +1,5 @@
 build/
 worlds/
 tools/etopo5.dat
+/*.ppm
+__pycache__/
