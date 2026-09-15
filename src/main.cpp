@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -251,9 +252,10 @@ static void updateTooltip(int x, int y) {
         ShowWindow(tip, SW_HIDE);
         return;
     }
-    std::string txt = inspect::describePoint(app.world, app.cam, app.octaves, hit);
-    SetWindowTextA(tip, txt.c_str());
-    int wdt = 12 + (int)txt.size() * 9;
+    char txt[240];
+    inspect::describePoint(app.world, app.cam, app.octaves, hit, txt, sizeof txt);
+    SetWindowTextA(tip, txt);
+    int wdt = 12 + (int)strlen(txt) * 9;
     // Keep clear of the news feed: the tooltip follows the cursor, and the
     // feed is a window above it, so an unclamped label hides two lines of news.
     int right = app.cam.width -

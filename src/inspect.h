@@ -24,30 +24,40 @@ constexpr const char* COVER_NAMES[] = {"bare",       "tundra",    "taiga",  "for
                                        "shrubland",  "marsh",     "desert"};
 
 // "forest 68%, grassland 22%, rock 10%": cover fractions, with bare ground
-// named by its substrate, largest first, down to 5%.
-inline std::string describeMixture(const terrain::Mixture& m) {
-    std::vector<std::pair<float, std::string>> parts;
-    for (int i = 1; i < terrain::NCOV; i++) parts.push_back({m.cov[i], COVER_NAMES[i]});
-    for (int i = 0; i < terrain::NSUB; i++)
-        parts.push_back({m.cov[0] * m.sub[i], SUBSTRATE_NAMES[i]});
-    std::sort(parts.begin(), parts.end(), [](auto& a, auto& b) { return a.first > b.first; });
-    std::string out;
-    for (auto& p : parts) {
-        if (p.first < 0.05f || out.size() > 60) break;
-        char b[48];
-        snprintf(b, sizeof b, "%s%s %d%%", out.empty() ? "" : ", ", p.second.c_str(),
-                 (int)std::lround(p.first * 100));
-        out += b;
+// named by its substrate, largest first, down to 5%. Written into out; at
+// most about 110 characters, since the list stops once it passes 60.
+inline void describeMixture(const terrain::Mixture& m, char* out, size_t outSize) {
+    struct Part {
+        float share;
+        const char* name;
+    };
+    Part parts[terrain::NCOV - 1 + terrain::NSUB];
+    int n = 0;
+    for (int i = 1; i < terrain::NCOV; i++) parts[n++] = {m.cov[i], COVER_NAMES[i]};
+    for (int i = 0; i < terrain::NSUB; i++) parts[n++] = {m.cov[0] * m.sub[i], SUBSTRATE_NAMES[i]};
+    std::sort(parts, parts + n, [](const Part& a, const Part& b) { return a.share > b.share; });
+    size_t len = 0;
+    out[0] = 0;
+    for (int i = 0; i < n; i++) {
+        if (parts[i].share < 0.05f || len > 60) break;
+        int wrote = snprintf(out + len, outSize - len, "%s%s %d%%", len == 0 ? "" : ", ",
+                             parts[i].name, (int)std::lround(parts[i].share * 100));
+        if (wrote < 0 || (size_t)wrote >= outSize - len) break; // truncated: stop here
+        len += (size_t)wrote;
     }
-    return out;
 }
+
+// "1234 m", for depths and heights.
+inline void fmtM(float m, char* b, size_t n) { snprintf(b, n, "%d m", (int)std::lround(m)); }
 
 // What is under the cursor at n, one line for the tooltip: the water or the
 // ground, the temperature now, the cover mixture, the rain, the capacity, and
 // any building the cursor is on. octaves is the level of detail on screen,
-// so the height here is the one the shader drew.
-inline std::string describePoint(const world::World& wd, const camera::Camera& cam, int octaves,
-                                 camera::Vec3 n) {
+// so the height here is the one the shader drew. Written into out (at most
+// outSize bytes) rather than returned: this runs on every mouse move, so
+// it does not allocate (standards/cpp.md §Hot paths).
+inline void describePoint(const world::World& wd, const camera::Camera& cam, int octaves,
+                          camera::Vec3 n, char* out, size_t outSize) {
     terrain::V3 nf = {(float)n.x, (float)n.y, (float)n.z};
     terrain::V3 off = {(float)wd.offset.x, (float)wd.offset.y, (float)wd.offset.z};
     float h = terrain::heightMeters(terrain::rotate(wd.rot, nf) + off, nf, wd.cp, wd.seaLevel,
@@ -68,12 +78,7 @@ inline std::string describePoint(const world::World& wd, const camera::Camera& c
         double hLoc = fmod(lon * (12.0 / camera::PI) + 24.0 * tod + 48.0, 24.0);
         tempNow = tSeason + 0.5f * amp * (float)cos(2 * camera::PI * (hLoc - 14.0) / 24.0);
     }
-    char buf[240];
-    auto fmtM = [](float m) {
-        char b[32];
-        snprintf(b, sizeof b, "%d m", (int)std::lround(m));
-        return std::string(b);
-    };
+    char hm[32]; // a depth or height, formatted
     // Climatology at the cursor, season-interpolated: shown for sea, lake, and land.
     char climTxt[48] = "";
     if (!wd.clim.rainMmDay.empty()) {
@@ -95,9 +100,10 @@ inline std::string describePoint(const world::World& wd, const camera::Camera& c
 
     if (h < 0) {
         bool frozen = sim::seasonalT(wd.clim, nf, 0.0f, wd.simTime) < sim::FROZEN_T;
-        snprintf(buf, sizeof buf, "Sea%s, %s deep  |  %.0f C%s", frozen ? " (frozen)" : "",
-                 fmtM(-h).c_str(), tempNow, climTxt);
-        return buf;
+        fmtM(-h, hm, sizeof hm);
+        snprintf(out, outSize, "Sea%s, %s deep  |  %.0f C%s", frozen ? " (frozen)" : "", hm,
+                 tempNow, climTxt);
+        return;
     }
     // Lake: below the level of any adjacent lake cell (same rule as the shader).
     int cx = (int)std::floor((lon + camera::PI) / (2 * camera::PI) * hydrology::W),
@@ -107,7 +113,7 @@ inline std::string describePoint(const world::World& wd, const camera::Camera& c
     // A building under the cursor names itself: same marker positions the
     // shader draws (sim::granaryPos, defined once), pick radius = draw
     // radius plus ~3 px of slop.
-    std::string building;
+    char building[80] = "";
     {
         float pickR =
             (float)std::clamp(cam.kmPerPixel() * 4.0, 1.5, 6.0) + (float)(cam.kmPerPixel() * 3.0);
@@ -120,15 +126,15 @@ inline std::string describePoint(const world::World& wd, const camera::Camera& c
                 else
                     snprintf(rb, sizeof rb, "Ruins, abandoned year %d  |  ",
                              (int)(r.abandoned / 365.0) + 1);
-                building = rb;
+                snprintf(building, sizeof building, "%s", rb);
                 break;
             }
     }
-    if (building.empty() && !wd.pop.settlementAt.empty()) {
+    if (!building[0] && !wd.pop.settlementAt.empty()) {
         float pickR =
             (float)std::clamp(cam.kmPerPixel() * 2.0, 0.6, 2.5) + (float)(cam.kmPerPixel() * 3.0);
-        for (int dy = -1; dy <= 1 && building.empty(); dy++)
-            for (int dx = -1; dx <= 1 && building.empty(); dx++) {
+        for (int dy = -1; dy <= 1 && !building[0]; dy++)
+            for (int dx = -1; dx <= 1 && !building[0]; dx++) {
                 int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
                 int cell = yy * hydrology::W + hydrology::wrapX(cx + dx);
                 int si = wd.pop.settlementAt[cell];
@@ -136,12 +142,12 @@ inline std::string describePoint(const world::World& wd, const camera::Camera& c
                 const population::Settlement& st = wd.pop.settlements[si];
                 for (int k = 0; k < (int)(st.granaries + 0.5f) && k < 8; k++)
                     if (sim::distKm(nf, sim::granaryPos(st.cell, k)) < pickR) {
-                        building = "Granary  |  ";
+                        snprintf(building, sizeof building, "Granary  |  ");
                         break;
                     }
             }
     }
-    if (building.empty() && !wd.pop.settlementAt.empty()) {
+    if (!building[0] && !wd.pop.settlementAt.empty()) {
         // Farmsteads stand kilometres from their village, so the search box
         // has to reach further than the granaries' one-cell ring.
         float pickR =
@@ -149,8 +155,8 @@ inline std::string describePoint(const world::World& wd, const camera::Camera& c
         float lat = std::asin(std::clamp(nf.z, -1.0f, 1.0f));
         int rx =
             std::min((int)std::ceil(1.6f / std::max(std::cos(lat), 0.05f)) + 1, hydrology::W / 2);
-        for (int dy = -2; dy <= 2 && building.empty(); dy++)
-            for (int dx = -rx; dx <= rx && building.empty(); dx++) {
+        for (int dy = -2; dy <= 2 && !building[0]; dy++)
+            for (int dx = -rx; dx <= rx && !building[0]; dx++) {
                 int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
                 int cell = yy * hydrology::W + hydrology::wrapX(cx + dx);
                 int si = wd.pop.settlementAt[cell];
@@ -160,16 +166,16 @@ inline std::string describePoint(const world::World& wd, const camera::Camera& c
                     if (sim::distKm(nf, sim::farmsteadPos(st.cell, k)) < pickR) {
                         char fb[64];
                         snprintf(fb, sizeof fb, "Farmstead of %s  |  ", st.name);
-                        building = fb;
+                        snprintf(building, sizeof building, "%s", fb);
                         break;
                     }
             }
     }
-    if (building.empty() && !wd.pop.settlementAt.empty() && cam.kmPerPixel() < 4.0) {
+    if (!building[0] && !wd.pop.settlementAt.empty() && cam.kmPerPixel() < 4.0) {
         // Fields: the same annulus the shader draws, so what the cursor
         // names and what the eye sees are one definition.
-        for (int dy = -1; dy <= 1 && building.empty(); dy++)
-            for (int dx = -1; dx <= 1 && building.empty(); dx++) {
+        for (int dy = -1; dy <= 1 && !building[0]; dy++)
+            for (int dx = -1; dx <= 1 && !building[0]; dx++) {
                 int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
                 int cell = yy * hydrology::W + hydrology::wrapX(cx + dx);
                 int si = wd.pop.settlementAt[cell];
@@ -181,7 +187,7 @@ inline std::string describePoint(const world::World& wd, const camera::Camera& c
                 if (fr > inner && d < fr && d > inner) {
                     char fb[64];
                     snprintf(fb, sizeof fb, "Fields of %s  |  ", st.name);
-                    building = fb;
+                    snprintf(building, sizeof building, "%s", fb);
                 }
             }
     }
@@ -198,9 +204,10 @@ inline std::string describePoint(const world::World& wd, const camera::Camera& c
             }
         if (lake > hydrology::NO_LAKE + 1 && h < lake + 12.0f) {
             bool frozen = sim::seasonalT(wd.clim, nf, h, wd.simTime) < sim::FROZEN_T;
-            snprintf(buf, sizeof buf, "Lake%s, %s deep  |  %.0f C%s", frozen ? " (frozen)" : "",
-                     fmtM(lake + 12.0f - h).c_str(), tempNow, climTxt);
-            return buf;
+            fmtM(lake + 12.0f - h, hm, sizeof hm);
+            snprintf(out, outSize, "Lake%s, %s deep  |  %.0f C%s", frozen ? " (frozen)" : "", hm,
+                     tempNow, climTxt);
+            return;
         }
     }
     terrain::V3 w = wDerive;
@@ -211,25 +218,25 @@ inline std::string describePoint(const world::World& wd, const camera::Camera& c
     terrain::Mixture m =
         terrain::mixtureAt(h, slope, temp, moist, uplift, nearRiver, terrain::patchNoise(w),
                            dcTip.swamp, dcTip.tCold, dcTip.tWarm);
-    std::string extra;
+    char extra[72] = "";
     if (!wd.pop.K.empty()) {
         int ci = cy * hydrology::W + cx;
         if (wd.pop.K[ci] > 0) {
-            char b[72];
             char gameB[24] = "";
             if (!wd.pop.gameG.empty() && wd.pop.kGameMap[ci] > 0) {
                 float g = wd.pop.gameG[population::gameRegion(ci)];
                 if (g < 0.98f)
                     snprintf(gameB, sizeof gameB, "  |  game %d%%", (int)std::lround(g * 100));
             }
-            snprintf(b, sizeof b, "  |  capacity %d%s", (int)(wd.pop.K[ci] * population::SUSTAIN_R),
-                     gameB);
-            extra = b;
+            snprintf(extra, sizeof extra, "  |  capacity %d%s",
+                     (int)(wd.pop.K[ci] * population::SUSTAIN_R), gameB);
         }
     }
-    snprintf(buf, sizeof buf, "%s%s  |  %.0f C  |  %s%s%s", building.c_str(), fmtM(h).c_str(),
-             tempNow, describeMixture(m).c_str(), climTxt, extra.c_str());
-    return buf;
+    char mix[128];
+    fmtM(h, hm, sizeof hm);
+    describeMixture(m, mix, sizeof mix);
+    snprintf(out, outSize, "%s%s  |  %.0f C  |  %s%s%s", building, hm, tempNow, mix, climTxt,
+             extra);
 }
 
 constexpr const char* TECH_NAMES[population::NTECH] = {"Farming", "Husbandry", "Granary building",

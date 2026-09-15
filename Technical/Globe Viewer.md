@@ -117,7 +117,7 @@ Counts are exact; stored entries stop at 250 per kind (`EVENTS_KEPT_PER_KIND`), 
 
 ## Tooltip
 
-In game, a label follows the cursor with what is under it: elevation, mean temperature, the terrain mixture ("forest 68%, grassland 22%, rock 10%"; "Sea, 354 m deep"; "Lake, 20 m deep"), and the cell's carrying capacity. It is computed on the CPU (`inspect::describePoint` in `src/inspect.h`) from the terrain mirror (`terrain.h`) at the current level of detail, using the same lake rule as the shader, so it doubles as a live check that the CPU and GPU terrain agree.
+In game, a label follows the cursor with what is under it: elevation, mean temperature, the terrain mixture ("forest 68%, grassland 22%, rock 10%"; "Sea, 354 m deep"; "Lake, 20 m deep"), and the cell's carrying capacity. It is computed on the CPU (`inspect::describePoint` in `src/inspect.h`, into a fixed buffer with no allocation, since it runs on every mouse move) from the terrain mirror (`terrain.h`) at the current level of detail, using the same lake rule as the shader, so it doubles as a live check that the CPU and GPU terrain agree.
 
 ## Selection panels
 
