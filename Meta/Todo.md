@@ -12,3 +12,4 @@ A list of concrete, actionable tasks — as distinct from [[Meta/Suggestions]], 
 - [ ] Pick the first playable increment and check it against the three core concepts (added 2026-08-22)
 - [ ] Decide how the simulation will read terrain — the continent field is now ported to C++ (src/terrain.h); extend the port or move terrain to CPU data — see [[Technical/Architecture]] (added 2026-08-22)
 - [ ] Tune close-zoom terrain contrast in [[Technical/Globe Viewer]] (added 2026-08-22)
+- [ ] Write the reversion rule for unworked fields into [[Design/Technology]] — three lines; work order 12 is blocked on it and recommends the wording (added 2026-09-18)
