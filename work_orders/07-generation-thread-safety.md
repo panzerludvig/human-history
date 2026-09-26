@@ -3,7 +3,7 @@
 **Status:** open (2026-09-26) — 05 is merged and `World` has its own header, so nothing
 blocks it
 
-Line references re-checked against f9c731f on 2026-09-26.
+Line references re-checked against f9c731f on 2026-09-26; those into `src/main.cpp` moved to 5087977.
 
 ## Problem
 
@@ -17,18 +17,18 @@ and stays in `main.cpp`; that permits it, it does not permit unsynchronised shar
 
 ## Evidence
 
-- `src/main.cpp:40-41` — comment: the build runs on the UI thread.
-- `src/main.cpp:55-56` — comment: a worker owns `app.world`.
-- `src/main.cpp:57` — `App::genThread`; created at 137 (`generateWorld`) and 198
-  (`onCommand`, `ID_LOAD_CONFIRM`), joined at 147 (`finishGeneration`) and 883 (exit).
-- `src/main.cpp:79-86` — `buildProgress` calls `SetWindowTextA` and `UpdateWindow` (84-85)
+- `src/main.cpp:41-42` — comment: the build runs on the UI thread.
+- `src/main.cpp:56-57` — comment: a worker owns `app.world`.
+- `src/main.cpp:58` — `App::genThread`; created at 138 (`generateWorld`) and 199
+  (`onCommand`, `ID_LOAD_CONFIRM`), joined at 148 (`finishGeneration`) and 906 (exit).
+- `src/main.cpp:80-87` — `buildProgress` calls `SetWindowTextA` and `UpdateWindow` (85-86)
   from the worker.
-- `src/main.cpp:198-199` — the load path hands `app.world` and `app.cam` to
+- `src/main.cpp:199-200` — the load path hands `app.world` and `app.cam` to
   `savefile::load` (`src/savefile.h:104`), which writes both from the worker.
-- `src/main.cpp:403` — `simDate()` reads `app.world.simTime`; the title bar calls it at 876
+- `src/main.cpp:404` — `simDate()` reads `app.world.simTime`; the title bar calls it at 899
   on the main thread twice a second regardless of screen.
-- Since this was written, an atomic `App::genState` (`main.cpp:58`) marks the worker
-  finished and `finishGeneration` (146) runs on the main thread; that orders the handover
+- Since this was written, an atomic `App::genState` (`main.cpp:59`) marks the worker
+  finished and `finishGeneration` (147) runs on the main thread; that orders the handover
   at the end, but the worker still builds into `app.world` in place, so the reads above
   still race it.
 - Line references checked against commit `9f598d3` on 2026-09-15, after orders 01 and 02

@@ -2,7 +2,7 @@
 
 **Status:** open (2026-09-15) — runs alone, after the orders whose files it shares have merged
 
-Line references re-checked against f9c731f on 2026-09-26.
+Line references re-checked against f9c731f on 2026-09-26; those into `src/main.cpp` moved to 5087977.
 
 ## Problem
 
@@ -43,7 +43,7 @@ Violates `standards/general.md` §Names carry units and §Thresholds and clocks,
   (`driftAffinity`), `bands.h:57` (`moverCap`); the `technology.h` site went when the diet
   was gathered into `foodTerms` (60f35a6), so three sites remain, not four.
 - Vector types: `src/camera.h:17` `camera::Vec3`, `terrain::V3`, `geodesic::D3`;
-  conversions at `inspect.h:61-62` (`describePoint`), `main.cpp:372`, `world.h:85`, and
+  conversions at `inspect.h:61-62` (`describePoint`), `main.cpp:373`, `world.h:85`, and
   the `camera::projectToScreen` calls at `overlay.h:459, 468, 558`. `camera::sphereDir`
   (`camera.h:38`) duplicates `atmosphere::unitAt` (`atmosphere.h:2941`) and
   `hydrology::cellDir` (`hydrology.h:46`).
@@ -59,7 +59,7 @@ Violates `standards/general.md` §Names carry units and §Thresholds and clocks,
   `Band::water` (`settlement.h:702`), `Camera::altitude` in Earth radii (`camera.h:46`), and
   nearly all atmosphere state.
 - `enum class` candidates: `panels::Panel::kind`, `tab` (`panels.h:29, 32`),
-  `App::genKind`, `debugMode` (`main.cpp:60, 67`), `news::State::level` (`news.h:41`,
+  `App::genKind`, `debugMode` (`main.cpp:61, 68`), `news::State::level` (`news.h:41`,
   formerly `newsLevel`). The event-queue kinds are done: order 04 made them
   `enum class Due` (`sim.h:112`).
 - Line references checked against commit `9f598d3` on 2026-09-15, after orders 01 and 02

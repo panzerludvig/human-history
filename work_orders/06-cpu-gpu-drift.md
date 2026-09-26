@@ -4,7 +4,7 @@
 `main.cpp`, so nothing blocks it; it shares `shaders/globe.frag` with order 13 and
 `src/inspect.h` with orders 11 and 13, so not the same night as either
 
-Line references re-checked against f9c731f on 2026-09-26.
+Line references re-checked against f9c731f on 2026-09-26; those into `shaders/globe.frag` moved to 5087977.
 
 ## Problem
 
@@ -19,35 +19,35 @@ Violates `standards/general.md` §Mirrored code.
 
 - **Lake level drift.** `src/inspect.h:194-211` (`inspect::describePoint`, the tooltip):
   max lake level over a 3x3, shore at `h < lake + 12`, under a comment at `inspect.h:108`
-  that still calls it "same rule as the shader". `shaders/globe.frag:280` `lakeLevelAt`:
+  that still calls it "same rule as the shader". `shaders/globe.frag:364` `lakeLevelAt`:
   smoothstep-weighted 2x2 average, no +12. The tooltip and the picture disagree about where
   a shore is.
 - **Ice drift.** `inspect.h:102, 206` (`describePoint`) use `seasonalT < FROZEN_T` (hard,
-  -2 C; `FROZEN_T` is now `src/bands.h:20`); `globe.frag:748` `iceAt` is
+  -2 C; `FROZEN_T` is now `src/bands.h:20`); `globe.frag:832` `iceAt` is
   `smoothstep(-1, -4)`. In the -1..-4 C band the tooltip says frozen while the globe draws
   a ramp.
 - **Stale name.** `src/farmland.h:16` (the comment over `sim::granaryPos`) cites
-  `granaryNear` in the shader; it is now `hutsNear` (`globe.frag:392-482`).
+  `granaryNear` in the shader; it is now `hutsNear` (`globe.frag:476-566`).
 - **Diurnal peak.** `inspect.h:79` (`describePoint`) peaks at 14:00, `atmosphere.h:925`
   (`Prescribed::surfaceT`) at 15:00.
 - **No comment either side:** `atmosphere::bilinearAt/annualAt/seasonalAt`
-  (`atmosphere.h:2978-3001`) vs `climSample/climAnnual` (`globe.frag:669-694`), where the
+  (`atmosphere.h:2978-3001`) vs `climSample/climAnnual` (`globe.frag:753-778`), where the
   CPU clamps rows to `[0, H-1]` (`atmosphere.h:2982`) and the shader clamps to
-  `[0.02, 0.98]`; `sim::cellCentre/cellOf` (`src/sphere.h:12-17`) vs `globe.frag:297`
+  `[0.02, 0.98]`; `sim::cellCentre/cellOf` (`src/sphere.h:12-17`) vs `globe.frag:381`
   `cellCentre`.
 - **One-sided comments:** `terrain.h:59-176` noise stack, `templateHeight/heightMeters`
   (252, 270), `derivedTempC` and kin (`atmosphere.h:3016-3123`, `derivedTempC` through
   `deriveAt`).
-- **Dead mirrors:** `globe.frag:821` `temperatureC`, `:826` `moistureAt` have no callers in
+- **Dead mirrors:** `globe.frag:905` `temperatureC`, `:910` `moistureAt` have no callers in
   the shader.
-- **Constants duplicated with no check:** `HW/HH` (`globe.frag:49` vs `hydrology.h:18`),
-  `SITE_STRIDE` (`src/textures.h:84` vs `globe.frag:308`, above `siteTexel`),
-  `HUT_KMPP/WALK_KMPP` (`src/overlay.h:85-86` vs `globe.frag:380-381`, above `hutsNear`),
-  `NSUB/NCOV` (`terrain.h:355-356` vs `globe.frag:837-838`), `NO_LAKE` (`hydrology.h:19` vs
-  `globe.frag:50`), `CRUST_WEIGHT` (`terrain.h:20` vs `globe.frag:42`).
+- **Constants duplicated with no check:** `HW/HH` (`globe.frag:60` vs `hydrology.h:18`),
+  `SITE_STRIDE` (`src/textures.h:84` vs `globe.frag:392`, above `siteTexel`),
+  `HUT_KMPP/WALK_KMPP` (`src/overlay.h:85-86` vs `globe.frag:464-465`, above `hutsNear`),
+  `NSUB/NCOV` (`terrain.h:355-356` vs `globe.frag:921-922`), `NO_LAKE` (`hydrology.h:19` vs
+  `globe.frag:61`), `CRUST_WEIGHT` (`terrain.h:20` vs `globe.frag:53`).
 - The 4-season interpolation `fmod(t,365)/365*4-0.5` is written out at `inspect.h:88`
   (`describePoint`), `atmosphere.h:2997` (`seasonalAt`), `settlement.h:873`
-  (`population::cachedSeasonT`) and `globe.frag:674` (`climSample`).
+  (`population::cachedSeasonT`) and `globe.frag:758` (`climSample`).
 - Line references checked against commit `9f598d3` on 2026-09-15, after orders 01 and 02
   landed; re-checked against `f9c731f` on 2026-09-26, after 03, 04, 05 and 08 moved the
   tooltip to `inspect.h` and split `sim.h`. Every drift above still holds.
