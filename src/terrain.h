@@ -201,6 +201,7 @@ struct Template {
         x = ((x % w) + w) % w; y = std::clamp(y, 0, h - 1);
         return lakes[(size_t)y * w + x] != 0;
     }
+    // Bilinear by hand; mirrored in shaders/globe.frag earthAtTexel.
     float sample(V3 n) const {
         float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)), lon = std::atan2(n.y, n.x);
         float fx = (lon + 3.14159265f) / 6.2831853f * w - 0.5f;

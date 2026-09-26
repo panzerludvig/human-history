@@ -27,6 +27,7 @@
 #include "gl.h"
 #include "camera.h"
 #include "world.h"
+#include "anchor.h"
 #include "savefile.h"
 #include "inspect.h"
 #include "bmp.h"
@@ -594,6 +595,15 @@ int main(int argc, char** argv) {
     GLint uHasHydro = glGetUniformLocation(app.program, "uHasHydro");
     GLint uScaleBar = glGetUniformLocation(app.program, "uScaleBar");
     GLint uDebugMode = glGetUniformLocation(app.program, "uDebugMode");
+    GLint uAnchor = glGetUniformLocation(app.program, "uAnchor");
+    GLint uCamRel = glGetUniformLocation(app.program, "uCamRel");
+    GLint uAnchorC = glGetUniformLocation(app.program, "uAnchorC");
+    GLint uAnchorWHi = glGetUniformLocation(app.program, "uAnchorWHi");
+    GLint uAnchorWLo = glGetUniformLocation(app.program, "uAnchorWLo");
+    GLint uAnchorPlateHi = glGetUniformLocation(app.program, "uAnchorPlateHi");
+    GLint uAnchorPlateLo = glGetUniformLocation(app.program, "uAnchorPlateLo");
+    GLint uAnchorEarthHi = glGetUniformLocation(app.program, "uAnchorEarthHi");
+    GLint uAnchorEarthLo = glGetUniformLocation(app.program, "uAnchorEarthLo");
     std::string lastScaleText;
     glUniform1i(uHydro, 0);
     glUniform1i(glGetUniformLocation(app.program, "uPlates"), 1);
@@ -802,6 +812,19 @@ int main(int argc, char** argv) {
             glUniformMatrix3fv(uWorldRot, 1, GL_FALSE, app.world.rot);
             glUniform3f(uWorldOff, (float)app.world.offset.x, (float)app.world.offset.y,
                         (float)app.world.offset.z);
+            {
+                // The terrain is measured from the ground under the camera.
+                anchor::Anchor an = anchor::of(c, app.world);
+                glUniform3f(uAnchor, an.point[0], an.point[1], an.point[2]);
+                glUniform3f(uCamRel, an.camRel[0], an.camRel[1], an.camRel[2]);
+                glUniform1f(uAnchorC, an.c);
+                glUniform3f(uAnchorWHi, an.wHi[0], an.wHi[1], an.wHi[2]);
+                glUniform3f(uAnchorWLo, an.wLo[0], an.wLo[1], an.wLo[2]);
+                glUniform2f(uAnchorPlateHi, an.plateHi[0], an.plateHi[1]);
+                glUniform2f(uAnchorPlateLo, an.plateLo[0], an.plateLo[1]);
+                glUniform2f(uAnchorEarthHi, an.earthHi[0], an.earthHi[1]);
+                glUniform2f(uAnchorEarthLo, an.earthLo[0], an.earthLo[1]);
+            }
             glUniform1f(uDim, app.screen == menus::Screen::PauseMenu ? 0.35f : 1.0f);
             glUniform1f(uFreq, app.world.cp.freq);
             glUniform1f(uWarp, app.world.cp.warp);

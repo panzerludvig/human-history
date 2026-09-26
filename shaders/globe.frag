@@ -16,6 +16,17 @@ uniform int uOctaves;
 uniform float uKmPerPixel;
 uniform mat3 uWorldRot;  // per-world rotation of the noise field
 uniform vec3 uWorldOff;  // per-world offset (kept small for float precision)
+// The anchor: the ground point under the camera, and what a pixel needs to be
+// measured from it exactly (see P3). Computed on the CPU in double each frame.
+uniform vec3 uAnchor;          // the point, rounded to float; the rest is exact from it
+uniform vec3 uCamRel;          // camera position minus uAnchor
+uniform float uAnchorC;        // |uCamRel|^2 + 2 uAnchor.uCamRel + |uAnchor|^2 - 1
+uniform vec3 uAnchorWHi;       // uWorldRot * uAnchor + uWorldOff as hi + lo
+uniform vec3 uAnchorWLo;
+uniform vec2 uAnchorPlateHi;   // uAnchor in plate texels, as plateAt indexes them
+uniform vec2 uAnchorPlateLo;
+uniform vec2 uAnchorEarthHi;   // uAnchor in Earth-template texels
+uniform vec2 uAnchorEarthLo;
 uniform float uDim;      // 1 = normal, lower when a menu is over the globe
 uniform float uFreq;     // continent field frequency
 uniform float uWarp;     // domain-warp strength
@@ -67,10 +78,45 @@ vec3 gradient(ivec3 p) {
     return normalize(vec3(h) / 4294967295.0 * 2.0 - 1.0);
 }
 
+// A point in noise space carried as an unevaluated sum hi + lo. A plain
+// float point at |p| ~ 1 resolves 6e-8, which is 40 cm of ground: below that
+// neighbouring pixels land on the same point or one 40 cm away at random, and
+// a slope taken from screen derivatives is noise. For the terrain, hi is the
+// camera anchor's point, the same for every pixel, and lo is the pixel's
+// offset from it, which is small and so exact to far below a pixel. Rounding
+// in hi is the same in every pixel, so it moves the whole pattern, not one
+// pixel against the next; moving the anchor changes a frame by a few colour
+// levels at most (measured 2026-09-26), no more than exact error terms did.
+// Everything else passes a plain point with lo = 0 and gets the same values
+// as before.
+struct P3 {
+    vec3 hi;
+    vec3 lo;
+};
+
+P3 p3(vec3 p) { return P3(p, vec3(0.0)); }
+
+// p * s + c.
+P3 affine(P3 p, float s, vec3 c) { return P3(p.hi * s + c, p.lo * s); }
+P3 affine(P3 p, float s, float c) { return affine(p, s, vec3(c)); }
+
+// p + v for a small per-pixel vector v (a domain warp).
+P3 shifted(P3 p, vec3 v) { return P3(p.hi, p.lo + v); }
+
+// The lattice cell of p and the position within it, exactly.
+void latticeCell(P3 p, float shift, out ivec3 cell, out vec3 frac) {
+    vec3 fl = floor(p.hi);
+    vec3 q = (p.hi - fl) + p.lo - shift;
+    vec3 fq = floor(q);
+    cell = ivec3(fl) + ivec3(fq);
+    frac = q - fq + shift;
+}
+
 // 3D gradient noise, roughly in [-1, 1].
-float noise(vec3 p) {
-    ivec3 i = ivec3(floor(p));
-    vec3 f = p - vec3(i);
+float noise(P3 p) {
+    ivec3 i;
+    vec3 f;
+    latticeCell(p, 0.0, i, f);
     vec3 u = f * f * (3.0 - 2.0 * f);
     float n000 = dot(gradient(i + ivec3(0, 0, 0)), f - vec3(0, 0, 0));
     float n100 = dot(gradient(i + ivec3(1, 0, 0)), f - vec3(1, 0, 0));
@@ -83,6 +129,7 @@ float noise(vec3 p) {
     return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
                mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z) * 1.6;
 }
+float noise(vec3 p) { return noise(p3(p)); }
 
 // Hash of a lattice cell to three values in [0, 1).
 vec3 hash01(ivec3 c) {
@@ -100,9 +147,11 @@ vec3 hash01(ivec3 c) {
 // Mirrored in src/terrain.h — keep in sync.
 // Feature points sit in the middle half of their cell, so the 2x2x2 cells
 // around the point (found by rounding) hold every heap that can reach it.
-float blocks(vec3 p) {
-    ivec3 c = ivec3(floor(p - 0.5));
-    vec3 f = p - vec3(c);
+float blocks(P3 p) {
+    // c = floor(p - 0.5), f = p - c
+    ivec3 c;
+    vec3 f;
+    latticeCell(p, 0.5, c, f);
     float best = -1e9;
     for (int dz = 0; dz <= 1; dz++)
         for (int dy = 0; dy <= 1; dy++)
@@ -125,34 +174,35 @@ float blocks(vec3 p) {
     return best;
 }
 
-float fbm(vec3 p, int octaves, float gain) {
+float fbm(P3 p, int octaves, float gain) {
     float sum = 0.0, amp = 1.0, norm = 0.0;
     for (int i = 0; i < octaves; i++) {
         sum += amp * noise(p);
         norm += amp;
         amp *= gain;
-        p = p * 2.03 + vec3(17.1, 31.7, 5.3);
+        p = affine(p, 2.03, vec3(17.1, 31.7, 5.3));
     }
     return sum / norm;
 }
+float fbm(vec3 p, int octaves, float gain) { return fbm(p3(p), octaves, gain); }
 
 // Blocks at a given frequency with a domain warp so edges are crooked.
-float warpedBlocks(vec3 p, float freq, float seedOff) {
-    vec3 q = p * freq;
-    vec3 w = vec3(fbm(q * 0.7 + seedOff, 2, 0.55), fbm(q * 0.7 + seedOff + 7.0, 2, 0.55),
-                  fbm(q * 0.7 + seedOff + 19.0, 2, 0.55));
-    return blocks(q + w * 0.4 + seedOff);
+float warpedBlocks(P3 p, float freq, float seedOff) {
+    P3 q = affine(p, freq, 0.0);
+    vec3 w = vec3(fbm(affine(q, 0.7, seedOff), 2, 0.55), fbm(affine(q, 0.7, seedOff + 7.0), 2, 0.55),
+                  fbm(affine(q, 0.7, seedOff + 19.0), 2, 0.55));
+    return blocks(shifted(affine(q, 1.0, seedOff), w * 0.4));
 }
 
 // Ridged multifractal for mountain ranges.
-float ridged(vec3 p, int octaves) {
+float ridged(P3 p, int octaves) {
     float sum = 0.0, amp = 0.5, norm = 0.0;
     for (int i = 0; i < octaves; i++) {
         float n = 1.0 - abs(noise(p));
         sum += amp * n * n;
         norm += amp;
         amp *= 0.55;
-        p = p * 2.07 + vec3(3.3, 9.1, 21.7);
+        p = affine(p, 2.07, vec3(3.3, 9.1, 21.7));
     }
     return sum / norm;
 }
@@ -160,14 +210,14 @@ float ridged(vec3 p, int octaves) {
 // ------------------------------------------------------------ terrain
 
 // The raw continent field. Mirrored exactly in src/terrain.h — keep in sync.
-float continentField(vec3 p) {
-    vec3 warp = vec3(fbm(p * 1.3 + 11.0, 3, 0.5),
-                     fbm(p * 1.3 + 23.0, 3, 0.5),
-                     fbm(p * 1.3 + 37.0, 3, 0.5));
-    vec3 q = p * uFreq + warp * uWarp;
+float continentField(P3 p) {
+    vec3 warp = vec3(fbm(affine(p, 1.3, 11.0), 3, 0.5),
+                     fbm(affine(p, 1.3, 23.0), 3, 0.5),
+                     fbm(affine(p, 1.3, 37.0), 3, 0.5));
+    P3 q = shifted(affine(p, uFreq, 0.0), warp * uWarp);
     float base = fbm(q, 6, 0.5);
     // Ridges along the zero set of a second field: thin strips and chains.
-    float web = 0.35 - abs(fbm(q + 53.0, 6, 0.5)) * 2.0;
+    float web = 0.35 - abs(fbm(affine(q, 1.0, 53.0), 6, 0.5)) * 2.0;
     return mix(base, web, uWebness);
 }
 
@@ -181,12 +231,13 @@ vec4 bsplineWeights(float t) {
                 1.0 + 3.0 * t + 3.0 * t2 - 3.0 * t3, t3) / 6.0;
 }
 
-vec4 plateAt(vec3 n) {
-    float lat = asin(clamp(n.z, -1.0, 1.0));
-    float lon = atan(n.y, n.x);
-    vec2 uv = vec2((lon + PI) / (2.0 * PI) * float(PW), (lat + PI / 2.0) / PI * float(PH)) - 0.5;
-    ivec2 i = ivec2(floor(uv));
-    vec2 f = uv - vec2(i);
+// The plate layer at plate-texel position hi + lo (texel centres at +0.5).
+vec4 plateAtTexel(vec2 hi, vec2 lo) {
+    vec2 fl = floor(hi);
+    vec2 q = (hi - fl) + lo;
+    vec2 fq = floor(q);
+    ivec2 i = ivec2(fl + fq);
+    vec2 f = q - fq;
     vec4 wx = bsplineWeights(f.x), wy = bsplineWeights(f.y);
     vec4 sum = vec4(0.0);
     for (int j = 0; j < 4; j++) {
@@ -199,33 +250,66 @@ vec4 plateAt(vec3 n) {
     return sum;
 }
 
-// The Earth template's height: its metres with the same detail, hills and
-// peaks laid on top. Mirrored in src/terrain.h -- keep in sync.
-float templateHeight(vec3 p, vec3 n, int octaves) {
+vec4 plateAt(vec3 n) {
     float lat = asin(clamp(n.z, -1.0, 1.0));
     float lon = atan(n.y, n.x);
-    float e = texture(uEarth, vec2((lon + PI) / (2.0 * PI), (lat + PI / 2.0) / PI)).r;
-    float detail = fbm(p * 9.0 + 5.0, max(octaves - 3, 1), 0.5);
-    float peaks = ridged(p * 7.0 + 2.0, max(octaves - 3, 1));
-    float hills = ridged(p * 4.0 + 2.0, clamp(octaves - 2, 1, 6));
+    vec2 uv = vec2((lon + PI) / (2.0 * PI) * float(PW), (lat + PI / 2.0) / PI * float(PH)) - 0.5;
+    return plateAtTexel(uv, vec2(0.0));
+}
+
+// The Earth template at texel position hi + lo, bilinear. Mirrors
+// terrain::Template::sample, which the hardware filter did not: its 8-bit
+// weights step every 1/256 of a 9 km texel, which a close-up slope shows.
+float earthAtTexel(vec2 hi, vec2 lo) {
+    ivec2 size = textureSize(uEarth, 0);
+    vec2 fl = floor(hi);
+    vec2 q = (hi - fl) + lo;
+    vec2 fq = floor(q);
+    ivec2 i = ivec2(fl + fq);
+    vec2 t = q - fq;
+    int x0 = (i.x % size.x + size.x) % size.x, x1 = ((i.x + 1) % size.x + size.x) % size.x;
+    int y0 = clamp(i.y, 0, size.y - 1), y1 = clamp(i.y + 1, 0, size.y - 1);
+    return (texelFetch(uEarth, ivec2(x0, y0), 0).r * (1.0 - t.x) + texelFetch(uEarth, ivec2(x1, y0), 0).r * t.x) * (1.0 - t.y) +
+           (texelFetch(uEarth, ivec2(x0, y1), 0).r * (1.0 - t.x) + texelFetch(uEarth, ivec2(x1, y1), 0).r * t.x) * t.y;
+}
+
+// A ground point as the terrain takes it: the noise-space point, and its
+// longitude and latitude as offsets from the anchor's (see lonLatFrom).
+struct Ground {
+    P3 w;
+    vec2 dLonLat;
+};
+
+// The Earth template's height: its metres with the same detail, hills and
+// peaks laid on top. Mirrored in src/terrain.h -- keep in sync.
+float templateHeight(Ground g, int octaves) {
+    vec2 perRad = vec2(textureSize(uEarth, 0)) / vec2(2.0 * PI, PI);
+    float e = earthAtTexel(uAnchorEarthHi, uAnchorEarthLo + g.dLonLat * perRad);
+    P3 p = g.w;
+    float detail = fbm(affine(p, 9.0, 5.0), max(octaves - 3, 1), 0.5);
+    float peaks = ridged(affine(p, 7.0, 2.0), max(octaves - 3, 1));
+    float hills = ridged(affine(p, 4.0, 2.0), clamp(octaves - 2, 1, 6));
     float landness = smoothstep(0.0, 150.0, e);
     float mtn = smoothstep(700.0, 2500.0, e);
     return e + landness * (detail * 80.0 + hills * 120.0) + mtn * (peaks - 0.5) * 600.0 +
            (1.0 - landness) * detail * 120.0;
 }
 
-// Height in metres above sea level. `p` is the point in noise space, `n` the
-// unit surface normal in world space. Mirrored in src/terrain.h — keep in sync.
-float terrainHeight(vec3 p, vec3 n, int octaves) {
-    if (uUseEarth == 1) return templateHeight(p, n, octaves);
-    vec4 pl = plateAt(n);
+// Height in metres above sea level at a ground point. Mirrored in
+// src/terrain.h (heightMeters) — keep in sync; the CPU takes the plain
+// noise-space point and the unit normal where this takes the Ground.
+float terrainHeight(Ground g, int octaves) {
+    if (uUseEarth == 1) return templateHeight(g, octaves);
+    P3 p = g.w;
+    vec4 pl = plateAtTexel(uAnchorPlateHi,
+                           uAnchorPlateLo + g.dLonLat * vec2(float(PW) / (2.0 * PI), float(PH) / PI));
     float continent = continentField(p) + pl.g * CRUST_WEIGHT - uSeaLevel;
-    float detail = fbm(p * 9.0 + 5.0, max(octaves - 3, 1), 0.5);
+    float detail = fbm(affine(p, 9.0, 5.0), max(octaves - 3, 1), 0.5);
 
     // Mountain ranges: thrust blocks at three scales (sheets ~100 km,
     // blocks ~35 km, slabs ~12 km) with jagged ridged peaks on top. The
     // blocks are discontinuous at their edges by design: rock pushed over rock.
-    vec3 q = p * 7.0 + 2.0;
+    P3 q = affine(p, 7.0, 2.0);
     float peaks = ridged(q, max(octaves - 3, 1));
     float uplift = pl.r;
     // Blocks appear only where uplift is substantial; lowlands keep peaks/hills.
@@ -244,13 +328,13 @@ float terrainHeight(vec3 p, vec3 n, int octaves) {
     // the mask would multiply them to exactly 0, and each is several
     // octaves of noise per pixel.
     float gullies = blockMask > 0.0 && octaves >= 11
-                        ? ridged(p * 60.0 + 5.0, max(octaves - 8, 1)) - 0.45
+                        ? ridged(affine(p, 60.0, 5.0), max(octaves - 8, 1)) - 0.45
                         : 0.0;
     float ranges = stack * blockMask * 0.7 * (0.55 + 0.45 * peaks) + peaks * 0.5 +
                    gullies * blockMask * 0.4;
-    float hills = continent > 0.02 ? ridged(p * 4.0 + 2.0, clamp(octaves - 2, 1, 6)) *
+    float hills = continent > 0.02 ? ridged(affine(p, 4.0, 2.0), clamp(octaves - 2, 1, 6)) *
                                          smoothstep(0.02, 0.25, continent) *
-                                         smoothstep(0.3, 0.7, fbm(p * 2.2 + 41.0, 3, 0.5) * 0.5 + 0.5)
+                                         smoothstep(0.3, 0.7, fbm(affine(p, 2.2, 41.0), 3, 0.5) * 0.5 + 0.5)
                                    : 0.0;
     float h = (continent + detail * 0.06 + hills * 0.12) * LAND_RELIEF +
               ranges * max(uplift, 0.0) * RANGE_GAIN + min(uplift, 0.0) * 0.12;
@@ -993,11 +1077,27 @@ vec3 scaleBarOverlay(vec3 col) {
     return mix(col, vec3(0.95), max(onLine, tick));
 }
 
+// Longitude and latitude of uAnchor + d minus the anchor's own, computed
+// from d so they are exact however small d is (the plate and Earth layers
+// are indexed by them). With x0.. the anchor, x1.. the point and r the
+// distance from the axis, dlon = atan(x0 dy - y0 dx, x0 x1 + y0 y1) and
+// dlat = atan(dz r0 - z0 dr, r0 r1 + z0 z1), where dr = r1 - r0 is itself
+// computed from d.
+vec2 lonLatFrom(vec3 d) {
+    vec3 a = uAnchor, q = uAnchor + d;
+    float dLon = atan(a.x * d.y - a.y * d.x, a.x * q.x + a.y * q.y);
+    float r0 = length(a.xy), r1 = length(q.xy);
+    float dr = (d.x * (2.0 * a.x + d.x) + d.y * (2.0 * a.y + d.y)) / (r0 + r1);
+    float dLat = atan(d.z * r0 - a.z * dr, r0 * r1 + a.z * q.z);
+    return vec2(dLon, dLat);
+}
+
 void main() {
     vec3 dir = normalize(uForward + uRight * vNdc.x * uTanHalf * uAspect + uUp * vNdc.y * uTanHalf);
-    float b = dot(uCamPos, dir);
-    float c = dot(uCamPos, uCamPos) - 1.0;
-    float disc = b * b - c;
+    // The ray against the unit sphere, solved from the anchor: the camera is
+    // uAnchor + uCamRel, and uAnchorC is |camera|^2 - 1 computed in double.
+    float b = dot(dir, uCamRel + uAnchor);
+    float disc = b * b - uAnchorC;
 
     vec3 bg = vec3(0.01, 0.01, 0.03);
     if (disc < 0.0) {
@@ -1007,45 +1107,24 @@ void main() {
         fragColor = vec4(scaleBarOverlay((bg + vec3(0.25, 0.45, 0.8) * glow * 0.6) * uDim), 1.0);
         return;
     }
-    float t = -b - sqrt(disc);
-    vec3 p = uCamPos + dir * t;
-    vec3 n = normalize(p);
+    // The near root, in the form without cancellation: t is tiny against 1
+    // when the camera is close, and -b - sqrt(disc) would lose it.
+    float t = uAnchorC / (-b + sqrt(disc));
+    vec3 d = uCamRel + dir * t; // the hit point minus uAnchor, exact to float
+    vec3 n = normalize(uAnchor + d);
     vec3 nf = climFuzz(n); // where the climate is read (see climFuzz)
     float lat = asin(clamp(n.z, -1.0, 1.0));
 
-    // Terrain is sampled in a per-world noise space.
+    // Terrain is sampled in a per-world noise space. `w` is the plain point
+    // for everything read as a value; the height is measured from the anchor
+    // (see P3), so its screen derivatives are the ground's slope at any zoom.
     vec3 w = uWorldRot * n + uWorldOff;
-    float h = terrainHeight(w, n, uOctaves);
+    Ground ground = Ground(P3(uAnchorWHi, uAnchorWLo + uWorldRot * d), lonLatFrom(d));
+    float h = terrainHeight(ground, uOctaves);
 
-    // The slope of the ground, and the gradient the relief shading uses.
-    //
-    // Both used to come from screen derivatives, which stop meaning anything
-    // once a pixel is smaller than the grid the surface point itself lands
-    // on. The hit point is computed as camera + ray, and the camera sits at
-    // magnitude ~1 on the unit sphere: a float there resolves about 6e-8,
-    // which is 40 cm of ground. Below that, neighbouring pixels get the SAME
-    // point or one 40 cm away at random, so dFdx(h) is a coin toss -- and
-    // since the slope decides rock against grass, the whole landscape came
-    // out as per-pixel salt and pepper. Below the safe pixel size the
-    // gradient is measured over a fixed baseline instead, wide enough that
-    // the two samples are genuinely different places.
-    const float GRAD_BASE_M = 40.0;
+    // The slope of the ground: rise over the pixel's run on the ground.
     float runM = uKmPerPixel * 1000.0;
-    vec3 east = normalize(cross(vec3(0.0, 0.0, 1.0), n));
-    vec3 north = cross(n, east);
-    float slopePhys;
-    vec2 grad; // metres of rise per metre east and north
-    if (runM >= GRAD_BASE_M) {
-        slopePhys = length(vec2(dFdx(h), dFdy(h))) / runM;
-        grad = vec2(0.0); // the screen-space normal below is good enough here
-    } else {
-        float d = GRAD_BASE_M / 6371000.0;
-        vec3 ne = normalize(n + east * d), nn = normalize(n + north * d);
-        float he = terrainHeight(uWorldRot * ne + uWorldOff, ne, uOctaves);
-        float hn = terrainHeight(uWorldRot * nn + uWorldOff, nn, uOctaves);
-        grad = vec2(he - h, hn - h) / GRAD_BASE_M;
-        slopePhys = length(grad);
-    }
+    float slopePhys = length(vec2(dFdx(h), dFdy(h))) / runM;
 
     // Water: the sea, a lake surface from the hydrology grid, or a river.
     float waterLevel = 0.0;
@@ -1072,18 +1151,13 @@ void main() {
 
     // Relief from screen-space derivatives: one height evaluation per pixel.
     // The surface point in metres is n * (R + h); its screen derivatives span
-    // the tangent plane, and their cross product is the normal. Height is
-    // exaggerated 3x so relief stays visible from orbit.
+    // the tangent plane, and their cross product is the normal. The exact
+    // offset d stands in for n, whose own derivatives are only good to 40 cm.
+    // Height is exaggerated 3x so relief stays visible from orbit.
     const float R = 6371000.0;
-    vec3 shadeN;
-    if (runM >= GRAD_BASE_M) {
-        vec3 dPdx = dFdx(n) * R + n * dFdx(h) * 3.2;
-        vec3 dPdy = dFdy(n) * R + n * dFdy(h) * 3.2;
-        shadeN = normalize(cross(dPdx, dPdy));
-    } else {
-        // Same fixed baseline: tilt the surface normal by the measured slope.
-        shadeN = normalize(n - (east * grad.x + north * grad.y) * 3.2);
-    }
+    vec3 dPdx = dFdx(d) * R + n * dFdx(h) * 3.2;
+    vec3 dPdy = dFdy(d) * R + n * dFdy(h) * 3.2;
+    vec3 shadeN = normalize(cross(dPdx, dPdy));
     if (dot(shadeN, n) < 0.0) shadeN = -shadeN;
     // Physical slope (rise over run) decides rock; the exaggerated normal only shades.
     float slope = clamp(slopePhys * 2.0, 0.0, 1.0);
