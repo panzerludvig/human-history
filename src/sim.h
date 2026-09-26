@@ -1,503 +1,23 @@
-﻿// The simulation orchestrator: processes settlement re-evaluations, technology
-// events, splits, and band journeys in strict chronological order, since each
-// event can change the rates of the others. See Design/Migration.md.
+// The event loop (Design/Event-Driven.md): every due event in strict
+// chronological order, since each can change the rates of the others --
+// settlement wakes, contact draws, the invention clocks, band steps, the
+// game-pool tick -- then a catch-up that brings the whole world current to
+// the displayed moment. The rules each event applies live in the headers
+// included below; this file only decides what runs when.
 #pragma once
 #include "technology.h"
+#include "events.h"
+#include "sphere.h"
+#include "claims.h"
+#include "farmland.h"
+#include "raids.h"
+#include "bands.h"
 #include "atmosphere.h"
 #include <cmath>
 #include <cstdio>
 #include <queue>
 
 namespace sim {
-
-// Passability (Design/Migration.md): nothing blocks outright. Unfrozen open
-// water is crossed at half speed (rafts); frozen water is walked at full
-// speed (winter is the crossing season -- ice-bridge migrations); a major
-// unfrozen river slows a band to fording pace for the cell it crosses.
-constexpr float FROZEN_T = -2.0f;         // degC, seasonal local temperature
-constexpr float RAFT_FACTOR = 0.5f;
-constexpr float RIVER_CROSS_FACTOR = 0.4f;
-constexpr float RIVER_MAJOR_KM2 = 40000.0f; // runoff-equivalent area
-
-// Prominence: how far the site rises above its regional (climate-grid) mean
-// elevation. The vantage input to awareness.
-inline float prominenceM(const hydrology::Result& hy, const atmosphere::Climatology& clim, int cell) {
-    if (clim.elev.empty()) return 0.0f;
-    float h = std::max(hy.heightM[cell], 0.0f);
-    int x = cell % population::W, y = cell / population::W;
-    int ax = x * atmosphere::W / population::W, ay = y * atmosphere::H / population::H;
-    return h - clim.elev[ay * atmosphere::W + ax];
-}
-
-// Season-interpolated local temperature: coarse climate mean, lapse-corrected
-// from the model's smoothed elevation to the local height.
-inline float seasonalT(const atmosphere::Climatology& c, terrain::V3 n, float hLocal, double now) {
-    return atmosphere::seasonalTempC(c, n, hLocal, now);
-}
-
-inline terrain::V3 cellCentre(int cell) {
-    hydrology::V3orig d = hydrology::cellDir(cell % population::W, cell / population::W);
-    return {d.x, d.y, d.z};
-}
-
-inline int cellOf(terrain::V3 n) {
-    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
-    float lon = std::atan2(n.y, n.x);
-    int cx = hydrology::wrapX((int)std::floor((lon + 3.14159265f) / (2 * 3.14159265f) * population::W));
-    int cy = std::clamp((int)std::floor((lat + 3.14159265f / 2) / 3.14159265f * population::H), 0,
-                        population::H - 1);
-    return cy * population::W + cx;
-}
-
-// Haversine-style: acos(dot) loses about 3 km of precision on nearly equal
-// unit vectors, which is fatal for the kilometre-scale tests (marker picking,
-// arrival checks). The chord form stays exact all the way down to zero.
-inline float distKm(terrain::V3 a, terrain::V3 b) {
-    terrain::V3 d{a.x - b.x, a.y - b.y, a.z - b.z};
-    float half = std::sqrt(terrain::dot(d, d)) * 0.5f;
-    return 2.0f * std::asin(std::clamp(half, 0.0f, 1.0f)) * 6371.0f;
-}
-
-inline terrain::V3 norm3(terrain::V3 v) {
-    float l = std::sqrt(terrain::dot(v, v));
-    return {v.x / l, v.y / l, v.z / l};
-}
-
-// Great-circle step of `km` from p toward q.
-inline terrain::V3 moveToward(terrain::V3 p, terrain::V3 q, float km) {
-    float ang = std::acos(std::clamp(terrain::dot(p, q), -1.0f, 1.0f));
-    float step = km / 6371.0f;
-    if (ang <= step || ang < 1e-6f) return q;
-    float t = step / ang, sa = std::sin(ang);
-    return norm3(p * (std::sin((1 - t) * ang) / sa) + q * (std::sin(t * ang) / sa));
-}
-
-// Record something worth telling. Counts stay exact; the stored entries
-// stop at a cap so a thousand-year step cannot eat memory.
-inline void note(population::Field& pf, int kind, double t, uint32_t sid, uint32_t sid2,
-                 uint32_t bandId, float amount, const char* text, float lossHere = 0,
-                 float lossThem = 0) {
-    using namespace population;
-    if (kind < 0 || kind >= EV_KINDS) return;
-    pf.eventCount[kind]++;
-    if (pf.eventCount[kind] > EVENTS_KEPT_PER_KIND) return;
-    Event e;
-    e.kind = (uint8_t)kind;
-    e.t = t;
-    e.lossHere = lossHere;
-    e.lossThem = lossThem;
-    // Note where it happened while the people involved are still findable:
-    // they may be gone by the time anyone reads this.
-    int at = indexById(pf, sid);
-    if (at < 0) at = indexById(pf, sid2);
-    if (at >= 0) e.cell = pf.settlements[at].cell;
-    e.sid = sid;
-    e.sid2 = sid2;
-    e.bandId = bandId;
-    e.amount = amount;
-    for (int i = 0; i < 95 && text[i]; i++) e.text[i] = text[i];
-    pf.events.push_back(e);
-}
-
-inline void logAt(const char* what, int id, terrain::V3 n, float P, double day) {
-    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
-    float lon = std::atan2(n.y, n.x) * 180.0f / 3.14159265f;
-    fprintf(stderr, "band: %s %d at lat %.2f lon %.2f, %d people, day %.0f\n", what, id, lat, lon,
-            (int)P, day);
-}
-
-// Any settlement within 80 km? Checked through the settlementAt grid: a box
-// of +-5 rows (100 km) and enough columns for 80 km at this latitude covers
-// every cell that could hold one; found entries are then measured exactly.
-// The claim, sector by sector. Sector 0 faces east and they turn north.
-inline terrain::V3 sectorDir(const terrain::V3& c, int k) {
-    terrain::V3 east = norm3({-c.y, c.x, 0.0f});
-    terrain::V3 north = {c.y * east.z - c.z * east.y, c.z * east.x - c.x * east.z,
-                         c.x * east.y - c.y * east.x};
-    float a = 6.2831853f * (k + 0.5f) / population::CLAIM_SECTORS;
-    return norm3(east * std::cos(a) + north * std::sin(a));
-}
-
-// How far settlement `s` reaches towards the point `q`.
-inline float claimReach(const population::Settlement& s, const terrain::V3& q) {
-    terrain::V3 c = cellCentre(s.cell);
-    terrain::V3 east = norm3({-c.y, c.x, 0.0f});
-    terrain::V3 north = {c.y * east.z - c.z * east.y, c.z * east.x - c.x * east.z,
-                         c.x * east.y - c.y * east.x};
-    terrain::V3 d = {q.x - c.x, q.y - c.y, q.z - c.z};
-    // Blended between the two nearest sectors, so a claim is a closed curve
-    // rather than sixteen arcs with steps between them -- and so what the
-    // map draws is exactly what the simulation enforces.
-    float a = std::atan2(d.x * north.x + d.y * north.y + d.z * north.z,
-                         d.x * east.x + d.y * east.y + d.z * east.z) /
-                  6.2831853f * population::CLAIM_SECTORS -
-              0.5f;
-    float fl = std::floor(a), f = a - fl;
-    int k0 = ((int)fl % population::CLAIM_SECTORS + population::CLAIM_SECTORS) %
-             population::CLAIM_SECTORS;
-    int k1 = (k0 + 1) % population::CLAIM_SECTORS;
-    return s.claim[k0] * (1.0f - f) + s.claim[k1] * f;
-}
-
-// Who holds this ground, if anyone. `skip` is the settlement doing the asking.
-inline int claimant(const population::Field& pf, const terrain::V3& q, int skip) {
-    using namespace population;
-    int cell = cellOf(q), cx = cell % W, cy = cell / W;
-    float lat = std::asin(std::clamp(q.z, -1.0f, 1.0f));
-    int rx = std::min((int)std::ceil(2.5f / std::max(std::cos(lat), 0.05f)) + 1, W / 2);
-    for (int dy = -3; dy <= 3; dy++) {
-        int y = cy + dy;
-        if (y < 0 || y >= H) continue;
-        for (int dx = -rx; dx <= rx; dx++) {
-            int si = pf.settlementAt[y * W + hydrology::wrapX(cx + dx)];
-            if (si < 0 || si == skip || pf.settlements[si].leaving) continue;
-            const Settlement& o = pf.settlements[si];
-            if (distKm(q, cellCentre(o.cell)) < claimReach(o, q)) return si;
-        }
-    }
-    return -1;
-}
-
-// How far a newcomer here could claim before meeting somebody: the room
-// left between this ground and the nearest claim, capped at what one place
-// can ever hold. Room is the whole reason one site is worth more than
-// another with the same soil -- land you cannot claim feeds nobody.
-inline float roomKm(const population::Field& pf, terrain::V3 n) {
-    using namespace population;
-    float room = CLAIM_CAP_KM;
-    int cell = cellOf(n), cx = cell % W, cy = cell / W;
-    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
-    int rx = std::min((int)std::ceil(5.5f / std::max(std::cos(lat), 0.05f)) + 1, W / 2);
-    for (int dy = -6; dy <= 6; dy++) {
-        int y = cy + dy;
-        if (y < 0 || y >= H) continue;
-        for (int dx = -rx; dx <= rx; dx++) {
-            int si = pf.settlementAt[y * W + hydrology::wrapX(cx + dx)];
-            if (si < 0 || pf.settlements[si].leaving) continue;
-            const Settlement& o = pf.settlements[si];
-            room = std::min(room, distKm(n, cellCentre(o.cell)) - claimReach(o, n));
-            if (room <= 0) return 0.0f;
-        }
-    }
-    return room;
-}
-
-// Enough unclaimed room to hold a new settlement's floor claim.
-inline bool claimFits(const population::Field& pf, terrain::V3 n) {
-    return roomKm(pf, n) >= population::CLAIM_FLOOR_KM;
-}
-
-// What a claim of this reach is worth against the fixed catchment every
-// settlement used to be handed: 1 at the floor, about 3.3 at the cap.
-inline float claimFactor(float reachKm) {
-    return population::claimYieldKm2(std::clamp(reachKm, population::CLAIM_FLOOR_KM,
-                                                population::CLAIM_CAP_KM)) /
-           population::FORAGE_KM2;
-}
-
-// What the claim is worth, and the yields that follow from it. A settlement
-// eats what its ground produces, so its cached capacities are the per-cell
-// figures scaled by the claim -- at the floor that is exactly the fixed
-// catchment every settlement used to be handed.
-inline void applyClaim(population::Field& pf, population::Settlement& s) {
-    using namespace population;
-    float v = 0;
-    for (int k = 0; k < CLAIM_SECTORS; k++) v += claimYieldKm2(s.claim[k]);
-    s.claimKm2 = v / CLAIM_SECTORS;
-    float f = s.claimKm2 / FORAGE_KM2;
-    s.kFoodP = pf.kFoodPMap[s.cell] * f;
-    s.kGame = pf.kGameMap[s.cell] * f;
-    s.kSmall = pf.kSmallMap[s.cell] * f;
-    s.kFish = pf.kFishMap[s.cell] * f;
-    s.kWater = pf.kWaterMap[s.cell] * f;
-}
-
-inline void claimFloor(population::Field& pf, population::Settlement& s) {
-    for (int k = 0; k < population::CLAIM_SECTORS; k++) s.claim[k] = population::CLAIM_FLOOR_KM;
-    applyClaim(pf, s);
-}
-
-// How far a group of this size would have to reach on this ground to feed
-// itself, with something in hand for the people coming. kFoodP already
-// carries the sustain ratio, so the per-km2 figure it gives is people
-// supported -- counting the ratio again here asked for half the land that
-// was needed, and no claim ever wanted to grow.
-inline float wantedReachKm(const population::Field& pf, int cell, float P, float R) {
-    using namespace population;
-    // What a km2 of this ground actually feeds: its yield at the condition
-    // the land is in. Lived-on land settles at about SUSTAIN_R, so a
-    // settlement at equilibrium holds only half the people its pristine
-    // yield suggests -- price the need at the pristine figure and every
-    // claim in the world decides it already has land to spare.
-    float perKm2 = pf.kFoodPMap[cell] / FORAGE_KM2 * std::max(R, 0.2f);
-    if (perKm2 <= 0 || P <= 0) return CLAIM_FLOOR_KM;
-    float want = claimRadiusFor(P / perKm2 * CLAIM_MARGIN);
-    return std::clamp(want, CLAIM_FLOOR_KM, CLAIM_CAP_KM);
-}
-
-// What a people can still do, and what they have let go.
-//
-// Practice slides back when the means is gone -- no herd, no water, no
-// ground -- and when there are too few practitioners in reach to teach it
-// faithfully. Expertise is a function of the day practice began, so both
-// are one arithmetic: push that day forward. When it catches up with today
-// the skill has fallen to a beginner's and practice lapses; the people stay
-// aware of it, and three generations after the last person in reach did the
-// thing, they stop knowing it can be done at all.
-//
-// A settlement that is practising never loses awareness of what it is
-// doing. That is what lets one settlement invent something and hold it
-// alone until its neighbours learn it.
-inline void decaySkills(population::Field& pf, technology::WorldState& ws, int si, double now) {
-    using namespace population;
-    Settlement& s = pf.settlements[si];
-    if (s.leaving || s.P <= 0) return;
-    double span = now - s.t; // the settlement's own last-integrated day
-    if (span <= 0) return;
-    for (int tech = 0; tech < NTECH; tech++) {
-        TechState& ts = s.tech[tech];
-        if (!ts.aware) continue;
-        // Who else within reach still does this, and how many of them.
-        float others = 0;
-        bool teacher = false;
-        for (int j : pf.neighbours[si]) {
-            const Settlement& o = pf.settlements[j];
-            if (o.leaving || !o.tech[tech].practising) continue;
-            teacher = true;
-            others += o.P;
-        }
-        if (ts.practising || teacher) ts.lostT = now; // somebody in reach still knows
-        if (!ts.practising) {
-            // Knowledge outlives practice, but not by much.
-            if (ts.lostT >= 0 && now - ts.lostT > AWARE_FORGET_YEARS * 365.0) {
-                ts.aware = false;
-                technology::redraw(pf, si, ws, tech, now);
-                technology::scheduleInvention(pf, ws, tech, now); // they are in the pool again
-            }
-            continue;
-        }
-        bool means = technology::meansPresent(s, tech);
-        float critical = criticalPractitioners(tech);
-        float carriers = s.P + others;
-        float shortfall = critical > 0 ? std::clamp(1.0f - carriers / critical, 0.0f, 1.0f) : 0.0f;
-        // Doing the thing every day blunts even the transmission problem.
-        double k = 1.0;
-        if (!means) k = std::max(k, SKILL_DISUSE_K);
-        if (shortfall > 0)
-            k = std::max(k, 1.0 + (SKILL_ISOLATED_K - 1.0) * shortfall *
-                                      (means ? SKILL_USE_SLOWS : 1.0f));
-        // Skill slides back, but never past a beginner's hands.
-        if (k > 1.0) ts.practiceT = std::min(now, ts.practiceT + (k - 1.0) * span);
-        if (now - ts.practiceT > 1.0) { // still has something in hand
-            ts.strainT = -1;
-            continue;
-        }
-        // At the floor. A new practice starts here too, which is why the
-        // lapse waits: a people who have just taken something up have no
-        // skill to lose yet, and their means may not exist until they build
-        // it. Only staying at the floor for a generation and a half ends it.
-        if (ts.strainT < 0) ts.strainT = now;
-        if (now - ts.strainT < SKILL_GRACE_YEARS * 365.0) continue;
-        ts.practising = false;
-        ts.strainT = -1;
-        ts.lostT = now;
-        if (tech == TECH_HUSBANDRY) s.herd = 0;
-        {
-            char txt[96];
-            snprintf(txt, sizeof txt, "%s no longer practises %s", s.name,
-                     technology::techName(tech));
-            note(pf, EV_TECH_LOST, now, s.id, 0, 0, (float)tech, txt);
-        }
-        technology::redraw(pf, si, ws, tech, now);
-        for (int j : pf.neighbours[si]) technology::redraw(pf, j, ws, tech, now);
-        technology::scheduleInvention(pf, ws, tech, now);
-    }
-}
-
-// A frontier creeps outward: people work further out each year than they
-// did, faster when they are hungry, and stop where somebody else was first.
-// Borders do not move once they meet. Returns true if anything is still
-// free to grow -- a settlement that has nowhere left to widen is hemmed in,
-// which is what turns pressure into emigration and, later, into a fight.
-inline bool growClaim(population::Field& pf, int si, double now) {
-    using namespace population;
-    Settlement& s = pf.settlements[si];
-    if (s.leaving || s.P <= 0) return false;
-    double span = std::max(now - s.claimT, 0.0);
-    s.claimT = now;
-    float want = wantedReachKm(pf, s.cell, s.P, s.R);
-    // Most settlements, most of the time, already reach as far as they want
-    // to: check that before walking the frontier, which is the expensive part.
-    bool wants = false;
-    for (int k = 0; k < CLAIM_SECTORS && !wants; k++) wants = s.claim[k] < want - 0.01f;
-    // Not wanting more land is not the same as having room for more: a
-    // settlement that already reaches as far as it needs, or as far as one
-    // place can, is done expanding, and pressure has to find another outlet.
-    if (!wants) return false;
-    // Hunger pushes the border: people range further before they leave.
-    float phi = s.P > 1 ? technology::effectiveK(s, now) * s.R / s.P : 2.0f;
-    float step = (float)(CLAIM_GROW_KM_YR * span / 365.0) * (1.0f + 6.0f * needRamp(phi));
-    terrain::V3 c = cellCentre(s.cell);
-    bool moved = false, free = false;
-    for (int k = 0; k < CLAIM_SECTORS; k++) {
-        if (s.claim[k] >= want - 0.01f) continue;
-        float r = std::min(s.claim[k] + std::max(step, 0.01f), want);
-        terrain::V3 u = sectorDir(c, k);
-        terrain::V3 q = norm3(c + u * (r / 6371.0f));
-        if (claimant(pf, q, si) >= 0) continue; // somebody was here first
-        free = true;
-        if (step <= 0) continue;
-        s.claim[k] = r;
-        moved = true;
-    }
-    if (moved) applyClaim(pf, s);
-    return free;
-}
-
-
-// The capacity a mover with these skills would command at a cell: forager
-// yield plus the farming and herding bonuses for what it practises. This is
-// how a herding band values the steppe a forager walks past -- and it must
-// gate founding too, or a band would choose a target it then refuses.
-inline float moverCap(const population::Field& pf, int cell, float farmExp, float husbExp,
-                      double now, float fishExp = 0, float movers = 300.0f) {
-    using namespace population;
-    float food = pf.kFoodPMap[cell];
-    if (food <= 0) return 0;
-    // What a farming mover could make of this ground: the fields their
-    // hands could till here, at its suitability -- prospective, since the
-    // plots would still have to be cleared on arrival.
-    food += population::TILLED_YIELD_PKM2 * pf.sFarmMap[cell] * farmExp *
-            std::min(movers * population::FARM_KM2_PER_PERSON,
-                     population::VILLAGE_FIELDS_KM2);
-    if (husbExp > 0)
-        food += pf.pastureMap[cell] * FORAGE_KM2 * HERD_PASTURE_K / SUSTAIN_R *
-                (0.3f + 0.7f * husbExp) * 0.85f;
-    // The water counts even to people with no gear -- anyone can take fish
-    // from a bank -- and counts for much more to people who can weir it.
-    food += pf.kFishMap[cell] * fishEff(fishExp);
-    return std::min(food, pf.kWaterMap[cell]);
-}
-
-// The same, priced for land that has been lived on and left: an exhausted
-// valley is a bad place to move to for a generation. Only applied to the
-// finalists of a search -- scars are sparse, and the lookup is not free.
-inline float moverCapScarred(const population::Field& pf, int cell, float farmExp, float husbExp,
-                             double now, float fishExp = 0, float movers = 300.0f) {
-    return moverCap(pf, cell, farmExp, husbExp, now, fishExp, movers) *
-           population::cellCondition(pf, cell, now);
-}
-
-// The same, priced for the room there is to claim: hemmed-in ground is worth
-// what its gap allows, open country what one people could ever hold. This is
-// what sends colonists to the frontier ahead of the gaps behind them, and it
-// is why claims have anywhere to grow.
-inline float wantedReachKm(const population::Field& pf, int cell, float P, float R);
-
-inline float moverCapRoom(const population::Field& pf, int cell, float farmExp, float husbExp,
-                          double now, float movers, float fishExp = 0) {
-    float room = std::min(roomKm(pf, cellCentre(cell)), population::CLAIM_CAP_KM);
-    if (room < population::CLAIM_FLOOR_KM) return 0.0f;
-    // What they would hold on arrival: what they need, or what fits.
-    float take = std::min(wantedReachKm(pf, cell, movers, population::SUSTAIN_R), room);
-    return moverCapScarred(pf, cell, farmExp, husbExp, now, fishExp, std::max(movers, 1.0f)) *
-           claimFactor(take);
-}
-
-// The best-looking unclaimed prospect within the knowledge range, judged with
-// noise that grows with distance: near things resolve exactly, far things are
-// rumours; each candidate is valued at what THIS mover could make of it.
-// Returns a cell index, or -1 if nothing known is worth going to.
-inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t& rng,
-                        float radiusKm, double now, float farmExp = 0, float husbExp = 0,
-                        float* estOut = nullptr, float movers = 0, float fishExp = 0) {
-    using namespace population;
-    bool skilled = farmExp > 0 || husbExp > 0 || fishExp > 0;
-    float lat0 = std::asin(std::clamp(from.z, -1.0f, 1.0f));
-    float dLat = radiusKm / 6371.0f;
-    int y0 = std::max((int)(((lat0 - dLat) + 3.14159265f / 2) / 3.14159265f * H), 1);
-    int y1 = std::min((int)(((lat0 + dLat) + 3.14159265f / 2) / 3.14159265f * H) + 1, H - 2);
-    // Cheap scoring pass (chord distance, no spacing checks), then the
-    // expensive spacing check only on the best few in score order.
-    struct Cand { float est; int cell; };
-    Cand top[24];
-    int nTop = 0;
-    for (int y = y0; y <= y1; y += 2)
-        for (int x = 0; x < W; x += 2) {
-            int cell = y * W + x;
-            // Cheap exact rejections first -- this scan runs over thousands
-            // of cells per search and every search is a settlement deciding
-            // its future. Water caps any mover's capacity, and a mover with
-            // no skills is worth exactly K.
-            if (pf.kWaterMap[cell] < MIN_SETTLEMENT_K) continue;
-            if (!skilled && pf.K[cell] < MIN_SETTLEMENT_K) continue;
-            float cap = skilled ? moverCap(pf, cell, farmExp, husbExp, now, fishExp,
-                                           movers > 0 ? movers : 300.0f)
-                                : pf.K[cell];
-            if (cap < MIN_SETTLEMENT_K) continue;
-            terrain::V3 n = cellCentre(cell);
-            float dot = terrain::dot(from, n);
-            float d = 6371.0f * std::sqrt(std::max(2.0f - 2.0f * dot, 0.0f)); // chord ~ arc
-            if (d > radiusKm || d < 80.0f) continue;
-            float noise = ((float)technology::urand(rng) * 2.0f - 1.0f) * 0.6f * (d / radiusKm);
-            float est = cap * (1.0f + noise);
-            if (nTop < 24) {
-                top[nTop++] = {est, cell};
-            } else {
-                int worst = 0;
-                for (int k = 1; k < 24; k++)
-                    if (top[k].est < top[worst].est) worst = k;
-                if (est > top[worst].est) top[worst] = {est, cell};
-            }
-        }
-    // Room is priced only here, on the two dozen finalists: the scan for it
-    // is far too costly to run over every cell in a search radius. A site
-    // hemmed in by other people's claims is worth what its gap allows, so
-    // open country outbids a gap of the same soil, and the frontier fills
-    // before the spaces behind it.
-    for (int k = 0; k < nTop; k++) {
-        float room = std::min(roomKm(pf, cellCentre(top[k].cell)), CLAIM_CAP_KM);
-        if (room < CLAIM_FLOOR_KM) { top[k] = top[--nTop]; k--; continue; }
-        // Priced by the claim its takers would actually make, not by all the
-        // room there is: valuing a target at the largest claim anyone could
-        // ever hold made every prospect outbid home three to one, and whole
-        // settlements marched off rather than sending colonists.
-        top[k].est *=
-            claimFactor(std::min(wantedReachKm(pf, top[k].cell, movers, SUSTAIN_R), room));
-    }
-    while (nTop > 0) {
-        int bi = 0;
-        for (int k = 1; k < nTop; k++)
-            if (top[k].est > top[bi].est) bi = k;
-        int cell = top[bi].cell;
-        float scar = population::cellCondition(pf, cell, now);
-        if (scar * top[bi].est >= MIN_SETTLEMENT_K) {
-            if (estOut) *estOut = top[bi].est * scar; // the rumour, not the truth
-            return cell;
-        }
-        top[bi] = top[--nTop];
-    }
-    return -1;
-}
-
-// A granary finished during the last integration: advance() counts them,
-// the simulation is what tells anyone about it.
-inline void reportGranaries(population::Field& pf, population::Settlement& s, double now) {
-    while (s.builtGranaries > 0) {
-        s.builtGranaries--;
-        char txt[96];
-        snprintf(txt, sizeof txt, "%s finished a granary (%d standing)", s.name,
-                 (int)s.granaries);
-        note(pf, population::EV_GRANARY, now, s.id, 0, 0, s.granaries, txt);
-    }
-    while (s.builtFsteads > 0) {
-        s.builtFsteads--;
-        char txt[96];
-        snprintf(txt, sizeof txt, "%s raised a farmstead on the far fields (%d standing)",
-                 s.name, (int)s.farmsteads);
-        note(pf, population::EV_FARMSTEAD, now, s.id, 0, 0, s.farmsteads, txt);
-    }
-}
 
 // Advance every regional game pool to `now` (population.h constants). The
 // draw is what the region's settlements currently eat from the game side of
@@ -506,877 +26,61 @@ inline void reportGranaries(population::Field& pf, population::Settlement& s, do
 // 90-day schedule (plus catch-up), so it is step-size invariant. Bands are
 // too small and transient to count.
 inline void gameTick(population::Field& pf, double now) {
-    using namespace population;
     double dt = now - pf.gameT;
     if (dt <= 0 || pf.gameG.empty()) return;
     std::vector<float> draw(pf.gameG.size(), 0.0f);
-    for (const Settlement& s : pf.settlements) {
+    for (const population::Settlement& s : pf.settlements) {
         if (s.kGame <= 0 || s.P <= 1) continue;
+        population::SeasonCtx ctx = technology::annualCtx(s, now);
+        population::FoodTerms f = population::foodTerms(s, ctx);
+        // Deviation from "the diet is defined once" (foodTerms): the herds'
+        // flow is multiplied here in the order this function always used,
+        // (kGame * huntEff) * bows * meanF, not f.bigGame * meanF, which
+        // groups the same factors as kGame * (huntEff * bows). The two
+        // differ by a rounding, and that rounding moved a 40-year probe by
+        // one person; the order stays until a behaviour change is wanted.
         float g = pf.gameG[s.gRegion];
-        float archExp = technology::expertise(s.tech[TECH_ARCHERY], now);
-        float cover = bowCoverage(s.bows, s.P);
-        float gameFlow =
-            s.kGame * huntEff(g) * (1.0f + BOW_BIG_GAIN * cover * archExp) * s.meanF;
-        float farm = s.farmK * technology::expertise(s.tech[TECH_FARMING], now);
-        float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
-        float total = (s.kFoodP - s.kGame - s.kSmall) * s.meanF +
-                      s.kSmall * smallGameEff(cover, archExp) * s.meanF + gameFlow +
-                      farm + s.herd * 0.85f + FARMYARD_SHARE_POP * s.kFoodP * hExp;
+        float gameFlow = s.kGame * population::huntEff(g) *
+                         (1.0f + population::BOW_BIG_GAIN * ctx.bowCover * ctx.archExp) * s.meanF;
+        float total =
+            f.plant * s.meanF + f.smallGame * s.meanF + gameFlow + f.farm + f.herd + f.farmyard;
         if (total <= 1e-6f) continue;
         draw[s.gRegion] += s.P * gameFlow / total; // game share of what they eat
     }
     for (size_t r = 0; r < pf.gameG.size(); r++) {
         if (pf.gameDmax[r] <= 0) continue;
         float g = pf.gameG[r];
-        float regen = g >= GAME_FLOOR ? (1.0f - g) / (GAME_REGEN_YEARS * 365.0f) : 0.0f;
-        float depl = draw[r] / pf.gameDmax[r] / (GAME_DEPLETE_YEARS * 365.0f);
+        float regen = g >= population::GAME_FLOOR
+                          ? (1.0f - g) / (population::GAME_REGEN_YEARS * 365.0f)
+                          : 0.0f;
+        float depl = draw[r] / pf.gameDmax[r] / (population::GAME_DEPLETE_YEARS * 365.0f);
         float before = g;
         pf.gameG[r] = std::clamp(g + (regen - depl) * (float)dt, 0.0f, 1.0f);
-        if (before >= GAME_FLOOR && pf.gameG[r] < GAME_FLOOR)
-            note(pf, EV_GAME_GONE, now, 0, 0, 0, 0,
+        if (before >= population::GAME_FLOOR && pf.gameG[r] < population::GAME_FLOOR)
+            note(pf, population::EV_GAME_GONE, now, 0, 0, 0, 0,
                  "a regional herd was hunted past saving");
     }
-    for (Settlement& s : pf.settlements)
+    for (population::Settlement& s : pf.settlements)
         if (s.kGame > 0) s.gameNow = pf.gameG[s.gRegion];
     pf.gameT = now;
 }
 
-inline population::SeasonCtx seasonCtx(const population::Settlement& s,
-                                       const hydrology::Result& hy,
+inline population::SeasonCtx seasonCtx(const population::Settlement& s, const hydrology::Result& hy,
                                        const atmosphere::Climatology& clim, double now) {
-    population::SeasonCtx ctx;
+    population::SeasonCtx ctx = technology::annualCtx(s, now);
     ctx.clim = &clim;
     ctx.n = cellCentre(s.cell);
     ctx.h = std::max(hy.heightM[s.cell], 0.0f);
-    ctx.farmExp = technology::expertise(s.tech[population::TECH_FARMING], now);
-    ctx.farmFlow = s.farmK * ctx.farmExp;
-    ctx.husbExp = technology::expertise(s.tech[population::TECH_HUSBANDRY], now);
-    ctx.granExp = technology::expertise(s.tech[population::TECH_GRANARY], now);
-    ctx.gameG = s.gameNow;
-    ctx.archExp = technology::expertise(s.tech[population::TECH_ARCHERY], now);
-    ctx.fishExp = technology::expertise(s.tech[population::TECH_FISHING], now);
-    ctx.bowCover = population::bowCoverage(s.bows, s.P);
-    ctx.aff = s.aff;
     return ctx;
-}
-
-// Granary marker positions: a ring of small structures around the
-// settlement's cell centre, spaced by the golden angle with a per-cell
-// integer phase. Defined ONCE here and mirrored exactly in
-// shaders/globe.frag (granaryNear) so drawing and the tooltip cannot drift.
-// Granaries stand among the houses, on the same golden-angle scatter, each
-// one a little further out than the last.
-constexpr float GRANARY_R0_KM = 0.03f, GRANARY_DR_KM = 0.008f;
-
-// How wide the houses stand: a hut to a household, and enough ground under
-// them to walk between. Real distances -- a longhouse is 8 m across and its
-// neighbour stands 15 m off, so a village of sixty households is a couple of
-// hundred metres end to end, not a kilometre. Mirrored in the shader.
-inline int hutCount(float P) {
-    int n = (int)(P / 12.0f + 0.5f);
-    return n < 3 ? 3 : (n > 60 ? 60 : n);
-}
-inline float villageRadiusKm(float P) { return 0.02f + 0.011f * std::sqrt((float)hutCount(P)); }
-// A band on the march is people, one dot each: a column of forty strung out
-// over forty or fifty metres of ground. Beyond a couple of hundred the dots
-// stop being countable and the cap only bounds the drawing cost.
-inline int bandDots(float P) {
-    int n = (int)(P + 0.5f);
-    return n < 3 ? 3 : (n > 200 ? 200 : n);
-}
-inline float bandSpreadKm(float P) { return 0.012f + 0.004f * std::sqrt((float)bandDots(P)); }
-// Where the fields begin: outside the houses, with room to walk between.
-inline float fieldInnerKm(float P) { return villageRadiusKm(P) * 1.2f; }
-inline terrain::V3 granaryPos(int cell, int k) {
-    terrain::V3 c = cellCentre(cell);
-    terrain::V3 east = norm3({-c.y, c.x, 0.0f});
-    terrain::V3 north = {c.y * east.z - c.z * east.y, c.z * east.x - c.x * east.z,
-                         c.x * east.y - c.y * east.x};
-    float a = 2.39996f * k + (float)(cell % 628) * 0.01f;
-    float r = (GRANARY_R0_KM + GRANARY_DR_KM * k) / 6371.0f;
-    return norm3(c + (east * std::cos(a) + north * std::sin(a)) * r);
-}
-
-// Where farmstead slot k stands: the same golden-angle scatter as the
-// granaries, at field scale -- kilometres out, each further than the last,
-// the outermost just inside where the commute value reaches zero. Defined
-// once here and mirrored exactly in shaders/globe.frag.
-inline terrain::V3 farmsteadPos(int cell, int k) {
-    terrain::V3 c = cellCentre(cell);
-    terrain::V3 east = norm3({-c.y, c.x, 0.0f});
-    terrain::V3 north = {c.y * east.z - c.z * east.y, c.z * east.x - c.x * east.z,
-                         c.x * east.y - c.y * east.x};
-    float a = 2.39996f * k + (float)(cell % 628) * 0.01f + 1.1f; // offset from the granary ring
-    float r = (population::FSTEAD_R0_KM + population::FSTEAD_DR_KM * k) / 6371.0f;
-    return norm3(c + (east * std::cos(a) + north * std::sin(a)) * r);
-}
-
-// What the standing fields feed, cached as farmK, and where the next plot
-// would go. Each site's tilled plots are priced at ITS OWN cell's
-// suitability -- a farmstead on good grass opens good land; one whose slot
-// fell on scree or water opens nothing, which is the map talking. Also
-// decides the next work order's site (the village's daily-walk disc first,
-// then each farmstead's block in the order they stand), how many farmstead
-// slots the claim can hold, and whether the next slot is worth building on.
-// Recomputed on every wake; a few map lookups.
-inline float claimReach(const population::Settlement& s, const terrain::V3& q);
-
-inline void updateFarmland(population::Field& pf, population::Settlement& s) {
-    using namespace population;
-    float k = s.sFarm * s.tilled[0];
-    int next = (s.sFarm > 0.05f && s.tilled[0] < VILLAGE_FIELDS_KM2 - 0.01f) ? 0 : -1;
-    int n = std::min((int)(s.farmsteads + 0.5f), FSTEAD_MAX);
-    for (int i = 0; i < n; i++) {
-        float suit = pf.sFarmMap[cellOf(farmsteadPos(s.cell, i))];
-        k += suit * s.tilled[i + 1];
-        if (next < 0 && suit > 0.05f && s.tilled[i + 1] < FSTEAD_KM2 - 0.01f) next = i + 1;
-    }
-    s.farmK = k * TILLED_YIELD_PKM2;
-    s.tillSiteNext = (int8_t)next;
-    // How far out the farmstead spiral stays inside the claim: slots are
-    // taken in order, so the first one past the border ends the count.
-    terrain::V3 c = cellCentre(s.cell);
-    int slots = 0;
-    for (int i = 0; i < FSTEAD_MAX; i++) {
-        terrain::V3 q = farmsteadPos(s.cell, i);
-        if (distKm(q, c) > claimReach(s, q)) break;
-        slots = i + 1;
-    }
-    s.fsteadMax = (uint8_t)slots;
-    s.fsteadNextOk = n < slots && pf.sFarmMap[cellOf(farmsteadPos(s.cell, n))] > 0.05f;
-}
-
-// Fields around a settlement. Stone tools did not stop the first farmers
-// clearing woodland -- the axe girdles, the fire does the work, and the ash
-// manures the first crop -- so the mark a farming village leaves is a
-// clearing, not a patch of open ground it happened to find. Area: roughly
-// 0.4 ha under crop feeds a person at Neolithic yields, and with a long
-// fallow (a rotation of some twenty years) the land inside the rotation is
-// about eight hectares a head (population::FARM_KM2_PER_PERSON). That whole
-// mosaic -- crop, stubble, scrub regrowth, the trees not yet taken -- is
-// what farming looks like from above, so it is the footprint drawn.
-
-// The plots are drawn individually by the shader (one patch per built
-// km2, on a sunflower spiral working outward from the village and from
-// each farmstead -- the spiral is inner-out, so clearing visibly accretes).
-// This radius is the spiral's reach for the plots that stand: the tooltip
-// pick and any coarse test use it as the fields' extent.
-inline float farmRadiusKm(const population::Settlement& s, double now) {
-    (void)now;
-    if (s.tilled[0] <= 0) return 0.0f;
-    float inner = fieldInnerKm(s.P);
-    // The spiral's packing makes its reach the annulus radius; the margin
-    // is a plot's own half-width past its centre.
-    return std::sqrt(inner * inner + s.tilled[0] / 3.14159265f) + 0.6f;
-}
-
-// A band forages the cell it stands on: same famine rule as a settlement, but
-// a moving band gathers on a third of the day and carries only a small store.
-// No growth on the march; a migration is months, not generations.
-// What a band can drink where it stands, in people supported per day. The
-// yield maps are land only, so open sea is zero and needs no rule of its
-// own; a lake or a river is as much as anyone can drink, and ice is water
-// you have to melt but water all the same. Salt is the distinction that
-// matters -- without it the Great Lakes would be as deadly as the Atlantic.
-inline float drinkableAt(const population::Field& pf, const hydrology::Result& hy,
-                         const atmosphere::Climatology& clim, terrain::V3 n, int cell,
-                         double now, float need) {
-    bool lake = hy.cells[cell].lakeLevel > hydrology::NO_LAKE + 1.0f;
-    bool sea = hy.heightM[cell] <= 0 && !lake;
-    if (lake) return need;   // fresh, and more of it than anyone can drink
-    if (sea) {
-        // Sea ice is fresh once it has aged, and a frozen surface can be
-        // melted; open salt water cannot be drunk at all.
-        float t = seasonalT(clim, n, 0.0f, now);
-        return t < FROZEN_T ? need : 0.0f;
-    }
-    // On land, kWaterMap counts what the rivers carry -- which is the right
-    // measure for a settlement of hundreds drawing every day, and the wrong
-    // one for a band walking through. Where rain falls there is water in
-    // pools, seeps andsmall streams below this grid, and nobody dies of thirst
-    // in a rainforest for want of a river. Dry country is what kills.
-    float rain = clim.rainMmDay.empty()
-                     ? 2.0f
-                     : atmosphere::seasonalAt(clim.rainMmDay, atmosphere::climFuzz(n), now);
-    float wet = std::clamp((rain - 0.3f) / 0.7f, 0.0f, 1.0f);
-    return std::max(pf.kWaterMap[cell], wet * need);
-}
-
-inline void integrateBand(population::Band& b, float flowBase, double span, bool resting,
-                          const atmosphere::Climatology& clim, terrain::V3 n, float h,
-                          double startT, float drinkable, float thirst) {
-    using namespace population;
-    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
-    float lon = std::atan2(n.y, n.x);
-    int steps = std::clamp((int)(span / 2.0) + 1, 1, 60);
-    float dt = (float)(span / steps);
-    float gather = resting ? GATHER_SETTLED : GATHER_MOVING;
-    for (int k = 0; k < steps && dt > 0; k++) {
-        double tk = startT + (k + 0.5) * dt;
-        // A migrating band is never content: full firelight extension.
-        float wh = daylight::workHours(lat, tk, 1.0f);
-        float flow = flowBase *
-                     atmosphere::forageFactor(atmosphere::seasonalTempC(clim, n, h, tk));
-        float H = std::min(flow, gather * b.P * wh / 12.0f);
-        float cap = CAP_DAYS_BAND * std::max(b.P, 1.0f);
-        float fill = std::clamp(b.S / cap, 0.0f, 1.0f);
-        float excl = std::clamp(1.0f - fill / HOARD_FILL, 0.0f, 1.0f);
-        float shortfall = b.P > 0 ? std::clamp(1.0f - H / b.P, 0.0f, 1.0f) : 0.0f;
-        double a = startT + k * (double)dt;
-        float act =
-            dt >= 1.0f ? 1.0f : (float)(daylight::activeDays(lon, a, a + dt, wh) / dt);
-        bandStarve(b.pop, STARVE_MAX * b.P * excl * shortfall * dt);
-        b.P = b.pop.total();
-        b.S = std::clamp(b.S + (H - b.P) * dt * act, 0.0f, CAP_DAYS_BAND * std::max(b.P, 1.0f));
-        // Water: drink what is here, carry away the surplus, spend the rest
-        // out of the skins. Dry, and the ground giving nothing, kills fast.
-        // The skins hold what they hold; in the heat that is fewer days.
-        float wCap = CAP_WATER_DAYS * std::max(b.P, 1.0f);
-        float need = b.P * thirst; // fewer mouths, less water, same heat
-        b.water = std::clamp(b.water + (drinkable - need) * dt, 0.0f, wCap);
-        if (b.water <= 0.0f && drinkable < need) {
-            float dry = std::clamp(1.0f - drinkable / std::max(need, 1.0f), 0.0f, 1.0f);
-            bandStarve(b.pop, THIRST_DEATH_RATE * b.P * dry * dt);
-            b.P = b.pop.total();
-        }
-    }
-}
-
-// What a group can bring to a fight: people, armed by their bows. Archery
-// is dual-use, so the bow-making labour is a real choice between hunting
-// better and being harder to rob.
-// People weighted by who they are, then armed by their bows. The rest of
-// a settlement's people are why it is harder to rob than a raiding party
-// of the same headcount is to beat -- so there is no separate defender
-// bonus any more; the advantage is the population itself.
-inline float fightStrength(const population::Cohorts& c, float bows, float archExp,
-                           float fightAff = 0) {
-    using namespace population;
-    float able = cohortStrength(c);
-    float cover = bowCoverage(bows, std::max(c.M, 1.0f)); // bows are carried by the men
-    return able * (FIGHT_UNARMED + (1.0f - FIGHT_UNARMED) * cover * archExp) *
-           affinityBonus(fightAff);
-}
-
-// The raid: reached them, now settle it. Heavily chanced -- a party twice
-// the strength wins about seven times in ten, not always -- and cheap in
-// lives, because people run rather than fight to the end. What is taken is
-// limited by what can be carried, except livestock, which walks itself.
-inline void resolveRaid(population::Field& pf, technology::WorldState& ws,
-                        population::Band& b, int ti, double now) {
-    using namespace population;
-    Settlement& t = pf.settlements[ti];
-    float aExp = technology::expertise(b.tech[TECH_ARCHERY], now);
-    float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
-    float A = fightStrength(b.pop, b.bows, aExp, b.aff.fight) * RAID_INITIATIVE;
-    float D = fightStrength(t.pop, t.bows, dExp, t.aff.fight);
-    double pa = std::pow(std::max(A, 1e-3f), RAID_ODDS_POWER);
-    double pd = std::pow(std::max(D, 1e-3f), RAID_ODDS_POWER);
-    bool won = technology::urand(ws.rng) < pa / (pa + pd);
-    float lossA = won ? RAID_LOSS_WINNER : RAID_LOSS_LOSER;
-    float lossD = won ? RAID_LOSS_LOSER : RAID_LOSS_WINNER;
-    // The men are the ones in the fight; a few of the rest are caught up
-    // in it. A settlement that loses its men is crippled for a generation,
-    // and the flows above are what let that scar heal slowly.
-    float beforeA = b.P, beforeD = t.P;
-    b.pop.M *= 1.0f - lossA;
-    b.P = b.pop.total();
-    t.pop.M *= 1.0f - lossD;
-    t.pop.C *= 1.0f - lossD * 0.25f;
-    t.pop.W *= 1.0f - lossD * 0.25f;
-    t.pop.E *= 1.0f - lossD * 0.25f;
-    t.P = t.pop.total();
-    b.bows *= 1.0f - lossA;
-    t.bows *= 1.0f - lossD;
-    int deadA = (int)std::lround(std::max(beforeA - b.P, 0.0f));
-    int deadD = (int)std::lround(std::max(beforeD - t.P, 0.0f));
-    if (won) {
-        float carry = b.P * LOOT_CARRY_DAYS;
-        b.loot = std::min(t.S * LOOT_STORE_SHARE, carry);
-        b.lootHerd = t.herd * LOOT_HERD_SHARE;
-        t.S = std::max(t.S - b.loot, 0.0f);
-        t.herd = std::max(t.herd - b.lootHerd, 0.0f);
-    }
-    // Both sides learn the trade, whichever way it went. Being raided
-    // makes a people dangerous, not merely poorer.
-    b.aff.fight += (1.0f - b.aff.fight) * FIGHT_LEARN;
-    t.aff.fight += (1.0f - t.aff.fight) * FIGHT_LEARN;
-    {
-        char txt[96];
-        if (won)
-            snprintf(txt, sizeof txt, "%s raided %s: %d rations, %d livestock taken", b.name,
-                     t.name, (int)b.loot, (int)b.lootHerd);
-        else
-            snprintf(txt, sizeof txt, "%s beat off a raid by %s", t.name, b.name);
-        // Both sides count their dead. The numbers travel with the event
-        // rather than inside its sentence: a line long enough to hold them
-        // both runs off the end of the panel that shows it.
-        note(pf, won ? population::EV_RAID_HIT : population::EV_RAID_HELD, now, t.id, b.homeId,
-             b.id, won ? b.loot : 0.0f, txt, (float)deadD, (float)deadA);
-    }
-    b.returning = true;
-    fprintf(stderr, "raid: %s settlement %u, %d rations %d livestock, %d + %d dead, day %.0f\n",
-            won ? "sacked" : "beaten off by", t.id, (int)b.loot, (int)b.lootHerd, deadA, deadD, now);
-}
-
-// A band that arrives (or gives up) becomes a settlement on unclaimed ground.
-inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
-                            const hydrology::Result& hy, const atmosphere::Climatology& clim,
-                            const population::Band& b, int cell, double now) {
-    using namespace population;
-    Settlement s{cell, 0, false, b.pop, b.P, cellCondition(pf, cell, now), now, now};
-    // A community that picked up and moved keeps its identity along with
-    // its name; only colonists are somebody new.
-    s.id = b.sid ? b.sid : pf.nextSettlementId++;
-    s.culture = b.culture;
-    s.aff = b.aff;
-    // A name follows a community, not a site: people who picked up and
-    // moved are still themselves, while colonists who split away name the
-    // place they have made their own.
-    if (b.colonists && b.culture < pf.cultures.size())
-        technology::uniqueName(pf, pf.cultures[b.culture], ws.rng, s.name);
-    else
-        for (int i = 0; i < 16; i++) s.name[i] = b.name[i];
-    s.founded = now;
-    pf.scars.erase(cell); // the land's condition is live state again
-    for (int i = (int)pf.ruins.size() - 1; i >= 0; i--)
-        if (pf.ruins[i].cell == cell) pf.ruins.erase(pf.ruins.begin() + i); // rebuilt over
-    s.bows = b.bows; // carried on the march
-    s.gRegion = population::gameRegion(cell);
-    s.gameNow = pf.gameG.empty() ? 1.0f : pf.gameG[s.gRegion];
-    s.sFarm = pf.sFarmMap[cell];
-    s.sFish = pf.sFishMap[cell];
-    s.pasture = pf.pastureMap[cell];
-    s.buildMat = pf.buildMatMap[cell];
-    s.sWood = pf.sWoodMap[cell];
-    // The first days on new ground go to firewood before anything else
-    // stands: a month's pile, not a winter's -- arriving in autumn on bare
-    // tundra is as dangerous as it sounds.
-    s.fuelS = 100.0f * b.P;
-    s.cycleT = now;  // the fill cycle starts with the settlement
-    s.claimT = now;  // and so does the frontier
-    // They claim what they need on the day they arrive, as far as the room
-    // allows: a community that walked here with five hundred people does not
-    // wait a century to work enough ground to feed them.
-    float take = std::min(wantedReachKm(pf, cell, s.P, population::SUSTAIN_R),
-                          std::min(roomKm(pf, cellCentre(cell)), CLAIM_CAP_KM));
-    take = std::max(take, CLAIM_FLOOR_KM);
-    for (int k = 0; k < CLAIM_SECTORS; k++) s.claim[k] = take;
-    applyClaim(pf, s);
-    updateFarmland(pf, s);
-    s.S = std::min(b.S, CAP_DAYS_SETTLED * b.P);
-    for (int t = 0; t < NTECH; t++) s.tech[t] = b.tech[t];
-    if (s.tech[TECH_HUSBANDRY].practising) {
-        // Herders arrive with stock driven along the march, not a bare
-        // seed: enough to feed a share of the arrivals while it grows.
-        float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
-        s.herd = std::max(technology::HERD_SEED, 0.25f * b.P * hExp);
-    }
-    atmosphere::seasonProfile(clim, cellCentre(cell), std::max(hy.heightM[cell], 0.0f), s.tSeason,
-                              s.meanF, s.meanG2);
-    int idx = (int)pf.settlements.size();
-    pf.settlementAt[cell] = idx;
-    pf.settlements.push_back(s);
-    pf.neighbours.push_back({});
-    terrain::V3 n = cellCentre(cell);
-    for (int j = 0; j < idx; j++)
-        if (distKm(n, cellCentre(pf.settlements[j].cell)) <= CONTACT_KM) {
-            pf.neighbours[idx].push_back(j);
-            pf.neighbours[j].push_back(idx);
-        }
-    for (int t = 0; t < NTECH; t++) {
-        technology::redraw(pf, idx, ws, t, now);
-        for (int j : pf.neighbours[idx]) technology::redraw(pf, j, ws, t, now);
-        technology::scheduleInvention(pf, ws, t, now);
-    }
-    {
-        char txt[96];
-        int km = b.fromCell >= 0
-                     ? (int)distKm(cellCentre(b.fromCell), cellCentre(cell))
-                     : 0;
-        if (b.colonists)
-            snprintf(txt, sizeof txt, "%s was founded by colonists from %s, %d km away", s.name,
-                     b.name, km);
-        else
-            snprintf(txt, sizeof txt, "%s settled again %d km from their old home", s.name, km);
-        note(pf, b.colonists ? population::EV_FOUNDED : population::EV_SETTLED, now, s.id, 0, 0,
-             b.P, txt);
-    }
-    logAt("founded settlement", idx, n, b.P, now);
-}
-
-// Merge a failing band into the nearest settlement in reach; what it knows
-// travels with it.
-inline bool mergeBand(population::Field& pf, technology::WorldState& ws,
-                      const population::Band& b, double now) {
-    using namespace population;
-    terrain::V3 n = {b.px, b.py, b.pz};
-    int ti = -1;
-    float td = CONTACT_KM;
-    for (int i = 0; i < (int)pf.settlements.size(); i++) {
-        if (pf.settlements[i].leaving) continue; // that place is being abandoned
-        float d = distKm(n, cellCentre(pf.settlements[i].cell));
-        if (d < td) { td = d; ti = i; }
-    }
-    if (ti < 0) return false;
-    Settlement& t = pf.settlements[ti];
-    t.pop.add(b.pop);
-    t.P = t.pop.total();
-    t.bows += b.bows;
-    t.S = std::min(t.S + b.S, CAP_DAYS_SETTLED * t.P);
-    for (int tc = 0; tc < NTECH; tc++) {
-        if (b.tech[tc].aware && !t.tech[tc].aware) {
-            t.tech[tc].aware = true;
-            technology::redraw(pf, ti, ws, tc, now);
-            for (int j : pf.neighbours[ti])
-                if (!pf.settlements[j].tech[tc].aware) technology::redraw(pf, j, ws, tc, now);
-            technology::scheduleInvention(pf, ws, tc, now);
-        }
-        if (b.tech[tc].practising && !t.tech[tc].practising) {
-            t.tech[tc].practising = true;
-            t.tech[tc].practiceT = b.tech[tc].practiceT;
-            t.nextTech[tc] = 1e18;
-            if (tc == TECH_HUSBANDRY && t.herd <= 0) t.herd = technology::HERD_SEED;
-            if (tc == TECH_FARMING) technology::redraw(pf, ti, ws, TECH_GRANARY, now);
-            for (int j : pf.neighbours[ti]) technology::redraw(pf, j, ws, tc, now);
-            technology::scheduleInvention(pf, ws, tc, now);
-        }
-    }
-    {
-        char txt[96];
-        snprintf(txt, sizeof txt, "%s gave up the road and joined %s", b.name, t.name);
-        note(pf, population::EV_MERGED, now, t.id, 0, b.id, b.P, txt);
-    }
-    logAt("merged into settlement", ti, n, b.P, now);
-    return true;
-}
-
-// One band re-evaluation: integrate, move, then decide â€” rest, settle here,
-// arrive, re-target, or give up. Returns false if the band no longer exists.
-inline bool stepBand(population::Field& pf, technology::WorldState& ws,
-                     const hydrology::Result& hy, const atmosphere::Climatology& clim, int bi,
-                     double now) {
-    using namespace population;
-    Band& b = pf.bands[bi];
-    terrain::V3 pos = {b.px, b.py, b.pz};
-    double span = now - b.t;
-    b.t = now;
-    int hereCell = cellOf(pos);
-    double startT = b.t - span; // b.t was already moved to now
-    // 0 on water: crossings cost stores. The game-borne share of the cell's
-    // yield follows the regional pool's health, like a settlement's does.
-    float flowBase = pf.K[hereCell] * SUSTAIN_R;
-    if (flowBase > 0 && pf.kFoodPMap[hereCell] > 0 && !pf.gameG.empty()) {
-        float g = pf.gameG[population::gameRegion(hereCell)];
-        float scale = (pf.kFoodPMap[hereCell] - pf.kGameMap[hereCell] * (1.0f - huntEff(g))) /
-                      pf.kFoodPMap[hereCell];
-        flowBase *= std::max(scale, 0.0f);
-    }
-    // Thirst rises with the heat, so the same skins go less far in the south.
-    float hHere0 = std::max(hy.heightM[hereCell], 0.0f);
-    float thirst = thirstFactor(seasonalT(clim, pos, hHere0, now - span * 0.5));
-    integrateBand(b, flowBase, span, b.resting, clim, pos, hHere0, startT,
-                  drinkableAt(pf, hy, clim, pos, hereCell, now - span * 0.5, b.P * thirst),
-                  thirst);
-    if (b.P < BAND_MIN_P) {
-        if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
-        pf.bands.erase(pf.bands.begin() + bi);
-        return false;
-    }
-    // A raiding party has somewhere to be and does not settle en route:
-    // outward to its mark, then home with whatever it took.
-    if (b.purpose == BAND_RAID) {
-        int hi = indexById(pf, b.homeId);
-        if (!b.returning) {
-            int ti = indexById(pf, b.targetId);
-            if (ti < 0) b.returning = true; // they moved on; nothing to rob
-            else {
-                b.targetCell = pf.settlements[ti].cell;
-                if (distKm(pos, cellCentre(b.targetCell)) < 20.0f)
-                    resolveRaid(pf, ws, b, ti, now);
-            }
-        }
-        if (b.returning) {
-            if (hi < 0) { // home is gone: join whoever will have them
-                if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
-                pf.bands.erase(pf.bands.begin() + bi);
-                return false;
-            }
-            b.targetCell = pf.settlements[hi].cell;
-            if (distKm(pos, cellCentre(b.targetCell)) < 20.0f) {
-                Settlement& h = pf.settlements[hi];
-                h.pop.add(b.pop); // the survivors, back among their people
-                h.aff.fight = std::max(h.aff.fight, b.aff.fight);
-                h.P = h.pop.total();
-                h.bows += b.bows;
-                h.herd += b.lootHerd;
-                h.S = std::min(h.S + b.S + b.loot, storageCapDays(h.P, h.granaries) * h.P);
-                {
-                    char txt[96];
-                    snprintf(txt, sizeof txt, "%s raiders came home with %d rations, %d livestock",
-                             b.name, (int)b.loot, (int)b.lootHerd);
-                    note(pf, population::EV_RAID_HOME, now, h.id, 0, 0, b.loot, txt);
-                }
-                logAt("raiders home to settlement", hi, pos, b.P, now);
-                pf.bands.erase(pf.bands.begin() + bi);
-                return false;
-            }
-        }
-    }
-
-    terrain::V3 tgt = cellCentre(b.targetCell);
-    if (!b.resting) {
-        // Terrain under our feet sets the pace: rafting is slow, ice walks,
-        // a major unfrozen river means fording. Light sets the hours: bands
-        // walk while there is light to walk by (through civil twilight),
-        // sleep the rest -- 15 km/day is the 12-lit-hour baseline. Sub-day
-        // steps show it: a band stands still in the dead of night.
-        float lat = std::asin(std::clamp(pos.z, -1.0f, 1.0f));
-        float lonB = std::atan2(pos.y, pos.x);
-        float lh = daylight::travelHours(lat, now - span * 0.5);
-        float km = BAND_SPEED_KM_DAY / 12.0f * lh *
-                   (float)daylight::activeDays(lonB, now - span, now, lh);
-        float factor = 1.0f;
-        bool water = hy.heightM[hereCell] <= 0 ||
-                     hy.cells[hereCell].lakeLevel > hydrology::NO_LAKE + 1;
-        float hHere = std::max(hy.heightM[hereCell], 0.0f);
-        bool frozen = seasonalT(clim, pos, hHere, now) < FROZEN_T;
-        if (water && !frozen) factor *= RAFT_FACTOR;
-        else if (!water && !frozen && hy.cells[hereCell].flow >= RIVER_MAJOR_KM2)
-            factor *= RIVER_CROSS_FACTOR;
-        pos = moveToward(pos, tgt, km * factor);
-        b.px = pos.x;
-        b.py = pos.y;
-        b.pz = pos.z;
-    }
-    int cell = cellOf(pos);
-    if (b.purpose == BAND_RAID) { // no resting, no founding: keep marching
-        b.nextUpdate = now + BAND_STEP_DAYS;
-        return true;
-    }
-    float fill = b.S / (CAP_DAYS_BAND * std::max(b.P, 1.0f));
-    if (b.resting) {
-        if (fill >= 0.95f || now - b.restStart > 90.0) b.resting = false;
-    } else if (fill < 0.3f && pf.K[cell] * SUSTAIN_R > b.P) {
-        b.resting = true;
-        b.restStart = now;
-    }
-    bool done = false;
-    // The band's skills decide what ground is worth settling (moverCap):
-    // herders take steppe a forager would starve on. And ground is only
-    // worth settling if it can feed the people who would settle it -- the
-    // same test a settlement applies when deciding whether to stay. Without
-    // it a group that left because the valley could not feed three hundred
-    // would happily re-found on that same valley the next day: leaving was
-    // judged against its population, settling against a fixed threshold.
-    float fExp = technology::expertise(b.tech[TECH_FARMING], now);
-    float hExp = technology::expertise(b.tech[TECH_HUSBANDRY], now);
-    float qExp = technology::expertise(b.tech[TECH_FISHING], now);
-    auto canHold = [&](int c) { return moverCapRoom(pf, c, fExp, hExp, now, b.P, qExp) >= b.P; };
-    if (distKm(pos, tgt) < 20.0f) {
-        // Arrived: the rumour meets reality.
-        if (pf.settlementAt[cell] < 0 && moverCap(pf, cell, fExp, hExp, now, qExp, b.P) >= MIN_SETTLEMENT_K &&
-            canHold(cell) && claimFits(pf, pos)) {
-            foundSettlement(pf, ws, hy, clim, b, cell, now);
-            done = true;
-        } else {
-            double rest = b.resting ? now - b.restStart : 0.0;
-            int nt = bestProspect(pf, pos, ws.rng,
-                                  bandAwareKm(rest, prominenceM(hy, clim, cell)), now, fExp, hExp,
-                                  nullptr, b.P, qExp);
-            if (nt >= 0) b.targetCell = nt;
-            else {
-                if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
-                done = true;
-            }
-        }
-    } else if (!b.resting && pf.settlementAt[cell] < 0 &&
-               moverCap(pf, cell, fExp, hExp, now, qExp, b.P) >= MIN_SETTLEMENT_K && claimFits(pf, pos) &&
-               canHold(cell) &&
-               moverCapRoom(pf, cell, fExp, hExp, now, b.P, qExp) >=
-                   hopeRatio(now - b.setOut) *
-                       moverCapRoom(pf, b.targetCell, fExp, hExp, now, b.P, qExp)) {
-        // Ground under their feet, judged against where they were going:
-        // early on it has to be clearly better to be worth giving up the
-        // plan, and as the months pass they grow readier to take less.
-        foundSettlement(pf, ws, hy, clim, b, cell, now);
-        done = true;
-    }
-    if (done) {
-        pf.bands.erase(pf.bands.begin() + bi);
-        return false;
-    }
-    b.nextUpdate = now + BAND_STEP_DAYS;
-    return true;
-}
-
-// Sustained scarcity with enough people: a third leaves as a band, taking the
-// settlement's knowledge and technology with it.
-// Who is worth robbing: the richest neighbour we could plausibly beat.
-// Only settlements within contact range are candidates -- you rob the
-// people you know about -- and livestock counts double, being wealth that
-// carries itself home.
-inline int raidTarget(const population::Field& pf, int si, double now, float strength) {
-    using namespace population;
-    const Settlement& s = pf.settlements[si];
-    int best = -1;
-    float bestScore = 0;
-    for (int j : pf.neighbours[si]) {
-        const Settlement& t = pf.settlements[j];
-        if (t.leaving || t.P < BAND_MIN_P) continue;
-        float prize = t.S * LOOT_STORE_SHARE + t.herd * LOOT_HERD_SHARE * LOOT_CARRY_DAYS;
-        if (prize < RAID_WORTH_IT) continue; // not worth the walk
-        float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
-        float def = fightStrength(t.pop, t.bows, dExp, t.aff.fight);
-        float score = prize / std::max(def, 1.0f);
-        if (score > bestScore) { bestScore = score; best = j; }
-    }
-    // You rob people you can beat. With non-combatants counted at their
-    // real weight, a settlement defends far better than its headcount
-    // suggests, so this rejects most neighbours outright.
-    if (best >= 0) {
-        const Settlement& t = pf.settlements[best];
-        float dExp = technology::expertise(t.tech[TECH_ARCHERY], now);
-        if (fightStrength(t.pop, t.bows, dExp, t.aff.fight) > strength) return -1;
-    }
-    return best;
-}
-
-// Nowhere to go, and hungry: the third answer. Sends a party to rob the
-// best neighbour within reach. Returns true if one set out.
-inline bool maybeRaid(population::Field& pf, technology::WorldState& ws, int si, double now) {
-    using namespace population;
-    Settlement& s = pf.settlements[si];
-    if (s.pop.M * RAID_MEN_SHARE < RAID_MIN_P) return false;
-    float archExp = technology::expertise(s.tech[TECH_ARCHERY], now);
-    Cohorts party{};
-    party.M = s.pop.M * RAID_MEN_SHARE; // the men go; the rest stay
-    float strength =
-        fightStrength(party, s.bows * RAID_MEN_SHARE, archExp, s.aff.fight) * RAID_INITIATIVE;
-    int ti = raidTarget(pf, si, now, strength);
-    if (ti < 0) return false;
-    terrain::V3 home = cellCentre(s.cell);
-    Band b{};
-    b.id = pf.nextBandId++;
-    b.purpose = BAND_RAID;
-    b.homeId = s.id;
-    b.targetId = pf.settlements[ti].id;
-    b.px = home.x;
-    b.py = home.y;
-    b.pz = home.z;
-    b.culture = s.culture;
-    b.aff = s.aff;
-    for (int i = 0; i < 16; i++) b.name[i] = s.name[i];
-    b.pop = party;
-    b.P = party.total();
-    b.bows = s.bows * RAID_MEN_SHARE;
-    b.S = std::min(s.S * RAID_MEN_SHARE, CAP_DAYS_BAND * b.P);
-    b.water = CAP_WATER_DAYS * b.P; // nobody sets out with empty skins
-    b.targetCell = pf.settlements[ti].cell;
-    b.t = now;
-    b.nextUpdate = now + BAND_STEP_DAYS;
-    for (int t = 0; t < NTECH; t++) b.tech[t] = s.tech[t];
-    s.pop.M -= party.M;
-    s.P = s.pop.total();
-    s.S -= b.S;
-    s.bows -= b.bows;
-    pf.bands.push_back(b);
-    {
-        char txt[96];
-        snprintf(txt, sizeof txt, "%s sent %d warriors against %s", s.name, (int)b.P,
-                 pf.settlements[ti].name);
-        note(pf, EV_RAID_LAUNCH, now, s.id, pf.settlements[ti].id, b.id, b.P, txt);
-    }
-    logAt("raiding party leaves settlement", si, home, b.P, now);
-    return true;
-}
-
-// Sustained scarcity forces a choice, and the default answer is to move as
-// a whole: people are kin, and a place that has failed fails for everyone,
-// so the group first looks for ground that can carry all of them. Fission
-// is the FALLBACK -- what you do when the world has no room left for the
-// whole group -- which is why the colonization wave appears only as the map
-// fills. Sunk investment anchors the choice: every granary and every year of
-// cleared field raises the bar a destination must clear, so foragers and
-// herders shift readily while a farming village splits and stays put.
-inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& ws,
-                                 const hydrology::Result& hy,
-                                 const atmosphere::Climatology& clim, int si, double now) {
-    using namespace population;
-    Settlement& s = pf.settlements[si];
-    if (s.leaving) return;
-    float keff = technology::effectiveK(s, now);
-    float phi = s.P > 1 ? keff * s.R / s.P : 2.0f;
-    // Food-limited: a group with every calorie need met grows at its
-    // maximum rate, and growth saturates at PHI_CONTENT. Anything short of
-    // that means food is what is holding them back -- reason enough to look
-    // for somewhere else, long before the place is visibly failing. (The
-    // burial term is the backstop for what the annual mean cannot see: a
-    // sharply seasonal site can read comfortable on the year while the lean
-    // season still kills, and people dying of hunger is food limiting
-    // growth in the plainest possible sense.)
-    bool bleeding = s.starvedYr > STARVE_NOTICE * std::max(s.P, 1.0f);
-    bool foodLimited = phi < PHI_CONTENT || bleeding;
-    // Sustained hunger for need-driven invention: a genuine shortfall
-    // (phi < NEED_HUNGRY_PHI), not the comfort glide. Checked before every
-    // early return so small settlements get desperate too; leaving or
-    // splitting does not reset it -- neither cures desperation by itself.
-    if (phi >= NEED_HUNGRY_PHI && !bleeding) s.hungrySince = -1;
-    else if (s.hungrySince < 0) s.hungrySince = now;
-    if (!foodLimited) {
-        s.scarceSince = -1;
-        s.noProspect = false;
-        return;
-    }
-    // A genuinely hungry settlement must wake in time to ask whether to
-    // leave: its ordinary horizon can be years long, and famine would then
-    // resolve the crisis mid-sleep -- starving down to fit rather than
-    // moving, with the question never asked (seen in testing: asleep 1,383
-    // days through its own 730-day deadline). Only real hunger earns the
-    // early wake; at the ordinary equilibrium glide every settlement is
-    // nominally scarce, and re-deciding the whole world every two years
-    // costs far more than it is worth.
-    bool starving = phi < NEED_HUNGRY_PHI || bleeding;
-    if (s.scarceSince < 0) {
-        s.scarceSince = now;
-        if (starving) s.nextUpdate = std::min(s.nextUpdate, now + SPLIT_AFTER_DAYS);
-        return;
-    }
-    // Never schedule into the past: a deadline that has already gone by
-    // would be re-popped from the queue forever (the event time would keep
-    // matching), rewinding the settlement's clock instead of advancing it.
-    // Real hunger restores the short cadence: things got worse, so they
-    // look again in earnest.
-    if (phi < NEED_HUNGRY_PHI || bleeding) s.lookAgainDays = SPLIT_AFTER_DAYS;
-    if (starving)
-        s.nextUpdate =
-            std::min(s.nextUpdate, std::max(s.scarceSince + s.lookAgainDays, now + 5.0));
-    if (now - s.scarceSince < s.lookAgainDays) return;
-    s.scarceSince = now; // whether or not anyone leaves, the pressure resets
-    if (starving) s.nextUpdate = std::min(s.nextUpdate, now + s.lookAgainDays);
-    // Hunger widens the border before it empties the village. People range
-    // further from the houses they have long before they abandon them, so a
-    // settlement with anywhere left to widen works the ground it just took
-    // and asks again later. Only when the claim can grow no further -- the
-    // cap reached, or neighbours on every side -- does anybody leave. This
-    // is what makes a border worth having, and being hemmed in the thing
-    // that turns pressure into a journey and eventually into a fight.
-    if (growClaim(pf, si, now)) return;
-    if (s.P < BAND_MIN_P) return; // too few to survive any journey
-    float fExp = technology::expertise(s.tech[TECH_FARMING], now);
-    float hExp = technology::expertise(s.tech[TECH_HUSBANDRY], now);
-    float qExp = technology::expertise(s.tech[TECH_FISHING], now);
-    terrain::V3 home = cellCentre(s.cell);
-    float est = 0;
-    int tgt = bestProspect(pf, home, ws.rng,
-                           settlementAwareKm(now - s.founded, prominenceM(hy, clim, s.cell)), now,
-                           fExp, hExp, &est, s.P, qExp);
-    bool wasStuck = s.noProspect; // the last survey came up empty too
-    s.noProspect = tgt < 0;
-    if (tgt < 0) {
-        // Circumscription: hemmed in, hungry, and nowhere to go. This is
-        // where raiding comes from -- but only once it is clear there is no
-        // land to be had, not on the first disappointing look around.
-        bool raided = wasStuck && maybeRaid(pf, ws, si, now);
-        s.lookAgainDays = std::min(s.lookAgainDays * 2.0, LOOK_BACKOFF_MAX);
-        (void)raided;
-        return;
-    }
-
-    // Judged on the rumour, not the truth: a group deciding whether to pick
-    // up and leave knows only what it has heard, and distant ground is
-    // reported optimistically as often as not. Arriving to a poorer valley
-    // than promised is a real outcome -- the band re-evaluates on arrival
-    // against this same measure, so nobody marches toward ground they would
-    // refuse when they got there.
-    float targetSupport = est * SUSTAIN_R;
-    float homeSupport = keff * s.R; // what this place carries in its present state
-    float anchor = 1.0f + RELOC_ANCHOR_GRANARY * s.granaries + RELOC_ANCHOR_FARM * fExp +
-                   RELOC_ANCHOR_FSTEAD * s.farmsteads;
-    bool wholeGroup = targetSupport >= s.P && targetSupport >= anchor * homeSupport;
-    if (!wholeGroup && s.P < SPLIT_MIN_P) { // nowhere for all, too few to divide: endure
-        s.lookAgainDays = std::min(s.lookAgainDays * 2.0, LOOK_BACKOFF_MAX);
-        return;
-    }
-    s.lookAgainDays = SPLIT_AFTER_DAYS; // something came of it: keep looking
-
-    Band b{};
-    b.id = pf.nextBandId++;
-    b.px = home.x;
-    b.py = home.y;
-    b.pz = home.z;
-    b.culture = s.culture;
-    b.aff = s.aff;
-    b.colonists = !wholeGroup; // a splinter, not the town on the move
-    for (int i = 0; i < 16; i++) b.name[i] = s.name[i];
-    b.pop = s.pop;
-    if (!wholeGroup) b.pop.scale(SPLIT_SHARE);
-    b.P = b.pop.total();
-    b.S = std::min((wholeGroup ? s.S : s.S * SPLIT_SHARE), CAP_DAYS_BAND * b.P);
-    b.water = CAP_WATER_DAYS * b.P; // nobody sets out with empty skins
-    b.bows = wholeGroup ? s.bows : s.bows * SPLIT_SHARE; // people take their bows
-    b.targetCell = tgt;
-    b.setOut = now;
-    b.fromCell = s.cell;
-    b.t = now;
-    b.nextUpdate = now + BAND_STEP_DAYS;
-    for (int t = 0; t < NTECH; t++) b.tech[t] = s.tech[t];
-    if (wholeGroup) {
-        b.sid = s.id; // they are still themselves, wherever they end up
-        // The land remembers what it was left in; only a place that was
-        // invested in leaves anything to find.
-        markScar(pf, s.cell, s.R, now, s.id);
-        if (s.granaries >= 1.0f || s.farmsteads >= 1.0f || now - s.founded > RUIN_MIN_AGE_DAYS) {
-            Field::Ruin r{s.cell, now, {}};
-            for (int i = 0; i < 16; i++) r.name[i] = s.name[i];
-            pf.ruins.push_back(r);
-        }
-        s.leaving = true; // swept once the step's events are done
-        // Free the ground now rather than at the sweep: otherwise how long a
-        // vacated site stays blocked depends on how big a time step the
-        // player happens to take, which is exactly what this simulation is
-        // not allowed to do (a 500-year step held every site for 500 years;
-        // ten-year steps freed them within one).
-        if (pf.settlementAt[s.cell] == si) pf.settlementAt[s.cell] = -1;
-        // Every last person is in the band now. Clearing the headcount is
-        // not enough: advance() recomputes P from the cohorts, so a record
-        // that keeps its cohorts is a settlement that comes back to life on
-        // the next wake -- with its knowledge, its hunger and its vote in
-        // the world's inventions.
-        s.pop = Cohorts{};
-        s.P = 0;
-        s.S = 0;
-        s.herd = 0;
-        s.nextUpdate = 1e18;
-        for (int t = 0; t < NTECH; t++) s.nextTech[t] = 1e18;
-        {
-            char txt[96];
-            snprintf(txt, sizeof txt, "%s abandoned their home and set out", s.name);
-            note(pf, EV_RELOCATE, now, s.id, 0, b.id, b.P, txt);
-        }
-        logAt("settlement moves on", si, home, b.P, now);
-    } else {
-        s.pop.sub(b.pop);
-        s.P = s.pop.total();
-        s.S -= b.S;
-        s.bows -= b.bows;
-        {
-            char txt[96];
-            snprintf(txt, sizeof txt, "%d colonists left %s", (int)b.P, s.name);
-            note(pf, EV_SPLIT, now, s.id, 0, b.id, b.P, txt);
-        }
-        logAt("split from settlement", si, home, b.P, now);
-    }
-    pf.bands.push_back(b);
 }
 
 // Erase the settlements that walked away this step and weather old ruins.
 // Runs once, after the event loop, so indices stay valid while events are
 // being processed; panels track settlements by id, not index.
 inline void sweepDeparted(population::Field& pf, double now) {
-    using namespace population;
     for (int i = (int)pf.ruins.size() - 1; i >= 0; i--)
-        if (now - pf.ruins[i].abandoned > RUIN_LIFE_DAYS) pf.ruins.erase(pf.ruins.begin() + i);
+        if (now - pf.ruins[i].abandoned > population::RUIN_LIFE_DAYS)
+            pf.ruins.erase(pf.ruins.begin() + i);
     int n = (int)pf.settlements.size();
     bool any = false;
     for (int i = 0; i < n && !any; i++) any = pf.settlements[i].leaving;
@@ -1395,7 +99,7 @@ inline void sweepDeparted(population::Field& pf, double now) {
         for (int j : pf.neighbours[i])
             if (nu[j] >= 0) nb[nu[i]].push_back(nu[j]);
     }
-    std::vector<Settlement> keep;
+    std::vector<population::Settlement> keep;
     keep.reserve(k);
     for (int i = 0; i < n; i++)
         if (nu[i] >= 0) keep.push_back(pf.settlements[i]);
@@ -1403,62 +107,73 @@ inline void sweepDeparted(population::Field& pf, double now) {
     pf.neighbours.swap(nb);
 }
 
-// Process every due event in chronological order: settlement re-evaluations
-// (with split checks), contact draws, the world invention clock, and band
-// steps. Order matters because each event changes the rates around it.
+// What the queue holds. Each entry is (time, kind, id); a pop is validated
+// against the authoritative next-time and a stale entry is skipped.
+enum class Due {
+    InventionClock, // the world clock of one technology (tech)
+    SettlementWake, // a settlement's scheduled re-evaluation (idx)
+    ContactDraw,    // a settlement's contact draw for one technology (idx, tech)
+    BandStep,       // a band's next step (idx = band id, stable across erases)
+    GameTick        // the regional game pools' fixed-cadence update
+};
+
+struct Ev {
+    double t;
+    Due kind;
+    int idx, tech;
+    bool operator<(const Ev& o) const { return t > o.t; } // min-heap
+};
+
 // Process every due event in chronological order through a lazy priority
-// queue: entries are (time, kind, id); each pop is validated against the
-// authoritative next-time and stale entries are skipped. Kinds: 0 world
-// invention clock (id = tech), 1 settlement wake, 2 settlement contact draw
-// (idx, tech), 3 band step (id = band id, stable across erases). After the
-// loop, a catch-up pass brings every settlement and band current to `now` --
-// any step size leaves the whole world exact at the displayed moment.
-inline bool simulate(population::Field& pf, technology::WorldState& ws,
-                     const hydrology::Result& hy, const atmosphere::Climatology& clim, double now) {
-    using namespace population;
+// queue, since each event changes the rates around it. After the loop, a
+// catch-up pass brings every settlement and band current to `now` -- any
+// step size leaves the whole world exact at the displayed moment.
+inline bool simulate(population::Field& pf, technology::WorldState& ws, const hydrology::Result& hy,
+                     const atmosphere::Climatology& clim, double now) {
     if (pf.settlements.empty()) return false;
     bool changed = false;
 
-    struct Ev {
-        double t;
-        int kind, idx, tech;
-        bool operator<(const Ev& o) const { return t > o.t; } // min-heap
-    };
     std::priority_queue<Ev> q;
 
     struct HeapSink : technology::WorldState::Sink {
         std::priority_queue<Ev>* q;
         void techEvent(int idx, int tech, double when) override {
-            if (when < 1e17) q->push({when, 2, idx, tech});
+            if (when < 1e17) q->push({when, Due::ContactDraw, idx, tech});
         }
         void clockEvent(int tech, double when) override {
-            if (when < 1e17) q->push({when, 0, 0, tech});
+            if (when < 1e17) q->push({when, Due::InventionClock, 0, tech});
         }
     } sink;
     sink.q = &q;
     ws.sink = &sink;
 
     auto pushSettlement = [&](int i) {
-        const Settlement& s = pf.settlements[i];
-        if (s.nextUpdate < 1e17) q.push({s.nextUpdate, 1, i, 0});
-        for (int t = 0; t < NTECH; t++)
-            if (s.nextTech[t] < 1e17) q.push({s.nextTech[t], 2, i, t});
+        const population::Settlement& s = pf.settlements[i];
+        if (s.nextUpdate < 1e17) q.push({s.nextUpdate, Due::SettlementWake, i, 0});
+        for (int t = 0; t < population::NTECH; t++)
+            if (s.nextTech[t] < 1e17) q.push({s.nextTech[t], Due::ContactDraw, i, t});
     };
-    auto pushBand = [&](const Band& b) { q.push({b.nextUpdate, 3, (int)b.id, 0}); };
+    auto pushBand = [&](const population::Band& b) {
+        q.push({b.nextUpdate, Due::BandStep, (int)b.id, 0});
+    };
     for (int i = 0; i < (int)pf.settlements.size(); i++) pushSettlement(i);
-    for (const Band& b : pf.bands) pushBand(b);
-    for (int t = 0; t < NTECH; t++)
-        if (ws.nextEvent[t] < 1e17) q.push({ws.nextEvent[t], 0, 0, t});
-    if (!pf.gameG.empty()) q.push({pf.gameT + GAME_TICK_DAYS, 4, 0, 0});
+    for (const population::Band& b : pf.bands) pushBand(b);
+    for (int t = 0; t < population::NTECH; t++)
+        if (ws.nextEvent[t] < 1e17) q.push({ws.nextEvent[t], Due::InventionClock, 0, t});
+    if (!pf.gameG.empty()) q.push({pf.gameT + population::GAME_TICK_DAYS, Due::GameTick, 0, 0});
 
     while (!q.empty() && q.top().t <= now) {
         pf.peakBands = std::max(pf.peakBands, pf.bands.size()); // high-water mark
         Ev ev = q.top();
         q.pop();
         double t = ev.t;
-        if (ev.kind == 0) {
+        switch (ev.kind) {
+        case Due::InventionClock: {
             if (t != ws.nextEvent[ev.tech]) continue; // stale
-            if (!ws.fires[ev.tech]) { technology::scheduleInvention(pf, ws, ev.tech, t); continue; }
+            if (!ws.fires[ev.tech]) {
+                technology::scheduleInvention(pf, ws, ev.tech, t);
+                continue;
+            }
             int wi = technology::pickInventor(pf, ws, ev.tech, t);
             if (wi >= 0) {
                 technology::startPractising(pf, wi, ws, ev.tech, t);
@@ -1466,32 +181,40 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
                     char txt[96];
                     snprintf(txt, sizeof txt, "%s invented %s!", pf.settlements[wi].name,
                              technology::techName(ev.tech));
-                    note(pf, EV_INVENTED, t, pf.settlements[wi].id, 0, 0, (float)ev.tech, txt);
+                    note(pf, population::EV_INVENTED, t, pf.settlements[wi].id, 0, 0,
+                         (float)ev.tech, txt);
                 }
                 fprintf(stderr, "tech: %s invented at settlement %d, day %.0f\n",
                         technology::techName(ev.tech), wi, t);
                 changed = true;
             }
             technology::scheduleInvention(pf, ws, ev.tech, t);
-        } else if (ev.kind == 1) {
-            Settlement& s = pf.settlements[ev.idx];
+            break;
+        }
+        case Due::SettlementWake: {
+            population::Settlement& s = pf.settlements[ev.idx];
             if (t != s.nextUpdate) continue;
-            decaySkills(pf, ws, ev.idx, t);
+            technology::decaySkills(pf, ws, ev.idx, t);
             growClaim(pf, ev.idx, t);
             updateFarmland(pf, s); // the claim moved or a farmstead finished
-            changed |= population::advance(s, technology::effectiveK(s, t),
-                                           seasonCtx(s, hy, clim, t), t);
+            changed |=
+                population::advance(s, technology::effectiveK(s, t), seasonCtx(s, hy, clim, t), t);
             reportGranaries(pf, s, t);
             size_t bandsBefore = pf.bands.size();
             // Decide first: leaving or growing scarce can pull the next wake
             // earlier, and the queue entry must carry the final time.
             maybeRelocateOrSplit(pf, ws, hy, clim, ev.idx, t);
-            if (s.nextUpdate < 1e17) q.push({s.nextUpdate, 1, ev.idx, 0});
+            if (s.nextUpdate < 1e17) q.push({s.nextUpdate, Due::SettlementWake, ev.idx, 0});
             for (size_t b = bandsBefore; b < pf.bands.size(); b++) pushBand(pf.bands[b]);
-        } else if (ev.kind == 2) {
-            Settlement& s = pf.settlements[ev.idx];
+            break;
+        }
+        case Due::ContactDraw: {
+            population::Settlement& s = pf.settlements[ev.idx];
             if (t != s.nextTech[ev.tech]) continue;
-            if (!s.techFires[ev.tech]) { technology::redraw(pf, ev.idx, ws, ev.tech, t); continue; }
+            if (!s.techFires[ev.tech]) {
+                technology::redraw(pf, ev.idx, ws, ev.tech, t);
+                continue;
+            }
             if (!s.tech[ev.tech].aware) {
                 s.tech[ev.tech].aware = true;
                 fprintf(stderr, "tech: settlement %d aware of %s, day %.0f\n", ev.idx,
@@ -1506,27 +229,36 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
                     char txt[96];
                     snprintf(txt, sizeof txt, "%s took up %s", s.name,
                              technology::techName(ev.tech));
-                    note(pf, EV_ADOPTED, t, s.id, 0, 0, (float)ev.tech, txt);
+                    note(pf, population::EV_ADOPTED, t, s.id, 0, 0, (float)ev.tech, txt);
                 }
                 fprintf(stderr, "tech: settlement %d starts %s, day %.0f\n", ev.idx,
                         technology::techName(ev.tech), t);
             }
             technology::scheduleInvention(pf, ws, ev.tech, t);
             changed = true;
-        } else if (ev.kind == 4) {
-            if (std::fabs(t - (pf.gameT + GAME_TICK_DAYS)) > 1e-6) continue; // stale
+            break;
+        }
+        case Due::GameTick: {
+            if (std::fabs(t - (pf.gameT + population::GAME_TICK_DAYS)) > 1e-6) continue; // stale
             gameTick(pf, t);
-            q.push({pf.gameT + GAME_TICK_DAYS, 4, 0, 0});
-        } else {
+            q.push({pf.gameT + population::GAME_TICK_DAYS, Due::GameTick, 0, 0});
+            break;
+        }
+        case Due::BandStep: {
             int bi = -1;
             for (int i = 0; i < (int)pf.bands.size(); i++)
-                if ((int)pf.bands[i].id == ev.idx) { bi = i; break; }
+                if ((int)pf.bands[i].id == ev.idx) {
+                    bi = i;
+                    break;
+                }
             if (bi < 0 || t != pf.bands[bi].nextUpdate) continue;
             size_t settsBefore = pf.settlements.size();
             bool alive = stepBand(pf, ws, hy, clim, bi, t);
             if (alive) pushBand(pf.bands[bi]);
             for (size_t i = settsBefore; i < pf.settlements.size(); i++) pushSettlement((int)i);
             changed = true;
+            break;
+        }
         }
     }
     ws.sink = nullptr;
@@ -1535,9 +267,9 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws,
     // the step size -- minute steps show the world in full detail, big steps
     // aggregate through the event loop above first (Design/Event-Driven).
     for (int i = 0; i < (int)pf.settlements.size(); i++) {
-        Settlement& s = pf.settlements[i];
+        population::Settlement& s = pf.settlements[i];
         if (!s.leaving && s.t < now - 1e-9) {
-            decaySkills(pf, ws, i, now);
+            technology::decaySkills(pf, ws, i, now);
             growClaim(pf, i, now);
             updateFarmland(pf, s);
             changed |= population::advance(s, technology::effectiveK(s, now),

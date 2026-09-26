@@ -1,23 +1,20 @@
-// Human History — version 1: view the globe, zoom, pan.
-// Win32 + OpenGL, no external dependencies. The whole globe is raycast and
-// shaded procedurally in shaders/globe.frag; this file owns the window,
-// the camera, and input.
+// Human History — the game executable: the Win32 window and its message
+// loop, the GL context and the per-frame uniforms, and the wiring between
+// the modules that do the rest (Technical/Architecture.md lists them; the
+// viewer they make up is Technical/Globe Viewer.md). The whole globe is
+// raycast and shaded procedurally in shaders/globe.frag.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #include <windowsx.h>
-#include <GL/gl.h>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
-#include <unordered_map>
+#include <cstring>
 #include <string>
 #include <vector>
-#include <fstream>
-#include <sstream>
 #include <algorithm>
-#include <array>
 #include <random>
 #include <thread>
 #include <atomic>
@@ -27,770 +24,34 @@
 #include "technology.h"
 #include "sim.h"
 #include "atmosphere.h"
-
-// ---------------------------------------------------------------- GL loading
-
-typedef char GLchar;
-typedef ptrdiff_t GLsizeiptr;
-#define GL_FRAGMENT_SHADER 0x8B30
-#define GL_VERTEX_SHADER 0x8B31
-#define GL_COMPILE_STATUS 0x8B81
-#define GL_LINK_STATUS 0x8B82
-#define GL_RGBA32F 0x8814
-#define GL_TEXTURE0 0x84C0
-#define GL_TEXTURE1 0x84C1
-#define GL_TEXTURE2 0x84C2
-#define GL_TEXTURE3 0x84C3
-#define GL_TEXTURE4 0x84C4
-#define GL_TEXTURE5 0x84C5
-#define GL_TEXTURE6 0x84C6
-#define GL_TEXTURE7 0x84C7
-#define GL_RG32F 0x8230
-#define GL_RG 0x8227
-#define GL_CLAMP_TO_EDGE 0x812F
-
-typedef GLuint(APIENTRY* PFNGLCREATESHADERPROC)(GLenum);
-typedef void(APIENTRY* PFNGLSHADERSOURCEPROC)(GLuint, GLsizei, const GLchar* const*, const GLint*);
-typedef void(APIENTRY* PFNGLCOMPILESHADERPROC)(GLuint);
-typedef void(APIENTRY* PFNGLGETSHADERIVPROC)(GLuint, GLenum, GLint*);
-typedef void(APIENTRY* PFNGLGETSHADERINFOLOGPROC)(GLuint, GLsizei, GLsizei*, GLchar*);
-typedef GLuint(APIENTRY* PFNGLCREATEPROGRAMPROC)(void);
-typedef void(APIENTRY* PFNGLATTACHSHADERPROC)(GLuint, GLuint);
-typedef void(APIENTRY* PFNGLLINKPROGRAMPROC)(GLuint);
-typedef void(APIENTRY* PFNGLGETPROGRAMIVPROC)(GLuint, GLenum, GLint*);
-typedef void(APIENTRY* PFNGLGETPROGRAMINFOLOGPROC)(GLuint, GLsizei, GLsizei*, GLchar*);
-typedef void(APIENTRY* PFNGLUSEPROGRAMPROC)(GLuint);
-typedef GLint(APIENTRY* PFNGLGETUNIFORMLOCATIONPROC)(GLuint, const GLchar*);
-typedef void(APIENTRY* PFNGLUNIFORM1FPROC)(GLint, GLfloat);
-typedef void(APIENTRY* PFNGLUNIFORM2FPROC)(GLint, GLfloat, GLfloat);
-typedef void(APIENTRY* PFNGLUNIFORM3FPROC)(GLint, GLfloat, GLfloat, GLfloat);
-typedef void(APIENTRY* PFNGLUNIFORM4FPROC)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
-typedef void(APIENTRY* PFNGLUNIFORM1IPROC)(GLint, GLint);
-typedef void(APIENTRY* PFNGLUNIFORMMATRIX3FVPROC)(GLint, GLsizei, GLboolean, const GLfloat*);
-typedef void(APIENTRY* PFNGLACTIVETEXTUREPROC)(GLenum);
-typedef void(APIENTRY* PFNGLGENVERTEXARRAYSPROC)(GLsizei, GLuint*);
-typedef void(APIENTRY* PFNGLBINDVERTEXARRAYPROC)(GLuint);
-typedef BOOL(APIENTRY* PFNWGLSWAPINTERVALEXTPROC)(int);
-
-static PFNGLCREATESHADERPROC glCreateShader;
-static PFNGLSHADERSOURCEPROC glShaderSource;
-static PFNGLCOMPILESHADERPROC glCompileShader;
-static PFNGLGETSHADERIVPROC glGetShaderiv;
-static PFNGLGETSHADERINFOLOGPROC glGetShaderInfoLog;
-static PFNGLCREATEPROGRAMPROC glCreateProgram;
-static PFNGLATTACHSHADERPROC glAttachShader;
-static PFNGLLINKPROGRAMPROC glLinkProgram;
-static PFNGLGETPROGRAMIVPROC glGetProgramiv;
-static PFNGLGETPROGRAMINFOLOGPROC glGetProgramInfoLog;
-static PFNGLUSEPROGRAMPROC glUseProgram;
-static PFNGLGETUNIFORMLOCATIONPROC glGetUniformLocation;
-static PFNGLUNIFORM1FPROC glUniform1f;
-static PFNGLUNIFORM2FPROC glUniform2f;
-static PFNGLUNIFORM3FPROC glUniform3f;
-static PFNGLUNIFORM4FPROC glUniform4f;
-typedef void(APIENTRY* PFNGLUNIFORM4FVPROC)(GLint, GLsizei, const GLfloat*);
-static PFNGLUNIFORM4FVPROC glUniform4fv;
-static PFNGLUNIFORM1IPROC glUniform1i;
-static PFNGLUNIFORMMATRIX3FVPROC glUniformMatrix3fv;
-static PFNGLACTIVETEXTUREPROC glActiveTexture;
-static PFNGLGENVERTEXARRAYSPROC glGenVertexArrays;
-static PFNGLBINDVERTEXARRAYPROC glBindVertexArray;
-static PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT;
-
-template <typename T>
-static bool load(T& fn, const char* name) {
-    fn = (T)wglGetProcAddress(name);
-    if (!fn) fprintf(stderr, "missing GL function: %s\n", name);
-    return fn != nullptr;
-}
-
-static bool loadGL() {
-    bool ok = true;
-    ok &= load(glCreateShader, "glCreateShader");
-    ok &= load(glShaderSource, "glShaderSource");
-    ok &= load(glCompileShader, "glCompileShader");
-    ok &= load(glGetShaderiv, "glGetShaderiv");
-    ok &= load(glGetShaderInfoLog, "glGetShaderInfoLog");
-    ok &= load(glCreateProgram, "glCreateProgram");
-    ok &= load(glAttachShader, "glAttachShader");
-    ok &= load(glLinkProgram, "glLinkProgram");
-    ok &= load(glGetProgramiv, "glGetProgramiv");
-    ok &= load(glGetProgramInfoLog, "glGetProgramInfoLog");
-    ok &= load(glUseProgram, "glUseProgram");
-    ok &= load(glGetUniformLocation, "glGetUniformLocation");
-    ok &= load(glUniform1f, "glUniform1f");
-    ok &= load(glUniform2f, "glUniform2f");
-    ok &= load(glUniform3f, "glUniform3f");
-    ok &= load(glUniform4f, "glUniform4f");
-    ok &= load(glUniform4fv, "glUniform4fv");
-    ok &= load(glUniform1i, "glUniform1i");
-    ok &= load(glUniformMatrix3fv, "glUniformMatrix3fv");
-    ok &= load(glActiveTexture, "glActiveTexture");
-    ok &= load(glGenVertexArrays, "glGenVertexArrays");
-    ok &= load(glBindVertexArray, "glBindVertexArray");
-    load(wglSwapIntervalEXT, "wglSwapIntervalEXT"); // optional
-    return ok;
-}
-
-// ---------------------------------------------------------------- math
-
-struct Vec3 {
-    double x, y, z;
-};
-static Vec3 operator+(Vec3 a, Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
-static Vec3 operator-(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
-static Vec3 operator*(Vec3 a, double s) { return {a.x * s, a.y * s, a.z * s}; }
-static double dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-static Vec3 cross(Vec3 a, Vec3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
-static Vec3 normalize(Vec3 a) { double l = std::sqrt(dot(a, a)); return a * (1.0 / l); }
-
-static const double PI = 3.14159265358979323846;
-static const double EARTH_RADIUS_KM = 6371.0;
-static const double FOV_V = 45.0 * PI / 180.0; // vertical field of view
-static const double MIN_SCREEN_WIDTH_KM = 0.1; // max zoom in: this many km across the screen
-
-// Unit vector on the sphere for a latitude/longitude (radians). +Z is the north pole.
-static Vec3 sphereDir(double lat, double lon) {
-    return {std::cos(lat) * std::cos(lon), std::cos(lat) * std::sin(lon), std::sin(lat)};
-}
-
-// ---------------------------------------------------------------- camera
-
-// The camera sits above a surface point (lat, lon) at `altitude` (in units of
-// the sphere radius, R = 1) and looks straight at the globe's centre.
-struct Camera {
-    double lat = 0.35, lon = 0.0;
-    double altitude = 2.0;
-    int width = 1280, height = 720;
-
-    double aspect() const { return (double)width / (double)height; }
-    double tanHalfV() const { return std::tan(FOV_V / 2); }
-
-    double minAltitude() const {
-        return MIN_SCREEN_WIDTH_KM / EARTH_RADIUS_KM / (2.0 * tanHalfV() * aspect());
-    }
-    double maxAltitude() const {
-        // The full disc fits vertically with a small margin beyond its edge.
-        double halfFit = std::min(FOV_V / 2, std::atan(tanHalfV() * aspect()));
-        return 1.0 / std::sin(0.85 * halfFit) - 1.0;
-    }
-    void clampAltitude() { altitude = std::clamp(altitude, minAltitude(), maxAltitude()); }
-
-    Vec3 position() const { return sphereDir(lat, lon) * (1.0 + altitude); }
-    Vec3 forward() const { return sphereDir(lat, lon) * -1.0; }
-    Vec3 up() const {
-        // North-pointing tangent; at the camera's own position this is
-        // the derivative of sphereDir with respect to latitude.
-        return {-std::sin(lat) * std::cos(lon), -std::sin(lat) * std::sin(lon), std::cos(lat)};
-    }
-    Vec3 right() const { return normalize(cross(forward(), up())); }
-
-    // Ray through a pixel, returned as a direction in world space.
-    Vec3 rayThrough(int px, int py) const {
-        double nx = (2.0 * (px + 0.5) / width - 1.0) * tanHalfV() * aspect();
-        double ny = (1.0 - 2.0 * (py + 0.5) / height) * tanHalfV();
-        return normalize(forward() + right() * nx + up() * ny);
-    }
-
-    // Where a pixel's ray hits the unit sphere, if it does.
-    bool hitSphere(int px, int py, Vec3& out) const {
-        Vec3 o = position(), d = rayThrough(px, py);
-        double b = dot(o, d);
-        double c = dot(o, o) - 1.0;
-        double disc = b * b - c;
-        if (disc < 0) return false;
-        double t = -b - std::sqrt(disc);
-        if (t < 0) return false;
-        out = normalize(o + d * t);
-        return true;
-    }
-
-    // Surface kilometres per screen pixel, used for level-of-detail.
-    double kmPerPixel() const { return 2.0 * altitude * EARTH_RADIUS_KM * tanHalfV() / height; }
-};
-
-// Zoom towards whatever the cursor is over: the ground under it stays under
-// it, so closing in on a place is aiming rather than aiming and then
-// correcting. Wheeling out runs the same rule backwards, which slides that
-// ground away from the cursor as the view widens. A cursor off the globe or
-// outside the window leaves the centre where it is.
-static void zoomAt(double factor, int px, int py);
-
-// ---------------------------------------------------------------- shaders
-
-static std::string exeDir() {
-    char buf[MAX_PATH];
-    GetModuleFileNameA(nullptr, buf, MAX_PATH);
-    std::string s(buf);
-    return s.substr(0, s.find_last_of("\\/"));
-}
-
-static std::string readFile(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) {
-        fprintf(stderr, "cannot read %s\n", path.c_str());
-        return "";
-    }
-    std::stringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
-}
-
-static GLuint compile(GLenum type, const std::string& src, const char* label) {
-    GLuint s = glCreateShader(type);
-    const char* p = src.c_str();
-    glShaderSource(s, 1, &p, nullptr);
-    glCompileShader(s);
-    GLint ok = 0;
-    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        char log[4096];
-        glGetShaderInfoLog(s, sizeof log, nullptr, log);
-        fprintf(stderr, "%s compile error:\n%s\n", label, log);
-        return 0;
-    }
-    return s;
-}
-
-static GLuint buildProgram() {
-    std::string dir = exeDir() + "\\shaders\\";
-    GLuint vs = compile(GL_VERTEX_SHADER, readFile(dir + "globe.vert"), "vertex");
-    GLuint fs = compile(GL_FRAGMENT_SHADER, readFile(dir + "globe.frag"), "fragment");
-    if (!vs || !fs) return 0;
-    GLuint prog = glCreateProgram();
-    glAttachShader(prog, vs);
-    glAttachShader(prog, fs);
-    glLinkProgram(prog);
-    GLint ok = 0;
-    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        char log[4096];
-        glGetProgramInfoLog(prog, sizeof log, nullptr, log);
-        fprintf(stderr, "link error:\n%s\n", log);
-        return 0;
-    }
-    return prog;
-}
-
-// ---------------------------------------------------------------- world
+#include "gl.h"
+#include "camera.h"
+#include "world.h"
+#include "savefile.h"
+#include "inspect.h"
+#include "bmp.h"
+#include "textures.h"
+#include "overlay.h"
+#include "theme.h"
+#include "menus.h"
+#include "panels.h"
+#include "news.h"
 
 // Generation-stage feedback on the menu status line. The build runs on the
 // UI thread, so the label is repainted synchronously.
 static void buildProgress(const char* stage);
 
-// A world is a seed plus where the camera was left. The seed rotates and
-// offsets the terrain noise so every seed is a different globe.
-struct World {
-    uint32_t seed = 0;
-    bool earth = false; // the seed was "earth": the template globe (see terrain::TEMPLATE)
-    float landPercent = 30.0f;
-    float concentration = 60.0f; // 0..100: island webs .. one continent
-    std::string name;
-    float rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}; // column-major mat3 for GL
-    Vec3 offset{};
-    terrain::ContinentParams cp{};
-    float seaLevel = 0;
-    hydrology::Result hydro;
-    double simTime = 0; // sim days
-    plates::Field plateField;
-    population::Field pop;
-    technology::WorldState tech;
-    atmosphere::Climatology clim;
-
-    void derive() {
-        std::mt19937 rng(seed);
-        std::uniform_real_distribution<double> ang(0.0, 2 * PI), off(-2.0, 2.0);
-        double a = ang(rng), b = ang(rng), c = ang(rng);
-        // Rotation = Rz(a) * Ry(b) * Rx(c), stored column-major.
-        double ca = cos(a), sa = sin(a), cb = cos(b), sb = sin(b), cc = cos(c), sc = sin(c);
-        double m[3][3] = {
-            {ca * cb, ca * sb * sc - sa * cc, ca * sb * cc + sa * sc},
-            {sa * cb, sa * sb * sc + ca * cc, sa * sb * cc - ca * sc},
-            {-sb, cb * sc, cb * cc},
-        };
-        for (int col = 0; col < 3; col++)
-            for (int row = 0; row < 3; row++) rot[col * 3 + row] = (float)m[row][col];
-        offset = {off(rng), off(rng), off(rng)};
-        cp = terrain::paramsFor(concentration / 100.0f);
-        if (name.empty()) name = earth ? "earth" : "world-" + std::to_string(seed);
-    }
-
-    // Everything derived from the seed, in dependency order:
-    // plates -> sea level (land %) -> hydrology.
-    void build() {
-        derive();
-        terrain::V3 off = {(float)offset.x, (float)offset.y, (float)offset.z};
-        terrain::TEMPLATE.active = earth;
-        if (earth && terrain::TEMPLATE.elev.empty() &&
-            !terrain::loadTemplate(exeDir() + "\\data\\earth.bin")) {
-            buildProgress("data\\earth.bin is missing: generating a random world instead");
-            earth = false;
-            terrain::TEMPLATE.active = false;
-        }
-        buildProgress("Shaping tectonic plates...");
-        plateField = plates::build(seed);
-        buildProgress("Setting the sea level...");
-        seaLevel = terrain::seaLevelFor(landPercent / 100.0f, cp, rot, off, plateField);
-        buildProgress("Tracing rivers and lakes...");
-        hydro = hydrology::build(cp, seaLevel, rot, off, /*riverThresholdKm2=*/12000.0f, plateField);
-        clim = atmosphere::build(cp, seaLevel, rot, off, plateField, hydro, false,
-                                 [](int day, int total) {
-                                     char b[80];
-                                     snprintf(b, sizeof b, "Simulating climate... year %d of %d",
-                                              day / 365 + 1, (total + 364) / 365);
-                                     buildProgress(b);
-                                 });
-        buildProgress("Watering rivers from the rain...");
-        {
-            std::vector<float> annual(atmosphere::W * atmosphere::H, 0.0f);
-            std::vector<float> annualT(atmosphere::W * atmosphere::H, 0.0f);
-            for (int i = 0; i < atmosphere::W * atmosphere::H; i++)
-                for (int se = 0; se < atmosphere::SEASONS; se++) {
-                    annual[i] += clim.rainMmDay[se * atmosphere::W * atmosphere::H + i] /
-                                 atmosphere::SEASONS;
-                    annualT[i] += clim.meanT[se * atmosphere::W * atmosphere::H + i] /
-                                  atmosphere::SEASONS;
-                }
-            hydrology::reweight(hydro, annual, annualT, atmosphere::W, atmosphere::H, 12000.0f);
-        }
-        buildProgress("Placing settlements...");
-        pop = population::build(cp, seaLevel, rot, off, plateField, hydro, &clim);
-        technology::init(pop, tech, seed, simTime);
-        buildProgress("");
-    }
-};
-
-static std::string worldsDir() { return exeDir() + "\\worlds"; }
-
-static bool saveWorld(const World& w, const Camera& c) {
-    CreateDirectoryA(worldsDir().c_str(), nullptr);
-    std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
-    if (!f) return false;
-    f.precision(17);
-    f << "version 24\n";
-    f << "seed " << w.seed << "\n";
-    f << "earth " << (w.earth ? 1 : 0) << "\n";
-    f << "time " << w.simTime << "\n";
-    f << "land " << w.landPercent << "\n";
-    f << "concentration " << w.concentration << "\n";
-    f << "lat " << c.lat << "\n";
-    f << "lon " << c.lon << "\n";
-    f << "altitude " << c.altitude << "\n";
-    for (const population::Settlement& s : w.pop.settlements) {
-        f << "settlement " << s.cell << " " << s.P << " " << s.R << " " << s.pop.C << " "
-          << s.pop.M << " " << s.pop.W << " " << s.pop.E << " ";
-        for (int t = 0; t < population::NTECH; t++)
-            f << (int)s.tech[t].aware << " " << (int)s.tech[t].practising << " "
-              << s.tech[t].practiceT << " " << s.tech[t].lostT << " ";
-        f << s.S << " " << s.scarceSince << " " << s.founded << " " << s.herd << " "
-          << s.granaries << " " << s.buildWork << " " << s.fillLo << " " << s.fillHi << " "
-          << s.cycleT << " " << s.hungrySince << " " << s.granNeedYrs << " " << s.id << " "
-          << s.starvedYr << " " << s.bows << " " << (s.name[0] ? s.name : "-") << " "
-          << s.culture << " " << s.aff.hunt << " " << s.aff.gather << " " << s.aff.farm << " "
-          << s.aff.herd << " " << s.aff.fight << " " << s.claimT;
-        for (int k = 0; k < population::CLAIM_SECTORS; k++) f << " " << s.claim[k];
-        f << " " << s.fuelS << " " << s.coldYr;
-        f << " " << s.farmsteads << " " << s.fsteadWork;
-        f << " " << s.tillWork << " " << (int)s.tillSite;
-        for (int k = 0; k <= population::FSTEAD_MAX; k++) f << " " << s.tilled[k];
-        f << "\n";
-    }
-    for (const population::Band& b : w.pop.bands) {
-        f << "band " << b.id << " " << b.pop.C << " " << b.pop.M << " " << b.pop.W << " "
-          << b.pop.E << " " << b.px << " " << b.py << " " << b.pz << " " << b.P << " " << b.S << " "
-          << b.targetCell << " " << (int)b.resting << " " << b.restStart << " " << b.water;
-        for (int t = 0; t < population::NTECH; t++)
-            f << " " << (int)b.tech[t].aware << " " << (int)b.tech[t].practising << " "
-              << b.tech[t].practiceT << " " << b.tech[t].lostT;
-        f << " " << b.bows << " " << b.purpose << " " << b.homeId << " " << b.targetId << " "
-          << (int)b.returning << " " << b.loot << " " << b.lootHerd << " " << b.sid << "\n";
-    }
-    f << "nextsid " << w.pop.nextSettlementId << "\n";
-    for (const population::Culture& c : w.pop.cultures) {
-        f << "culture " << c.name;
-        for (int i = 0; i < 5; i++) f << " " << (int)c.onset[i];
-        for (int i = 0; i < 4; i++) f << " " << (int)c.nucleus[i];
-        for (int i = 0; i < 3; i++) f << " " << (int)c.coda[i];
-        for (int i = 0; i < 2; i++) f << " " << (int)c.ending[i];
-        f << "\n";
-    }
-    // Land memory and ruins: where people have lived and left.
-    for (const auto& kv : w.pop.scars)
-        f << "scar " << kv.first << " " << kv.second.R << " " << kv.second.t << "\n";
-    for (const population::Field::Ruin& r : w.pop.ruins)
-        f << "ruin " << r.cell << " " << r.abandoned << "\n";
-    // Regional game pools: only the dented ones (the rest reload as 1).
-    for (size_t r = 0; r < w.pop.gameG.size(); r++)
-        if (w.pop.gameG[r] < 0.9999f) f << "game " << r << " " << w.pop.gameG[r] << "\n";
-    f << "techrng " << w.tech.rng << "\n";
-    return (bool)f;
-}
-
-static bool loadWorld(const std::string& name, World& w, Camera& c) {
-    std::ifstream f(worldsDir() + "\\" + name + ".ibw");
-    if (!f) return false;
-    w = World{};
-    w.name = name;
-    // Named fields, so adding a technology cannot silently shift a column.
-    struct SavedSettlement {
-        int cell = 0;
-        double P = 0, R = 0, S = 0, scarce = -1, founded = 0, herd = 0;
-        double granaries = 0, buildWork = 0, fillLo = 2, fillHi = -1, cycleT = 0;
-        double hungrySince = -1, granNeed = 0, id = 0, starved = 0, bows = 0;
-        double children = 0, men = 0, women = 0, elderly = 0;
-        std::string name;
-        double culture = 0, affHunt = 0, affGather = 0, affFarm = 0, affHerd = 0, affFight = 0;
-        double claimT = 0, fuelS = -1, coldYr = 0, farmsteads = 0, fsteadWork = 0;
-        double tillWork = 0, tillSite = -1;
-        double tilled[1 + population::FSTEAD_MAX] = {};
-        double claim[population::CLAIM_SECTORS] = {};
-        double tech[population::NTECH][4] = {};
-    };
-    struct SavedBand {
-        double id = 0, px = 0, py = 0, pz = 0, P = 0, S = 0;
-        double target = -1, resting = 0, restStart = 0, bows = 0, water = -1;
-        double purpose = 0, homeId = 0, targetId = 0, returning = 0, loot = 0, lootHerd = 0,
-               sid = 0;
-        double children = 0, men = 0, women = 0, elderly = 0;
-        double tech[population::NTECH][4] = {};
-    };
-    std::vector<SavedSettlement> savedSettlements;
-    std::vector<SavedBand> savedBands;
-    std::vector<std::pair<size_t, double>> savedGame;
-    std::vector<population::Culture> savedCultures;
-    std::vector<std::array<double, 3>> savedScars;
-    std::vector<std::pair<int, double>> savedRuins;
-    double savedTime = 0;
-    int version = 1;
-    uint64_t savedTechRng = 0;
-    std::string key;
-    while (f >> key) {
-        if (key == "version") f >> version;
-        else if (key == "seed") f >> w.seed;
-        else if (key == "earth") { int e = 0; f >> e; w.earth = e != 0; }
-        else if (key == "time") f >> savedTime;
-        else if (key == "techrng") f >> savedTechRng;
-        else if (key == "settlement") {
-            // cell P R, then [aware practising practiceT] per technology as
-            // that version knew them, then the scalars each version added.
-            SavedSettlement sv{};
-            f >> sv.cell >> sv.P >> sv.R;
-            if (version >= 15) f >> sv.children >> sv.men >> sv.women >> sv.elderly;
-            int nt = version >= 19 ? 5 : version >= 13 ? 4 : version >= 8 ? 3 : version >= 3 ? 1 : 0;
-            for (int t = 0; t < nt; t++) {
-                f >> sv.tech[t][0] >> sv.tech[t][1] >> sv.tech[t][2];
-                sv.tech[t][3] = -1;
-                if (version >= 20) f >> sv.tech[t][3];
-            }
-            if (version >= 7) {
-                f >> sv.S >> sv.scarce >> sv.founded >> sv.herd;
-                if (version >= 8)
-                    f >> sv.granaries >> sv.buildWork >> sv.fillLo >> sv.fillHi >> sv.cycleT;
-                if (version >= 9) f >> sv.hungrySince >> sv.granNeed;
-                if (version >= 11) f >> sv.id;
-                if (version >= 12) f >> sv.starved;
-                if (version >= 13) f >> sv.bows;
-                if (version >= 16)
-                    f >> sv.name >> sv.culture >> sv.affHunt >> sv.affGather >> sv.affFarm >>
-                        sv.affHerd >> sv.affFight;
-                if (version >= 18) {
-                    f >> sv.claimT;
-                    for (int k = 0; k < population::CLAIM_SECTORS; k++) f >> sv.claim[k];
-                }
-                if (version >= 22) f >> sv.fuelS >> sv.coldYr;
-                if (version >= 23) f >> sv.farmsteads >> sv.fsteadWork;
-                if (version >= 24) {
-                    f >> sv.tillWork >> sv.tillSite;
-                    for (int k = 0; k <= population::FSTEAD_MAX; k++) f >> sv.tilled[k];
-                }
-            } else {
-                if (version >= 4) f >> sv.S >> sv.scarce;
-                else sv.S = 0.5 * population::CAP_DAYS_SETTLED * sv.P;
-                if (version >= 6) f >> sv.founded;
-            }
-            savedSettlements.push_back(sv);
-        }
-        else if (key == "band") {
-            SavedBand bv{};
-            if (version >= 5) f >> bv.id;
-            if (version >= 15) f >> bv.children >> bv.men >> bv.women >> bv.elderly;
-            f >> bv.px >> bv.py >> bv.pz >> bv.P >> bv.S >> bv.target >> bv.resting >>
-                bv.restStart;
-            if (version >= 21) f >> bv.water;
-            int nt = version >= 19 ? 5 : version >= 13 ? 4 : version >= 8 ? 3 : version >= 7 ? 2 : 0;
-            for (int t = 0; t < nt; t++) {
-                f >> bv.tech[t][0] >> bv.tech[t][1] >> bv.tech[t][2];
-                bv.tech[t][3] = -1;
-                if (version >= 20) f >> bv.tech[t][3];
-            }
-            if (version >= 13) f >> bv.bows;
-            if (version >= 14)
-                f >> bv.purpose >> bv.homeId >> bv.targetId >> bv.returning >> bv.loot >>
-                    bv.lootHerd;
-            if (version >= 17) f >> bv.sid;
-            savedBands.push_back(bv);
-        }
-        else if (key == "nextsid") f >> w.pop.nextSettlementId;
-        else if (key == "culture") {
-            population::Culture c{};
-            std::string nm;
-            f >> nm;
-            for (int i = 0; i < 15 && i < (int)nm.size(); i++) c.name[i] = nm[i];
-            int v;
-            for (int i = 0; i < 5; i++) { f >> v; c.onset[i] = (uint8_t)v; }
-            for (int i = 0; i < 4; i++) { f >> v; c.nucleus[i] = (uint8_t)v; }
-            for (int i = 0; i < 3; i++) { f >> v; c.coda[i] = (uint8_t)v; }
-            for (int i = 0; i < 2; i++) { f >> v; c.ending[i] = (uint8_t)v; }
-            savedCultures.push_back(c);
-        }
-        else if (key == "scar") {
-            double cell, R, t;
-            f >> cell >> R >> t;
-            savedScars.push_back({cell, R, t});
-        }
-        else if (key == "ruin") {
-            int cell;
-            double t;
-            f >> cell >> t;
-            savedRuins.push_back({cell, t});
-        }
-        else if (key == "game") {
-            size_t r;
-            double g;
-            f >> r >> g;
-            savedGame.push_back({r, g});
-        }
-        else if (key == "land") f >> w.landPercent;
-        else if (key == "concentration") f >> w.concentration;
-        else if (key == "lat") f >> c.lat;
-        else if (key == "lon") f >> c.lon;
-        else if (key == "altitude") f >> c.altitude;
-        else { std::string skip; f >> skip; }
-    }
-    w.build();
-    // Restore the saved population on top of the regenerated field; local
-    // properties come from the per-cell maps, so founded settlements restore
-    // the same way as original ones.
-    if (!savedSettlements.empty()) {
-        w.pop.settlements.clear();
-        w.pop.bands.clear();
-        std::fill(w.pop.settlementAt.begin(), w.pop.settlementAt.end(), -1);
-        for (auto& sv : savedSettlements) {
-            int cell = sv.cell;
-            if (cell < 0 || cell >= population::W * population::H) continue;
-            population::Settlement st{cell,     0,          false,     {},
-                                      (float)sv.P, (float)sv.R, savedTime, savedTime};
-            // Older saves are headcounts only: give them the equilibrium
-            // structure and let the flows take it from there.
-            st.pop = sv.men + sv.women + sv.children + sv.elderly > 0.5
-                         ? population::Cohorts{(float)sv.children, (float)sv.men,
-                                               (float)sv.women, (float)sv.elderly}
-                         : population::seedCohorts((float)sv.P);
-            st.P = st.pop.total();
-            st.kFoodP = w.pop.kFoodPMap[cell];
-            st.kWater = w.pop.kWaterMap[cell];
-            st.sFarm = w.pop.sFarmMap[cell];
-            st.pasture = w.pop.pastureMap[cell];
-            st.buildMat = w.pop.buildMatMap[cell];
-            st.kGame = w.pop.kGameMap[cell];
-            st.kSmall = w.pop.kSmallMap[cell];
-            st.kFish = w.pop.kFishMap[cell];
-            st.sFish = w.pop.sFishMap[cell];
-            st.sWood = w.pop.sWoodMap[cell];
-            // Saves that predate the hearth open with half a pile, as a new
-            // world does -- not empty, or every old save thaws into a freeze.
-            st.fuelS = sv.fuelS >= 0 ? (float)sv.fuelS
-                                     : 0.5f * population::FUEL_CAP_KG * (float)sv.P;
-            st.coldYr = (float)sv.coldYr;
-            st.farmsteads = (float)sv.farmsteads;
-            st.fsteadWork = (float)sv.fsteadWork;
-            st.tillWork = (float)sv.tillWork;
-            st.tillSite = (int8_t)sv.tillSite;
-            for (int k = 0; k <= population::FSTEAD_MAX; k++)
-                st.tilled[k] = (float)sv.tilled[k];
-            // Saves that predate built plots hold farming villages with no
-            // fields on record: back-fill what their hands would have
-            // cleared by now, or every old farm starves on load.
-            if (version < 24 && sv.tech[population::TECH_FARMING][1] > 0.5) {
-                st.tilled[0] = std::min((float)sv.P * population::FARM_KM2_PER_PERSON,
-                                        population::VILLAGE_FIELDS_KM2);
-                for (int k = 0; k < (int)(st.farmsteads + 0.5f) &&
-                                k < population::FSTEAD_MAX; k++)
-                    st.tilled[k + 1] = population::FSTEAD_KM2;
-            }
-            st.gRegion = population::gameRegion(cell);
-            for (int t = 0; t < population::NTECH; t++) {
-                st.tech[t].aware = sv.tech[t][0] > 0.5;
-                st.tech[t].practising = sv.tech[t][1] > 0.5;
-                st.tech[t].practiceT = sv.tech[t][2];
-                st.tech[t].lostT = sv.tech[t][3];
-            }
-            // Older saves predate archery as a technology: everyone knows it.
-            if (!st.tech[population::TECH_ARCHERY].practising)
-                st.tech[population::TECH_ARCHERY] = {true, true, savedTime};
-            st.S = (float)sv.S;
-            st.scarceSince = sv.scarce;
-            st.founded = sv.founded;
-            st.herd = (float)sv.herd;
-            st.granaries = (float)sv.granaries;
-            st.buildWork = (float)sv.buildWork;
-            st.fillLo = (float)sv.fillLo;
-            st.fillHi = (float)sv.fillHi;
-            st.cycleT = version >= 8 ? sv.cycleT : savedTime;
-            st.hungrySince = sv.hungrySince;
-            st.granNeedYrs = (float)sv.granNeed;
-            st.starvedYr = (float)sv.starved;
-            st.bows = (float)sv.bows;
-            st.culture = (uint16_t)sv.culture;
-            st.aff = {(float)sv.affHunt, (float)sv.affGather, (float)sv.affFarm,
-                      (float)sv.affHerd, (float)sv.affFight};
-            if (sv.name.size() && sv.name != "-")
-                for (int i = 0; i < 15 && i < (int)sv.name.size(); i++) st.name[i] = sv.name[i];
-            // A claim from the save, or the floor for a world that predates
-            // borders; the yields are rescaled to it below.
-            st.claimT = sv.claimT;
-            for (int k = 0; k < population::CLAIM_SECTORS; k++)
-                st.claim[k] = sv.claim[k] > 0 ? (float)sv.claim[k] : population::CLAIM_FLOOR_KM;
-            st.id = sv.id > 0 ? (uint32_t)sv.id : w.pop.nextSettlementId++;
-            w.pop.nextSettlementId = std::max(w.pop.nextSettlementId, st.id + 1);
-            if (st.tech[population::TECH_HUSBANDRY].practising && st.herd <= 0)
-                st.herd = technology::HERD_SEED;
-            atmosphere::seasonProfile(w.clim, sim::cellCentre(cell),
-                                      std::max(w.hydro.heightM[cell], 0.0f), st.tSeason,
-                                      st.meanF, st.meanG2);
-            w.pop.settlementAt[cell] = (int)w.pop.settlements.size();
-            w.pop.settlements.push_back(st);
-        }
-        for (auto& bv : savedBands) {
-            population::Band b{};
-            b.id = (uint32_t)bv.id;
-            if (!b.id) b.id = w.pop.nextBandId;
-            w.pop.nextBandId = std::max(w.pop.nextBandId, b.id + 1);
-            b.px = (float)bv.px; b.py = (float)bv.py; b.pz = (float)bv.pz;
-            b.P = (float)bv.P; b.S = (float)bv.S;
-            b.pop = bv.children + bv.men + bv.women + bv.elderly > 0.5
-                        ? population::Cohorts{(float)bv.children, (float)bv.men,
-                                              (float)bv.women, (float)bv.elderly}
-                        : population::seedCohorts(b.P);
-            b.P = b.pop.total();
-            b.targetCell = (int)bv.target;
-            b.resting = bv.resting > 0.5;
-            b.restStart = bv.restStart;
-            b.bows = (float)bv.bows;
-            b.water = bv.water >= 0 ? (float)bv.water : population::CAP_WATER_DAYS * (float)bv.P;
-            b.purpose = (int)bv.purpose;
-            b.homeId = (uint32_t)bv.homeId;
-            b.targetId = (uint32_t)bv.targetId;
-            b.sid = (uint32_t)bv.sid;
-            b.returning = bv.returning > 0.5;
-            b.loot = (float)bv.loot;
-            b.lootHerd = (float)bv.lootHerd;
-            for (int t = 0; t < population::NTECH; t++) {
-                b.tech[t].aware = bv.tech[t][0] > 0.5;
-                b.tech[t].practising = bv.tech[t][1] > 0.5;
-                b.tech[t].practiceT = bv.tech[t][2];
-                b.tech[t].lostT = bv.tech[t][3];
-            }
-            if (!b.tech[population::TECH_ARCHERY].practising)
-                b.tech[population::TECH_ARCHERY] = {true, true, savedTime};
-            b.t = savedTime;
-            b.nextUpdate = savedTime;
-            if (b.targetCell >= 0 && b.targetCell < population::W * population::H)
-                w.pop.bands.push_back(b);
-        }
-        population::computeNeighbours(w.pop);
-    }
-    if (!savedCultures.empty()) w.pop.cultures = savedCultures;
-    // The roll of names is not saved; it is exactly what is standing and
-    // walking, so rebuild it rather than store it.
-    w.pop.takenNames.clear();
-    for (const population::Culture& cu : w.pop.cultures) w.pop.takenNames.insert(cu.name);
-    for (const population::Settlement& st : w.pop.settlements) w.pop.takenNames.insert(st.name);
-    for (const population::Band& bd : w.pop.bands) w.pop.takenNames.insert(bd.name);
-    for (auto& sc : savedScars)
-        if (sc[0] >= 0 && sc[0] < population::W * population::H)
-            w.pop.scars[(int)sc[0]] = {(float)sc[1], sc[2]};
-    for (auto& rn : savedRuins)
-        if (rn.first >= 0 && rn.first < population::W * population::H)
-            w.pop.ruins.push_back({rn.first, rn.second});
-    // Restore the game pools (default pristine), then refresh each
-    // settlement's cached health.
-    for (auto& [r, g] : savedGame)
-        if (r < w.pop.gameG.size()) w.pop.gameG[r] = (float)g;
-    w.pop.gameT = savedTime;
-    for (population::Settlement& st : w.pop.settlements)
-        if (st.kGame > 0) st.gameNow = w.pop.gameG[st.gRegion];
-    // Cache what the standing fields feed before anything asks (panels read
-    // farmK before the first simulate step).
-    for (population::Settlement& st : w.pop.settlements) sim::updateFarmland(w.pop, st);
-    w.simTime = savedTime;
-    if (savedTechRng) w.tech.rng = savedTechRng;
-    // Contact draws and the invention clock are exponential (memoryless), so
-    // redrawing them on load is statistically exact.
-    for (int t = 0; t < population::NTECH; t++) {
-        for (int i = 0; i < (int)w.pop.settlements.size(); i++)
-            technology::redraw(w.pop, i, w.tech, t, savedTime);
-        technology::scheduleInvention(w.pop, w.tech, t, savedTime);
-    }
-    c.clampAltitude();
-    return true;
-}
-
-static std::vector<std::string> listWorlds() {
-    std::vector<std::string> names;
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA((worldsDir() + "\\*.ibw").c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) return names;
-    do {
-        std::string n = fd.cFileName;
-        names.push_back(n.substr(0, n.size() - 4));
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-    std::sort(names.begin(), names.end());
-    return names;
-}
-
 // ---------------------------------------------------------------- app state
 
-enum class Screen { MainMenu, NewWorldMenu, LoadMenu, InGame, PauseMenu };
-
-// Control IDs for the Win32 controls that make up the menus.
-enum : int {
-    ID_NEW_WORLD = 100, ID_LOAD_WORLD, ID_QUIT,
-    ID_LOAD_LIST, ID_LOAD_CONFIRM, ID_LOAD_DELETE, ID_LOAD_BACK,
-    ID_SAVE_NAME, ID_SAVE_WORLD, ID_MAIN_MENU, ID_PAUSE_QUIT,
-    ID_TITLE, ID_STATUS,
-    ID_GEN_SEED_LABEL, ID_GEN_SEED, ID_GEN_RANDOM, ID_GEN_LAND_LABEL, ID_GEN_LAND,
-    ID_GEN_CONC_LABEL, ID_GEN_CONC, ID_GEN_HINT, ID_GEN_CREATE, ID_GEN_BACK,
-    ID_SCALE_LABEL, ID_TOOLTIP,
-    ID_TIME_STEP, ID_TIME_GO, ID_DATE_LABEL,
-};
-
-// A detail window for one settlement or band, opened by clicking its marker.
-// Settlement panels are tabbed (Environment / Technology / Buildings) and
-// custom-painted so tabs and technology rows are clickable; every panel is
-// repositioned by dragging anywhere that isn't a click target.
-struct Panel {
-    HWND wnd = nullptr;
-    int kind = 0;       // 0 settlement, 1 band
-    uint32_t sid = 0;   // settlement identity (indices shift when one moves away)
-    uint32_t bandId = 0;
-    int tab = 0;        // 0 environment, 1 technology, 2 buildings
-    int techSel = -1;   // selected tech in the tech tab, -1 = overview list
-};
-
 struct App {
-    Camera cam;
-    World world;
-    Screen screen = Screen::MainMenu;
+    camera::Camera cam;
+    world::World world;
+    menus::Screen screen = menus::Screen::MainMenu;
     bool dragging = false;
-    bool anchorValid = false;
-    Vec3 anchor{}; // surface point grabbed at mouse-down
-    int lastX = 0, lastY = 0;
+    camera::Drag drag;
     int downX = 0, downY = 0;   // mouse-down spot, to tell a click from a drag
     bool clickMoved = false;
-    std::vector<Panel> panels;
-    int panelSpawn = 0;         // cascade offset for new panels
+    panels::State panels;
     // World generation runs on a worker thread so the window stays live; the
     // menus never render the globe, so the worker owns app.world meanwhile.
     std::thread genThread;
@@ -799,1043 +60,48 @@ struct App {
     int genKind = 0;            // 0 new world, 1 load
     std::string genName;
     GLuint program = 0;
-    GLuint hydroTex = 0;
-    GLuint plateTex = 0;
-    GLuint earthTex = 0; // the Earth template, when the world is one
-    GLuint popTex = 0;
-    GLuint bandTex = 0;
-    int bandRows = 0;
-    GLuint siteTex = 0;
-    int siteRows = 0;
-    // The marker overlay: a screen-sized image drawn with GDI and laid over
-    // the globe by the shader. Magenta means "nothing here".
-    HDC ovDC = nullptr;
-    HBITMAP ovBmp = nullptr;
-    unsigned char* ovBits = nullptr;
-    int ovW = 0, ovH = 0;
-    GLuint ovTex = 0;
-    HFONT markerFont = nullptr, markerBold = nullptr, markBold = nullptr;
-    // Where each event chip was drawn, so a click can find it. Rebuilt with
-    // the overlay; a chip belongs to a settlement or to a band, never both.
-    struct MarkHit { int x, y, w, h; uint32_t sid, bandId; };
-    std::vector<MarkHit> markHits;
-    GLuint climTex = 0;
-    GLuint clim2Tex = 0;
+    textures::State tex;
+    overlay::State overlay;
     bool running = true;
     std::string shotPath; // when set, save the next rendered frame here (testing)
     int debugMode = 0; // 0 normal, 1 plates, 2 substrate, 3 vegetation
     int octaves = 8;   // current level of detail, shared with the tooltip
     HWND hwnd = nullptr;
-    HFONT font = nullptr, titleFont = nullptr;
-    HFONT panelFont = nullptr, panelBold = nullptr; // dense panel text
-    HBRUSH bgBrush = nullptr;
-    HWND panelDrag = nullptr; // panel being dragged, with the grab offset
-    POINT panelDragOff{};
-    HWND news = nullptr;   // the feed down the right-hand side
-    int newsLevel = 0;     // 0 kinds, 1 the entries of one kind, 2 one entry
-    int newsKind = 0;      // which kind is open
-    int newsPick = 0;      // which entry is open
-    int newsScroll = 0;
-    bool newsOpen = true;  // collapsed to a tab on the right edge when false
-    std::vector<std::pair<int, HWND>> controls;
+    theme::Theme theme;
+    news::State news;
+    menus::State menu;
 };
 static App app;
 
-// Push the plate table to texture unit 1, bilinear so belts are smooth.
-static void uploadPlates() {
-    glActiveTexture(GL_TEXTURE1);
-    if (!app.plateTex) {
-        glGenTextures(1, &app.plateTex);
-        glBindTexture(GL_TEXTURE_2D, app.plateTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.plateTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, plates::W, plates::H, 0, GL_RGBA, GL_FLOAT,
-                 app.world.plateField.cells.data());
-    glActiveTexture(GL_TEXTURE0);
-}
-
-static std::vector<float> popTexData() {
-    std::vector<float> d(population::W * population::H * 4, 0.0f);
-    const population::Field& pf = app.world.pop;
-    for (int i = 0; i < population::W * population::H; i++) d[i * 4] = pf.K[i];
-    for (const population::Field::Ruin& r : pf.ruins) d[r.cell * 4 + 1] = -1.0f; // abandoned
-    // Green names the settlement standing on the cell (index + 1, or -1 for
-    // a ruin); everything else about it -- its people, its granaries, how far
-    // its fields reach -- lives in the site texture, one texel each, so
-    // adding another thing to draw costs a channel there and not a texture
-    // the size of the world.
-    for (size_t i = 0; i < pf.settlements.size(); i++)
-        d[pf.settlements[i].cell * 4 + 1] = (float)(i + 1);
-    // A cell holds the index of a band standing on it, not its headcount:
-    // a walking band is at a point, not in a square, and the marker is drawn
-    // at that point. Where two bands share a cell the bigger one is shown.
-    for (size_t i = 0; i < pf.bands.size(); i++) {
-        const population::Band& b = pf.bands[i];
-        int cell = sim::cellOf({b.px, b.py, b.pz});
-        int held = (int)(d[cell * 4 + 2] + 0.5f);
-        if (held && pf.bands[held - 1].P >= b.P) continue;
-        d[cell * 4 + 2] = (float)(i + 1);
-    }
-    // Alpha points from any cell holding a FARMSTEAD back to its village's
-    // cell (index + 1), so the shader's farmstead passes look at their own
-    // nine cells instead of scanning a 50 km box per pixel -- that scan was
-    // a full-screen frame-rate bill at close zoom.
-    for (const population::Settlement& s : pf.settlements)
-        for (int k = 0; k < (int)(s.farmsteads + 0.5f) && k < population::FSTEAD_MAX; k++)
-            d[sim::cellOf(sim::farmsteadPos(s.cell, k)) * 4 + 3] = (float)(s.cell + 1);
-    return d;
-}
-
-// Ten texels per settlement: its people, granaries, village field reach and
-// farmstead count; the sixteen sectors of its claim, four to a texel; then
-// each farmstead's own field radius, four to a texel. A settlement is
-// SITE_STRIDE texels along the row, so the shader indexes site*10 + k.
-constexpr int SITE_TEX_W = 256;
-constexpr int SITE_STRIDE = 10;
-static std::vector<float> siteTexData(int& rows) {
-    const std::vector<population::Settlement>& ss = app.world.pop.settlements;
-    size_t texels = ss.size() * SITE_STRIDE;
-    rows = std::max(1, (int)((texels + SITE_TEX_W - 1) / SITE_TEX_W));
-    std::vector<float> d((size_t)SITE_TEX_W * rows * 4, 0.0f);
-    for (size_t i = 0; i < ss.size(); i++) {
-        size_t o = i * SITE_STRIDE * 4;
-        d[o + 0] = std::max(ss[i].P, 1.0f);
-        d[o + 1] = ss[i].granaries;
-        d[o + 2] = ss[i].tilled[0]; // village plots, km2 (one drawn patch each)
-        d[o + 3] = ss[i].farmsteads;
-        for (int k = 0; k < population::CLAIM_SECTORS; k++) d[o + 4 + k] = ss[i].claim[k];
-        for (int k = 0; k < population::FSTEAD_MAX; k++) d[o + 20 + k] = ss[i].tilled[k + 1];
-    }
-    return d;
-}
-
-// Where every band actually is, to the metre: xyz on the unit sphere plus
-// its headcount, one texel each, in rows of BAND_TEX_W.
-constexpr int BAND_TEX_W = 256;
-static std::vector<float> bandTexData(int& rows) {
-    const std::vector<population::Band>& bs = app.world.pop.bands;
-    rows = std::max(1, ((int)bs.size() + BAND_TEX_W - 1) / BAND_TEX_W);
-    std::vector<float> d((size_t)BAND_TEX_W * rows * 4, 0.0f);
-    for (size_t i = 0; i < bs.size(); i++) {
-        d[i * 4 + 0] = bs[i].px;
-        d[i * 4 + 1] = bs[i].py;
-        d[i * 4 + 2] = bs[i].pz;
-        d[i * 4 + 3] = std::max(bs[i].P, 1.0f);
-    }
-    return d;
-}
-
-// ------------------------------------------------------- marker overlay
-//
-// Close up, a settlement is its houses and a band is its people, both drawn
-// on the ground by the shader. From further off that is a smear of pixels,
-// so the map takes over: a round marker with a hut in it for a settlement, a
-// labelled rectangle for a band, and the name underneath until the view is
-// wide enough that names would be a thicket. Markers and names are drawn
-// here with GDI into a screen-sized image and laid over the globe by the
-// shader -- pixel work belongs in pixels, and it puts the same font on the
-// map as on the panels.
-constexpr double NAME_KMPP = 1.5;    // wider views than this drop the names
-constexpr int THIN_PX = 22;          // markers stand at least this far apart
-constexpr double HUT_KMPP = 0.004;   // closer than this the shader draws houses
-constexpr double WALK_KMPP = 0.0006; // and closer than this, the people in a band
-
-// The marker shrinks as the view widens: it is a pin at local range and a
-// dot at continental range, where what matters is where people are thick on
-// the ground rather than which place is which.
-//
-// It changes character where the names do, so a settlement and a band say
-// the same amount about themselves at any given range: while there are
-// names the marker is big enough to hold its hut (6 px and up), and beyond
-// them it stops being a symbol sized for the eye and becomes a fixed size on
-// the ground, shrinking with the view rather than swelling to cover a
-// province. It bottoms out at two pixels, near enough the smallest band
-// marker that a village does not look like less than a walking party. Since
-// the markers no longer grow they no longer crowd each other out, which is
-// what made them wink away a few at a time while zooming out.
-static int markerRadius(double kmpp) {
-    if (kmpp < NAME_KMPP)
-        return std::clamp((int)std::lround(8.0 - std::log10(kmpp / HUT_KMPP)), 6, 8);
-    double fixedKm = 6.0 * NAME_KMPP; // its size on the ground, from the handover
-    return std::max(2, (int)std::lround(fixedKm / kmpp));
-}
-
-
-// ------------------------------------------------------------ event marks
-//
-// What happened to a place this turn, drawn as a row of chips above its
-// marker: a family-coloured square with a cream glyph cut out of it, eleven
-// pixels across. The chip is what makes it readable -- a bare glyph over an
-// ice sheet is invisible -- and the colour sorts the event before the glyph
-// is even looked at. Marks last exactly as long as the news feed does: they
-// are the same events, cleared at the start of every step.
-//
-// Every glyph is filled polygons on an 11x11 grid: no curves, no thin
-// diagonals, nothing that needs a second pixel to read. Coordinates below
-// match the proposal drawing exactly.
-struct MarkPoly { const float* xy; int n; };
-struct MarkGlyph { const MarkPoly* fill; int nf; const MarkPoly* cut; int nc; };
-
-// clang-format off
-static const float MP_RELOCATE[] = {1,4, 6,4, 6,2, 10,5.5f, 6,9, 6,7, 1,7};
-static const float MP_SPLIT_A[]  = {0.4f,4.7f, 4.6f,4.7f, 4.6f,6.3f, 0.4f,6.3f};
-static const float MP_SPLIT_B[]  = {3.5f,4.9f, 4.6f,6.1f, 8.2f,2.9f, 7.1f,1.7f};
-static const float MP_SPLIT_C[]  = {6.3f,1.5f, 10.2f,0.6f, 9.2f,4.4f};
-static const float MP_SPLIT_D[]  = {3.5f,6.1f, 4.6f,4.9f, 8.2f,8.1f, 7.1f,9.3f};
-static const float MP_SPLIT_E[]  = {6.3f,9.5f, 10.2f,10.4f, 9.2f,6.6f};
-static const float MP_SET_A[]    = {2,9, 9,9, 9,10, 2,10};
-static const float MP_SET_B[]    = {5.5f,1, 10,5, 1,5};
-static const float MP_SET_C[]    = {2,5, 9,5, 9,8, 2,8};
-static const float MP_FOUND_A[]  = {5.5f,2, 10,6, 1,6};
-static const float MP_FOUND_B[]  = {2,6, 9,6, 9,10, 2,10};
-static const float MP_FOUND_C[]  = {0,1, 2,0, 3,2, 1,3};
-static const float MP_MERGE_A[]  = {1.0f,1.4f, 2.1f,0.4f, 5.6f,4.1f, 4.5f,5.1f};
-static const float MP_MERGE_B[]  = {1.0f,9.6f, 2.1f,10.6f, 5.6f,6.9f, 4.5f,5.9f};
-static const float MP_MERGE_C[]  = {4.2f,4.7f, 8.0f,4.7f, 8.0f,6.3f, 4.2f,6.3f};
-static const float MP_MERGE_D[]  = {7.4f,2.6f, 10.8f,5.5f, 7.4f,8.4f};
-static const float MP_DIED_A[]   = {4,1, 7,1, 7,10, 4,10};
-static const float MP_DIED_B[]   = {1,3, 10,3, 10,5, 1,5};
-static const float MP_BLADE[]    = {2.1f,9.6f, 3.3f,8.4f, 10.4f,1.3f, 10.9f,0.2f, 9.6f,0.6f, 2.6f,7.7f};
-static const float MP_BLADE2[]   = {8.9f,9.6f, 7.7f,8.4f, 0.6f,1.3f, 0.1f,0.2f, 1.4f,0.6f, 8.4f,7.7f};
-static const float MP_GUARD[]    = {1.0f,7.3f, 1.9f,6.4f, 4.6f,9.1f, 3.7f,10.0f};
-static const float MP_GUARD2[]   = {10.0f,7.3f, 9.1f,6.4f, 6.4f,9.1f, 7.3f,10.0f};
-static const float MP_POMMEL[]   = {0.4f,9.0f, 1.6f,7.8f, 3.2f,9.4f, 2.0f,10.6f};
-static const float MP_SHIELD[]   = {1,1, 10,1, 10,5, 5.5f,10, 1,5};
-static const float MP_HOME[]     = {10,4, 5,4, 5,2, 1,5.5f, 5,9, 5,7, 10,7};
-static const float MP_STAR[]     = {5.5f,0, 7,4, 11,5.5f, 7,7, 5.5f,11, 4,7, 0,5.5f, 4,4};
-static const float MP_STAR_S[]   = {5.5f,0, 6.6f,3, 9.5f,4, 6.6f,5, 5.5f,8, 4.4f,5, 1.5f,4, 4.4f,3};
-static const float MP_DOWN[]     = {4.5f,7, 6.5f,7, 6.5f,9, 8,9, 5.5f,11, 3,9, 4.5f,9};
-static const float MP_GRAN_A[]   = {2,1, 9,1, 10,4, 1,4};
-static const float MP_GRAN_B[]   = {2,4, 9,4, 9,8, 2,8};
-static const float MP_GRAN_C[]   = {2,8, 3.5f,8, 3.5f,11, 2,11};
-static const float MP_GRAN_D[]   = {7.5f,8, 9,8, 9,11, 7.5f,11};
-static const float MP_BONE_A[]   = {0.6f,10.4f, 1.6f,11.2f, 10.4f,6.6f, 9.4f,5.8f};
-static const float MP_BONE_B[]   = {0.6f,6.6f, 1.6f,5.8f, 10.4f,10.4f, 9.4f,11.2f};
-static const float MP_KNOB_A[]   = {0.0f,10.0f, 1.4f,9.3f, 2.0f,10.6f, 0.6f,11.3f};
-static const float MP_KNOB_B[]   = {9.0f,5.7f, 10.4f,5.0f, 11.0f,6.3f, 9.6f,7.0f};
-static const float MP_KNOB_C[]   = {0.0f,6.3f, 1.4f,7.0f, 2.0f,5.7f, 0.6f,5.0f};
-static const float MP_KNOB_D[]   = {9.0f,10.6f, 10.4f,11.3f, 11.0f,10.0f, 9.6f,9.3f};
-static const float MP_SKULL[]    = {2.6f,1.2f, 3.6f,0.2f, 7.4f,0.2f, 8.4f,1.2f, 8.4f,5.4f, 2.6f,5.4f};
-static const float MP_JAW[]      = {3.7f,5.4f, 7.3f,5.4f, 7.3f,7.4f, 3.7f,7.4f};
-static const float MP_SLASH[]    = {0.6f,9.4f, 2.0f,10.8f, 10.4f,2.4f, 9.0f,1.0f};
-static const float MP_EYE_L[]    = {3.5f,2.0f, 5.0f,2.0f, 5.0f,4.0f, 3.5f,4.0f};
-static const float MP_EYE_R[]    = {6.0f,2.0f, 7.5f,2.0f, 7.5f,4.0f, 6.0f,4.0f};
-static const float MP_NOSE[]     = {5.0f,4.4f, 6.0f,4.4f, 6.0f,5.4f, 5.0f,5.4f};
-static const float MP_TOOTH_L[]  = {4.6f,6.2f, 5.1f,6.2f, 5.1f,7.4f, 4.6f,7.4f};
-static const float MP_TOOTH_R[]  = {5.9f,6.2f, 6.4f,6.2f, 6.4f,7.4f, 5.9f,7.4f};
-
-#define MPOLY(a) {a, (int)(sizeof(a) / sizeof(float) / 2)}
-static const MarkPoly MG_RELOCATE[] = {MPOLY(MP_RELOCATE)};
-static const MarkPoly MG_SPLIT[]    = {MPOLY(MP_SPLIT_A), MPOLY(MP_SPLIT_B), MPOLY(MP_SPLIT_C),
-                                       MPOLY(MP_SPLIT_D), MPOLY(MP_SPLIT_E)};
-static const MarkPoly MG_SETTLED[]  = {MPOLY(MP_SET_A), MPOLY(MP_SET_B), MPOLY(MP_SET_C)};
-static const MarkPoly MG_FOUNDED[]  = {MPOLY(MP_FOUND_A), MPOLY(MP_FOUND_B), MPOLY(MP_FOUND_C)};
-static const MarkPoly MG_MERGED[]   = {MPOLY(MP_MERGE_A), MPOLY(MP_MERGE_B), MPOLY(MP_MERGE_C),
-                                       MPOLY(MP_MERGE_D)};
-static const MarkPoly MG_PERISHED[] = {MPOLY(MP_DIED_A), MPOLY(MP_DIED_B)};
-static const MarkPoly MG_RAIDOUT[]  = {MPOLY(MP_BLADE), MPOLY(MP_GUARD), MPOLY(MP_POMMEL)};
-static const MarkPoly MG_RAIDHIT[]  = {MPOLY(MP_BLADE), MPOLY(MP_BLADE2), MPOLY(MP_GUARD),
-                                       MPOLY(MP_GUARD2)};
-static const MarkPoly MG_RAIDHELD[] = {MPOLY(MP_SHIELD)};
-static const MarkPoly MG_RAIDHOME[] = {MPOLY(MP_HOME)};
-static const MarkPoly MG_INVENTED[] = {MPOLY(MP_STAR)};
-static const MarkPoly MG_ADOPTED[]  = {MPOLY(MP_STAR_S), MPOLY(MP_DOWN)};
-static const MarkPoly MG_GRANARY[]  = {MPOLY(MP_GRAN_A), MPOLY(MP_GRAN_B), MPOLY(MP_GRAN_C),
-                                       MPOLY(MP_GRAN_D)};
-static const MarkPoly MG_GAME[]     = {MPOLY(MP_BONE_A), MPOLY(MP_BONE_B), MPOLY(MP_KNOB_A),
-                                       MPOLY(MP_KNOB_B), MPOLY(MP_KNOB_C), MPOLY(MP_KNOB_D),
-                                       MPOLY(MP_SKULL), MPOLY(MP_JAW)};
-static const MarkPoly MG_GAME_CUT[] = {MPOLY(MP_EYE_L), MPOLY(MP_EYE_R), MPOLY(MP_NOSE),
-                                       MPOLY(MP_TOOTH_L), MPOLY(MP_TOOTH_R)};
-static const MarkPoly MG_LOST[]     = {MPOLY(MP_STAR)};
-static const MarkPoly MG_LOST_CUT[] = {MPOLY(MP_SLASH)};
-#undef MPOLY
-
-#define MGLYPH(a) {a, (int)(sizeof(a) / sizeof(MarkPoly)), nullptr, 0}
-// Indexed by population::EV_*, in that order.
-static const MarkGlyph MARK_GLYPH[population::EV_KINDS] = {
-    MGLYPH(MG_RELOCATE), MGLYPH(MG_SPLIT),    MGLYPH(MG_SETTLED),  MGLYPH(MG_FOUNDED),
-    MGLYPH(MG_MERGED),   MGLYPH(MG_PERISHED), MGLYPH(MG_RAIDOUT),  MGLYPH(MG_RAIDHIT),
-    MGLYPH(MG_RAIDHELD), MGLYPH(MG_RAIDHOME), MGLYPH(MG_INVENTED), MGLYPH(MG_ADOPTED),
-    MGLYPH(MG_GRANARY),
-    {MG_GAME, (int)(sizeof(MG_GAME) / sizeof(MarkPoly)), MG_GAME_CUT,
-     (int)(sizeof(MG_GAME_CUT) / sizeof(MarkPoly))},
-    // A technology lost: the star of its invention, struck through.
-    {MG_LOST, (int)(sizeof(MG_LOST) / sizeof(MarkPoly)), MG_LOST_CUT,
-     (int)(sizeof(MG_LOST_CUT) / sizeof(MarkPoly))},
-};
-#undef MGLYPH
-// clang-format on
-
-// Five families. Violence first and the emptied land second, so a settlement
-// that was raided always shows the raid: the count chip absorbs granaries,
-// never the fighting.
-static int markFamily(int kind) {
-    switch (kind) {
-    case population::EV_RAID_LAUNCH:
-    case population::EV_RAID_HIT:
-    case population::EV_RAID_HELD:
-    case population::EV_RAID_HOME: return 0; // violence
-    case population::EV_GAME_GONE: return 1; // the land
-    case population::EV_INVENTED:
-    case population::EV_ADOPTED:
-    case population::EV_TECH_LOST: return 3; // knowledge
-    case population::EV_GRANARY: return 4;   // building
-    default: return 2;                       // movement
-    }
-}
-static COLORREF markColour(int family) {
-    static const COLORREF c[5] = {RGB(163, 53, 42), RGB(107, 122, 74), RGB(232, 176, 66),
-                                  RGB(216, 194, 90), RGB(185, 146, 90)};
-    return c[family < 0 || family > 4 ? 2 : family];
-}
-
-constexpr int CHIP = 11;      // a mark, square
-constexpr int CHIP_GAP = 1;   // and the air between two of them
-constexpr int CHIP_SHOWN = 4; // before the rest become a number
-
-// Where a point on the unit sphere lands on the screen; false when it is
-// behind the camera or hidden by the curve of the world.
-static bool projectToScreen(const terrain::V3& p, float& sx, float& sy) {
-    Vec3 pw{p.x, p.y, p.z};
-    Vec3 o = app.cam.position();
-    double r = std::sqrt(dot(o, o));
-    if (dot(pw, o) < 1.0) return false; // over the horizon
-    Vec3 d = pw - o;
-    double z = dot(d, app.cam.forward());
-    if (z <= 1e-9) return false;
-    double nx = dot(d, app.cam.right()) / z / (app.cam.tanHalfV() * app.cam.aspect());
-    double ny = dot(d, app.cam.up()) / z / app.cam.tanHalfV();
-    sx = (float)((nx + 1.0) * 0.5 * app.cam.width - 0.5);
-    sy = (float)((1.0 - ny) * 0.5 * app.cam.height - 0.5);
-    return true;
-}
-
-static void overlayEnsure() {
-    if (app.ovDC && app.ovW == app.cam.width && app.ovH == app.cam.height) return;
-    if (app.ovBmp) { DeleteObject(app.ovBmp); app.ovBmp = nullptr; }
-    if (app.ovDC) { DeleteDC(app.ovDC); app.ovDC = nullptr; }
-    app.ovW = app.cam.width;
-    app.ovH = app.cam.height;
-    BITMAPINFO bi{};
-    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = app.ovW;
-    bi.bmiHeader.biHeight = app.ovH; // bottom-up, so rows arrive in OpenGL order
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    HDC screen = GetDC(nullptr);
-    app.ovDC = CreateCompatibleDC(screen);
-    app.ovBmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, (void**)&app.ovBits, nullptr, 0);
-    ReleaseDC(nullptr, screen);
-    SelectObject(app.ovDC, app.ovBmp);
-    SetBkMode(app.ovDC, TRANSPARENT);
-}
-
-// One mark: the family square, a dark edge, and the glyph cut out in cream.
-static void drawChip(HDC dc, int kind, int x, int y, HBRUSH edgeBr, HBRUSH creamBr) {
-    RECT r{x, y, x + CHIP, y + CHIP};
-    FillRect(dc, &r, edgeBr);
-    HBRUSH fam = CreateSolidBrush(markColour(markFamily(kind)));
-    RECT in{x + 1, y + 1, x + CHIP - 1, y + CHIP - 1};
-    FillRect(dc, &in, fam);
-    const MarkGlyph& g = MARK_GLYPH[kind];
-    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
-    const float s = (CHIP - 2) / 11.0f;
-    auto run = [&](const MarkPoly* polys, int n, HBRUSH br) {
-        HGDIOBJ old = SelectObject(dc, br);
-        for (int i = 0; i < n; i++) {
-            POINT pt[16];
-            int m = polys[i].n < 16 ? polys[i].n : 16;
-            for (int k = 0; k < m; k++) {
-                pt[k].x = x + 1 + (LONG)std::lround(polys[i].xy[k * 2] * s);
-                pt[k].y = y + 1 + (LONG)std::lround(polys[i].xy[k * 2 + 1] * s);
-            }
-            Polygon(dc, pt, m);
-        }
-        SelectObject(dc, old);
-    };
-    run(g.fill, g.nf, creamBr);
-    if (g.nc) run(g.cut, g.nc, fam); // the skull needs its sockets back
-    SelectObject(dc, oldPen);
-    DeleteObject(fam);
-}
-
-// The overflow: how many marks are not shown. The only chip that holds type.
-static void drawCountChip(HDC dc, int n, int x, int y, HBRUSH edgeBr) {
-    RECT r{x, y, x + CHIP, y + CHIP};
-    FillRect(dc, &r, edgeBr);
-    HBRUSH br = CreateSolidBrush(RGB(74, 64, 52));
-    RECT in{x + 1, y + 1, x + CHIP - 1, y + CHIP - 1};
-    FillRect(dc, &in, br);
-    DeleteObject(br);
-    char t[8];
-    snprintf(t, sizeof t, "%d", n > 99 ? 99 : n);
-    SelectObject(dc, app.markBold);
-    UINT old = SetTextAlign(dc, TA_CENTER | TA_TOP);
-    SetTextColor(dc, RGB(238, 230, 208));
-    TextOutA(dc, x + CHIP / 2, y, t, (int)strlen(t));
-    SetTextAlign(dc, old);
-}
-
-// A house seen from the side, sized to sit inside a marker of radius r.
-static void drawHutGlyph(HDC dc, int cx, int cy, int r) {
-    int w = r * 5 / 9, hgt = r * 6 / 9;
-    POINT roof[3] = {{cx - w - 1, cy - 1}, {cx, cy - hgt}, {cx + w + 1, cy - 1}};
-    Polygon(dc, roof, 3);
-    Rectangle(dc, cx - w + 2, cy - 1, cx + w - 1, cy + hgt - 1);
-}
-
-// One line of text centred on x, with a dark copy under it so a name stays
-// legible over snow as well as over forest.
-static void drawLabel(HDC dc, int x, int y, const char* txt) {
-    int n = (int)strlen(txt);
-    SetTextColor(dc, RGB(24, 20, 14));
-    TextOutA(dc, x + 1, y + 1, txt, n);
-    SetTextColor(dc, RGB(250, 246, 234));
-    TextOutA(dc, x, y, txt, n);
-}
-
-static void zoomAt(double factor, int px, int py) {
-    Vec3 anchor{};
-    bool haveAnchor = px >= 0 && py >= 0 && px < app.cam.width && py < app.cam.height &&
-                      app.cam.hitSphere(px, py, anchor);
-    app.cam.altitude *= factor;
-    app.cam.clampAltitude();
-    if (!haveAnchor) return;
-    // Turn the globe so the anchor comes back under the cursor. The camera
-    // has no roll -- its up is always north -- so one turn leaves a little
-    // tangential drift; three settle it.
-    for (int i = 0; i < 3; i++) {
-        Vec3 at;
-        if (!app.cam.hitSphere(px, py, at)) break;
-        Vec3 axis = cross(at, anchor);
-        double sn = std::sqrt(dot(axis, axis));
-        if (sn < 1e-12) break;
-        axis = axis * (1.0 / sn);
-        double ang = std::atan2(sn, dot(at, anchor));
-        Vec3 c = sphereDir(app.cam.lat, app.cam.lon);
-        // Rodrigues: turn the centre through the same rotation.
-        Vec3 turned = c * std::cos(ang) + cross(axis, c) * std::sin(ang) +
-                      axis * (dot(axis, c) * (1.0 - std::cos(ang)));
-        app.cam.lat = std::asin(std::clamp(turned.z, -1.0, 1.0));
-        app.cam.lon = std::atan2(turned.y, turned.x);
-    }
-}
-
-// What happened to each settlement and each band this turn, ordered so the
-// most telling marks survive the cut: family first (violence, then the land,
-// then movement, knowledge, building), and within a family the most recent.
-// A raid launched belongs to the settlement that sent the party out, not to
-// the party -- the decision was the settlement's.
-static void gatherMarks(std::unordered_map<uint32_t, std::vector<int>>& bySite,
-                        std::unordered_map<uint32_t, std::vector<int>>& byBand) {
-    const population::Field& pf = app.world.pop;
-    for (size_t i = pf.events.size(); i-- > 0;) { // newest first
-        const population::Event& e = pf.events[i];
-        if (e.sid) bySite[e.sid].push_back(e.kind);
-        if (e.bandId && e.kind != population::EV_RAID_LAUNCH) byBand[e.bandId].push_back(e.kind);
-    }
-    auto sortFamily = [](std::unordered_map<uint32_t, std::vector<int>>& m) {
-        for (auto& kv : m)
-            std::stable_sort(kv.second.begin(), kv.second.end(),
-                             [](int a, int b) { return markFamily(a) < markFamily(b); });
-    };
-    sortFamily(bySite);
-    sortFamily(byBand);
-}
-
-// A row of marks above a marker, centred on it: four of them, then a count
-// of the rest. Records where each chip landed so a click can find it.
-static void drawMarkRow(HDC dc, const std::vector<int>& kinds, int cx, int bottomY, uint32_t sid,
-                        uint32_t bandId, HBRUSH edgeBr, HBRUSH creamBr) {
-    if (kinds.empty()) return;
-    int shown = (int)kinds.size() <= CHIP_SHOWN ? (int)kinds.size() : CHIP_SHOWN;
-    int hidden = (int)kinds.size() - shown;
-    int n = shown + (hidden > 0 ? 1 : 0);
-    int w = n * CHIP + (n - 1) * CHIP_GAP;
-    int x = cx - w / 2, y = bottomY - CHIP;
-    for (int i = 0; i < shown; i++) {
-        drawChip(dc, kinds[i], x, y, edgeBr, creamBr);
-        app.markHits.push_back({x, y, CHIP, CHIP, sid, bandId});
-        x += CHIP + CHIP_GAP;
-    }
-    if (hidden > 0) {
-        drawCountChip(dc, hidden, x, y, edgeBr);
-        app.markHits.push_back({x, y, CHIP, CHIP, sid, bandId});
-    }
-}
-
-static void paintOverlay() {
-    overlayEnsure();
-    app.markHits.clear();
-    if (!app.ovDC) return;
-    HDC dc = app.ovDC;
-    RECT full{0, 0, app.ovW, app.ovH};
-    HBRUSH clear = CreateSolidBrush(RGB(255, 0, 255)); // "nothing here", to the shader
-    FillRect(dc, &full, clear);
-    DeleteObject(clear);
-    if (app.screen != Screen::InGame || app.world.pop.settlements.empty()) return;
-    double kmpp = app.cam.kmPerPixel();
-    // Close up the shader draws the houses and the walking people
-    // themselves, so the overlay adds only the names.
-    bool ground = kmpp < HUT_KMPP;      // houses are being drawn on the ground
-    bool walking = kmpp < WALK_KMPP;    // and the people of a band, one by one
-    bool names = kmpp < NAME_KMPP;
-    int mr = markerRadius(kmpp);
-    // Names need room; bare markers only need to keep off each other, and
-    // ground-sized ones barely touch, so the thinning all but stops.
-    double spacingKm = (names ? std::max(2 * mr + 6, THIN_PX) : std::max(2 * mr + 2, 4)) * kmpp;
-
-    // Thinning: a thousand settlements in view is a legible map only if the
-    // small ones give way to the large. The squares are on the GROUND, not on
-    // the screen -- a screen grid moves with the camera, so panning kept
-    // changing which settlement won its square and markers blinked in and out
-    // as you dragged. Ground squares are the same wherever you are looking,
-    // and their size steps in powers of two so a slow zoom does not churn
-    // them either.
-    double stepDeg = std::pow(2.0, std::round(std::log2(spacingKm / 111.32)));
-    struct Cand { float x, y, w; int idx; bool band; };
-    std::vector<Cand> cands;
-    std::unordered_map<long long, int> best;
-    auto offer = [&](float x, float y, float w, int idx, bool band, const terrain::V3& at) {
-        if (x < -60 || y < -30 || x > app.ovW + 60 || y > app.ovH + 30) return;
-        double latDeg = std::asin(std::clamp(at.z, -1.0f, 1.0f)) * 180 / PI;
-        double lonDeg = std::atan2(at.y, at.x) * 180 / PI;
-        long long li = (long long)std::floor(latDeg / stepDeg);
-        // Columns narrow towards the poles, so the longitude step widens with
-        // the band's own latitude -- the band's, not the marker's, or two
-        // neighbours would land in overlapping grids.
-        double bandLat = (li + 0.5) * stepDeg * PI / 180;
-        double lonStep = stepDeg / std::max(std::cos(bandLat), 0.02);
-        long long ci = (long long)std::floor(lonDeg / lonStep);
-        cands.push_back({x, y, w, idx, band});
-        int& b = best[li * 1000003LL + ci];
-        if (!b || cands[b - 1].w < w) b = (int)cands.size();
-    };
-    const population::Field& pf = app.world.pop;
-    float sx, sy;
-    for (size_t i = 0; i < pf.settlements.size(); i++) {
-        terrain::V3 at = sim::cellCentre(pf.settlements[i].cell);
-        if (projectToScreen(at, sx, sy)) offer(sx, sy, pf.settlements[i].P, (int)i, false, at);
-    }
-    // Bands outrank settlements for the square they stand on: they are the
-    // thing that moves, and losing one to a village it is passing is worse
-    // than losing the village.
-    for (size_t i = 0; i < pf.bands.size(); i++) {
-        const population::Band& b = pf.bands[i];
-        terrain::V3 at{b.px, b.py, b.pz};
-        if (projectToScreen(at, sx, sy)) offer(sx, sy, b.P + 1e6f, (int)i, true, at);
-    }
-
-    std::unordered_map<uint32_t, std::vector<int>> markSite, markBand;
-    gatherMarks(markSite, markBand);
-    HBRUSH cream = CreateSolidBrush(RGB(238, 230, 208));
-    HBRUSH amber = CreateSolidBrush(RGB(232, 176, 66));
-    HBRUSH ink = CreateSolidBrush(RGB(96, 52, 28));
-    HPEN edge = CreatePen(PS_SOLID, 1, RGB(40, 28, 18));
-    HBRUSH edgeFill = CreateSolidBrush(RGB(40, 28, 18)); // the chip's dark rim
-    // Under a few pixels the outline is the whole marker, so it goes and the
-    // fill speaks for itself.
-    HGDIOBJ oldPen = SelectObject(dc, mr <= 2 ? GetStockObject(NULL_PEN) : (HGDIOBJ)edge);
-    SetTextAlign(dc, TA_CENTER | TA_TOP);
-    for (const auto& kv : best) {
-        const Cand& c = cands[kv.second - 1];
-        int cx = (int)std::lround(c.x), cy = (int)std::lround(c.y);
-        if (!c.band) {
-            const population::Settlement& st = pf.settlements[c.idx];
-            int below = mr + 2;
-            if (ground) {
-                below = std::min((int)(sim::fieldInnerKm(st.P) / kmpp), 60) + 3;
-            } else {
-                SelectObject(dc, mr >= 6 ? cream : ink);
-                // A two-pixel circle is a rectangle anyway, and there can be
-                // thousands of them once the whole world is in view.
-                if (mr <= 2) Rectangle(dc, cx - mr, cy - mr, cx + mr + 1, cy + mr + 1);
-                else Ellipse(dc, cx - mr, cy - mr, cx + mr + 1, cy + mr + 1);
-                if (mr >= 6) { // the hut, wherever a band would still name itself
-                    SelectObject(dc, ink);
-                    drawHutGlyph(dc, cx, cy, mr);
-                }
-            }
-            if (names) {
-                SelectObject(dc, app.markerFont);
-                drawLabel(dc, cx, cy + below, st.name);
-            }
-            auto it = markSite.find(st.id);
-            if (it != markSite.end() && !ground)
-                drawMarkRow(dc, it->second, cx, cy - mr - 4, st.id, 0, edgeFill, cream);
-        } else {
-            const population::Band& b = pf.bands[c.idx];
-            const char* kind = b.purpose == population::BAND_RAID ? "Raiders"
-                               : b.colonists                     ? "Colonists"
-                                                                 : "Tribe";
-            SelectObject(dc, app.markerBold);
-            SIZE ts{};
-            GetTextExtentPoint32A(dc, kind, (int)strlen(kind), &ts);
-            int hw = (int)ts.cx / 2 + 5, hh = 9;
-            if (!names) { hw = std::max(mr + 2, 3); hh = std::max(mr, 2); } // no room for the word
-            int below = hh + 2;
-            if (walking) {
-                below = std::min((int)(sim::bandSpreadKm(b.P) / kmpp), 60) + 3;
-            } else {
-                SelectObject(dc, amber);
-                Rectangle(dc, cx - hw, cy - hh, cx + hw, cy + hh);
-                if (names) {
-                    SetTextColor(dc, RGB(38, 26, 10));
-                    TextOutA(dc, cx, cy - hh + 2, kind, (int)strlen(kind));
-                }
-            }
-            if (names) {
-                SelectObject(dc, app.markerFont);
-                drawLabel(dc, cx, cy + below, b.name);
-            }
-            auto it = markBand.find(b.id);
-            if (it != markBand.end() && !walking)
-                drawMarkRow(dc, it->second, cx, cy - hh - 4, 0, b.id, edgeFill, cream);
-        }
-    }
-    // Close up, a row of chips floating over the roofs would be a lie about
-    // where things happened, so only one mark is drawn down here: a building
-    // finished, standing over the building itself.
-    if (ground) {
-        for (const population::Settlement& st : pf.settlements) {
-            auto it = markSite.find(st.id);
-            if (it == markSite.end()) continue;
-            int built = 0;
-            for (int k : it->second) built += k == population::EV_GRANARY ? 1 : 0;
-            for (int i = 0; i < built; i++) {
-                int g = (int)(st.granaries + 0.5f) - 1 - i;
-                if (g < 0 || g >= 8) continue;
-                float gx, gy;
-                if (!projectToScreen(sim::granaryPos(st.cell, g), gx, gy)) continue;
-                int px = (int)std::lround(gx), py = (int)std::lround(gy);
-                drawChip(dc, population::EV_GRANARY, px - CHIP / 2, py - CHIP - 10, edgeFill, cream);
-                app.markHits.push_back({px - CHIP / 2, py - CHIP - 10, CHIP, CHIP, st.id, 0});
-                HGDIOBJ op = SelectObject(dc, edgeFill);
-                PatBlt(dc, px, py - 10, 1, 8, PATCOPY); // a stem down to the store
-                SelectObject(dc, op);
-            }
-        }
-    }
-    SelectObject(dc, oldPen);
-    DeleteObject(cream);
-    DeleteObject(amber);
-    DeleteObject(ink);
-    DeleteObject(edge);
-    DeleteObject(edgeFill);
-}
-
-// The overlay is a function of the camera, the world and the window, so it
-// only needs redrawing when one of those moves. Repainting and uploading it
-// costs about 2.4 ms, which is a quarter of a frame to spend on a picture
-// that usually has not changed.
-static bool overlayStale() {
-    static double la = 1e9, lo = 1e9, alt = 0, t = -1;
-    static int w = 0, h = 0, ns = -1, nb = -1, scr = -1;
-    const population::Field& pf = app.world.pop;
-    bool same = la == app.cam.lat && lo == app.cam.lon && alt == app.cam.altitude &&
-                w == app.cam.width && h == app.cam.height && t == app.world.simTime &&
-                ns == (int)pf.settlements.size() && nb == (int)pf.bands.size() &&
-                scr == (int)app.screen;
-    if (same) return false;
-    la = app.cam.lat;
-    lo = app.cam.lon;
-    alt = app.cam.altitude;
-    w = app.cam.width;
-    h = app.cam.height;
-    t = app.world.simTime;
-    ns = (int)pf.settlements.size();
-    nb = (int)pf.bands.size();
-    scr = (int)app.screen;
-    return true;
-}
-
-static void uploadOverlay() {
-    glActiveTexture(GL_TEXTURE7);
-    if (!app.ovTex) {
-        glGenTextures(1, &app.ovTex);
-        glBindTexture(GL_TEXTURE_2D, app.ovTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.ovTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, app.ovW, app.ovH, 0, 0x80E1 /*GL_BGRA*/,
-                 GL_UNSIGNED_BYTE, app.ovBits);
-    glActiveTexture(GL_TEXTURE0);
-}
-
-static void uploadPopulation() {
-    glActiveTexture(GL_TEXTURE2);
-    if (!app.popTex) {
-        glGenTextures(1, &app.popTex);
-        glBindTexture(GL_TEXTURE_2D, app.popTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.popTex);
-    std::vector<float> d = popTexData();
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, population::W, population::H, 0, GL_RGBA, GL_FLOAT, d.data());
-    glActiveTexture(GL_TEXTURE5);
-    if (!app.bandTex) {
-        glGenTextures(1, &app.bandTex);
-        glBindTexture(GL_TEXTURE_2D, app.bandTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.bandTex);
-    std::vector<float> bd = bandTexData(app.bandRows);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, BAND_TEX_W, app.bandRows, 0, GL_RGBA, GL_FLOAT,
-                 bd.data());
-    glActiveTexture(GL_TEXTURE6);
-    if (!app.siteTex) {
-        glGenTextures(1, &app.siteTex);
-        glBindTexture(GL_TEXTURE_2D, app.siteTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.siteTex);
-    std::vector<float> sd = siteTexData(app.siteRows);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, SITE_TEX_W, app.siteRows, 0, GL_RGBA, GL_FLOAT,
-                 sd.data());
-    glActiveTexture(GL_TEXTURE0);
-}
-
-// Climatology texture: four season bands stacked vertically, RGBA =
-// {cloud, rain mm/day, wind u, wind v}.
-static void uploadClimatology() {
-    glActiveTexture(GL_TEXTURE3);
-    if (!app.climTex) {
-        glGenTextures(1, &app.climTex);
-        glBindTexture(GL_TEXTURE_2D, app.climTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.climTex);
-    const atmosphere::Climatology& c = app.world.clim;
-    int W = atmosphere::W, H = atmosphere::H, S = atmosphere::SEASONS;
-    std::vector<float> d(W * H * S * 4);
-    for (int i = 0; i < W * H * S; i++) {
-        d[i * 4 + 0] = c.cloud[i];
-        d[i * 4 + 1] = c.rainMmDay[i];
-        d[i * 4 + 2] = c.windU[i];
-        d[i * 4 + 3] = c.windV[i];
-    }
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, W, H * S, 0, GL_RGBA, GL_FLOAT, d.data());
-    // Second climatology texture: seasonal mean temperature, snowfall, and the
-    // model's smoothed elevation (so the shader can lapse-correct to local
-    // terrain height for snow cover).
-    glActiveTexture(GL_TEXTURE4);
-    if (!app.clim2Tex) {
-        glGenTextures(1, &app.clim2Tex);
-        glBindTexture(GL_TEXTURE_2D, app.clim2Tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.clim2Tex);
-    // Alpha carries the annual water balance (rain - PET, mm/day): the
-    // shader's pond density follows it.
-    std::vector<float> balance(W * H, 0.0f);
-    for (int i = 0; i < W * H; i++) {
-        float rain = 0, tC = 0;
-        for (int se = 0; se < S; se++) {
-            rain += c.rainMmDay[se * W * H + i] / S;
-            tC += c.meanT[se * W * H + i] / S;
-        }
-        balance[i] = rain - hydrology::petMmDay(tC);
-    }
-    for (int se = 0; se < S; se++)
-        for (int i = 0; i < W * H; i++) {
-            int si = se * W * H + i;
-            d[si * 4 + 0] = c.meanT[si];
-            d[si * 4 + 1] = c.snowMmDay[si];
-            d[si * 4 + 2] = c.elev.empty() ? 0.0f : c.elev[i];
-            d[si * 4 + 3] = balance[i];
-        }
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, W, H * S, 0, GL_RGBA, GL_FLOAT, d.data());
-    glActiveTexture(GL_TEXTURE0);
-}
-
-// Push the world's hydrology table to the GPU as one RGBA32F texel per cell.
-// The Earth template, when the world is one: metres in the red channel.
-static void uploadEarth() {
-    if (!app.world.earth || !terrain::TEMPLATE.active) return;
-    glActiveTexture(GL_TEXTURE0 + 8);
-    if (!app.earthTex) {
-        glGenTextures(1, &app.earthTex);
-        glBindTexture(GL_TEXTURE_2D, app.earthTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.earthTex);
-    const terrain::Template& tp = terrain::TEMPLATE;
-    // One channel: at ETOPO5's 4320 x 2160 four channels would be 150 MB.
-    glTexImage2D(GL_TEXTURE_2D, 0, 0x822E /*GL_R32F*/, tp.w, tp.h, 0, 0x1903 /*GL_RED*/, GL_FLOAT, tp.elev.data());
-    glActiveTexture(GL_TEXTURE0);
-}
-
-static void uploadHydrology() {
-    uploadEarth();
-    uploadPlates();
-    uploadPopulation();
-    uploadClimatology();
-    if (!app.hydroTex) {
-        glGenTextures(1, &app.hydroTex);
-        glBindTexture(GL_TEXTURE_2D, app.hydroTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    }
-    glBindTexture(GL_TEXTURE_2D, app.hydroTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, hydrology::W, hydrology::H, 0, GL_RGBA, GL_FLOAT,
-                 app.world.hydro.cells.data());
-}
-
 static void advanceDays(double days);
 static void updateDateLabel();
-static void closeAllPanels();
-static void refreshPanels();
-
-static HWND control(int id) {
-    for (auto& c : app.controls)
-        if (c.first == id) return c.second;
-    return nullptr;
-}
-
-static void setStatus(const std::string& s) { SetWindowTextA(control(ID_STATUS), s.c_str()); }
 
 static void buildProgress(const char* stage) {
     fprintf(stderr, "build: %s%c", stage, 10);
     // Skip when the status line is not on screen (e.g. the argv test path).
-    HWND st = control(ID_STATUS);
+    HWND st = menus::control(app.menu, menus::ID_STATUS);
     if (!st || !IsWindowVisible(st)) return;
     SetWindowTextA(st, stage);
     UpdateWindow(st);
 }
 
-static void addControl(int id, const char* cls, const char* text, DWORD style) {
-    HWND h = CreateWindowA(cls, text, WS_CHILD | style, 0, 0, 10, 10, app.hwnd, (HMENU)(INT_PTR)id,
-                           GetModuleHandleA(nullptr), nullptr);
-    SendMessageA(h, WM_SETFONT, (WPARAM)(id == ID_TITLE ? app.titleFont : app.font), TRUE);
-    app.controls.push_back({id, h});
-}
-
-static void createControls() {
-    app.font = CreateFontA(24, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
-    app.titleFont = CreateFontA(56, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
-    app.panelFont = CreateFontA(18, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
-    app.panelBold = CreateFontA(18, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Segoe UI");
-    // Marker text is drawn without antialiasing on purpose: the overlay has
-    // no alpha channel -- the shader keys on magenta -- so blended edges
-    // would fringe. Crisp small type also suits a map.
-    app.markerFont = CreateFontA(15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
-                                 NONANTIALIASED_QUALITY, 0, "Segoe UI");
-    app.markerBold = CreateFontA(14, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
-                                 NONANTIALIASED_QUALITY, 0, "Segoe UI");
-    app.markBold = CreateFontA(11, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
-                               NONANTIALIASED_QUALITY, 0, "Segoe UI"); // the count in a chip
-    app.bgBrush = CreateSolidBrush(RGB(8, 8, 16));
-    addControl(ID_TITLE, "STATIC", "Human History", SS_CENTER);
-    addControl(ID_STATUS, "STATIC", "", SS_CENTER);
-    addControl(ID_NEW_WORLD, "BUTTON", "New World", BS_PUSHBUTTON);
-    addControl(ID_LOAD_WORLD, "BUTTON", "Load World", BS_PUSHBUTTON);
-    addControl(ID_QUIT, "BUTTON", "Quit", BS_PUSHBUTTON);
-    addControl(ID_LOAD_LIST, "LISTBOX", "", WS_BORDER | WS_VSCROLL | LBS_NOTIFY);
-    addControl(ID_LOAD_CONFIRM, "BUTTON", "Load", BS_PUSHBUTTON);
-    addControl(ID_LOAD_DELETE, "BUTTON", "Delete", BS_PUSHBUTTON);
-    addControl(ID_LOAD_BACK, "BUTTON", "Back", BS_PUSHBUTTON);
-    addControl(ID_SAVE_NAME, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_CENTER);
-    SendMessageA(control(ID_SAVE_NAME), EM_SETLIMITTEXT, 64, 0);
-    addControl(ID_SAVE_WORLD, "BUTTON", "Save World", BS_PUSHBUTTON);
-    addControl(ID_MAIN_MENU, "BUTTON", "Main Menu", BS_PUSHBUTTON);
-    addControl(ID_PAUSE_QUIT, "BUTTON", "Quit Game", BS_PUSHBUTTON);
-    addControl(ID_GEN_SEED_LABEL, "STATIC", "Seed", SS_RIGHT);
-    addControl(ID_GEN_SEED, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL); // not ES_NUMBER: "earth" is a seed
-    addControl(ID_GEN_RANDOM, "BUTTON", "Random", BS_PUSHBUTTON);
-    addControl(ID_GEN_LAND_LABEL, "STATIC", "Land %", SS_RIGHT);
-    addControl(ID_GEN_LAND, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER);
-    addControl(ID_GEN_CONC_LABEL, "STATIC", "Concentration %", SS_RIGHT);
-    addControl(ID_GEN_CONC, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER);
-    addControl(ID_GEN_HINT, "STATIC", "Concentration: 0 = island webs and thin strips, 100 = one massive continent", SS_CENTER);
-    addControl(ID_GEN_CREATE, "BUTTON", "Generate", BS_PUSHBUTTON);
-    addControl(ID_GEN_BACK, "BUTTON", "Back", BS_PUSHBUTTON);
-    addControl(ID_SCALE_LABEL, "STATIC", "", SS_LEFT);
-    addControl(ID_TOOLTIP, "STATIC", "", SS_LEFT | SS_NOPREFIX);
-    addControl(ID_DATE_LABEL, "STATIC", "", SS_RIGHT);
-    addControl(ID_TIME_STEP, "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL);
-    addControl(ID_TIME_GO, "BUTTON", "Advance", BS_PUSHBUTTON);
-    {
-        HWND cb = control(ID_TIME_STEP);
-        for (const char* it : {"1 minute", "1 hour", "1 day", "1 month", "1 year", "10 years", "100 years"})
-            SendMessageA(cb, CB_ADDSTRING, 0, (LPARAM)it);
-        SendMessageA(cb, CB_SETCURSEL, 2, 0); // default: 1 day
-    }
-}
-
-// Map scale bar: a 1/2/5 x 10^n distance whose bar is close to a target
-// width, placed in the bottom-left corner with its label above it.
-const int SCALE_MARGIN = 24;
-struct ScaleBar {
-    double km = 0;
-    int px = 0;
-};
-static ScaleBar chooseScale(double kmPerPixel, int targetPx = 160) {
-    double raw = kmPerPixel * targetPx;
-    double mag = std::pow(10.0, std::floor(std::log10(raw)));
-    double best = mag;
-    for (double m : {1.0, 2.0, 5.0, 10.0})
-        if (m * mag <= raw) best = m * mag;
-    return {best, (int)std::lround(best / kmPerPixel)};
-}
-static std::string scaleText(double km) {
-    char buf[32];
-    if (km >= 1.0) snprintf(buf, sizeof buf, "%g km", km);
-    else snprintf(buf, sizeof buf, "%g m", km * 1000.0);
-    return buf;
-}
-
-// Position and show the controls that belong to the current screen.
-static void layoutControls() {
-    int W = app.cam.width, H = app.cam.height;
-    const int bw = 280, bh = 48, gap = 14;
-    int cx = W / 2 - bw / 2;
-    for (auto& c : app.controls) ShowWindow(c.second, SW_HIDE);
-
-    auto place = [&](int id, int x, int y, int w, int h) {
-        SetWindowPos(control(id), HWND_TOP, x, y, w, h, SWP_SHOWWINDOW);
-    };
-    auto stack = [&](std::initializer_list<int> ids, int top) {
-        int y = top;
-        for (int id : ids) {
-            place(id, cx, y, bw, bh);
-            y += bh + gap;
-        }
-        return y;
-    };
-
-    switch (app.screen) {
-    case Screen::MainMenu:
-        place(ID_TITLE, 0, H / 4 - 40, W, 70);
-        stack({ID_NEW_WORLD, ID_LOAD_WORLD, ID_QUIT}, H / 2 - bh);
-        place(ID_STATUS, 0, H - 60, W, 30);
-        break;
-    case Screen::NewWorldMenu: {
-        place(ID_TITLE, 0, H / 8, W, 70);
-        const int lw = 200, ew = 200, rh = 34, rgap = 16;
-        int x0 = W / 2 - (lw + 12 + ew) / 2;
-        int y = H / 4 + 50;
-        auto row = [&](int label, int edit, int extra) {
-            place(label, x0, y + 4, lw, rh);
-            place(edit, x0 + lw + 12, y, ew, rh);
-            if (extra) place(extra, x0 + lw + 12 + ew + 12, y - 2, 110, rh + 4);
-            y += rh + rgap;
-        };
-        row(ID_GEN_SEED_LABEL, ID_GEN_SEED, ID_GEN_RANDOM);
-        row(ID_GEN_LAND_LABEL, ID_GEN_LAND, 0);
-        row(ID_GEN_CONC_LABEL, ID_GEN_CONC, 0);
-        place(ID_GEN_HINT, 0, y, W, 30);
-        stack({ID_GEN_CREATE, ID_GEN_BACK}, y + 44);
-        place(ID_STATUS, 0, H - 60, W, 30);
-        break;
-    }
-    case Screen::LoadMenu: {
-        place(ID_TITLE, 0, H / 8, W, 70);
-        int listTop = H / 4 + 40, listH = H / 3;
-        place(ID_LOAD_LIST, cx, listTop, bw, listH);
-        stack({ID_LOAD_CONFIRM, ID_LOAD_DELETE, ID_LOAD_BACK}, listTop + listH + gap);
-        place(ID_STATUS, 0, H - 60, W, 30);
-        break;
-    }
-    case Screen::PauseMenu: {
-        int top = H / 2 - 2 * (bh + gap);
-        place(ID_SAVE_NAME, cx, top, bw, 34);
-        int bottom = stack({ID_SAVE_WORLD, ID_MAIN_MENU, ID_PAUSE_QUIT}, top + 34 + gap);
-        place(ID_STATUS, cx - 60, bottom, bw + 120, 30);
-        break;
-    }
-    case Screen::InGame: {
-        place(ID_SCALE_LABEL, SCALE_MARGIN, H - SCALE_MARGIN - 44, 110, 26);
-        // Time stepping, top right: a step-size dropdown and one Advance
-        // button. Temporary evaluation tooling: the simulation is paused
-        // unless stepped. The dropdown's height is the room its open list
-        // gets, not the closed control's height.
-        int cw = 130, bw = 100, th = 32, tg = 6;
-        place(ID_DATE_LABEL, W - cw - bw - 2 * tg - 160, 16, 150, 24);
-        place(ID_TIME_STEP, W - cw - bw - 2 * tg, 12, cw, 220);
-        place(ID_TIME_GO, W - bw - tg, 10, bw, th);
-        break;
-    }
-    }
-}
-
-static void refreshWorldList() {
-    HWND list = control(ID_LOAD_LIST);
-    SendMessageA(list, LB_RESETCONTENT, 0, 0);
-    for (auto& n : listWorlds()) SendMessageA(list, LB_ADDSTRING, 0, (LPARAM)n.c_str());
-    SendMessageA(list, LB_SETCURSEL, 0, 0);
-}
-
-// Name of the world currently selected in the load list, or empty.
-static std::string selectedWorld() {
-    HWND list = control(ID_LOAD_LIST);
-    int sel = (int)SendMessageA(list, LB_GETCURSEL, 0, 0);
-    if (sel < 0) return "";
-    char name[MAX_PATH];
-    SendMessageA(list, LB_GETTEXT, sel, (LPARAM)name);
-    return name;
-}
-
-// Turn whatever was typed into something that is safe as a file name.
-static std::string sanitizeName(std::string n) {
-    const std::string bad = "\\/:*?\"<>|";
-    for (char& ch : n)
-        if (bad.find(ch) != std::string::npos || (unsigned char)ch < 32) ch = '_';
-    size_t a = n.find_first_not_of(" ."), b = n.find_last_not_of(" .");
-    if (a == std::string::npos) return "";
-    return n.substr(a, b - a + 1);
-}
-
-static void setEditNumber(int id, double v, int decimals = 0) {
-    char buf[64];
-    snprintf(buf, sizeof buf, "%.*f", decimals, v);
-    SetWindowTextA(control(id), buf);
-}
-
-static double getEditNumber(int id) {
-    char buf[64];
-    GetWindowTextA(control(id), buf, sizeof buf);
-    return atof(buf);
-}
-
-static void fillNewWorldFields(const World& w) {
-    if (w.earth) SetWindowTextA(control(ID_GEN_SEED), "earth");
-    else setEditNumber(ID_GEN_SEED, (double)w.seed);
-    setEditNumber(ID_GEN_LAND, w.landPercent);
-    setEditNumber(ID_GEN_CONC, w.concentration);
-}
-
-static void setScreen(Screen s) {
+static void setScreen(menus::Screen s) {
     app.screen = s;
-    ShowWindow(control(ID_TOOLTIP), SW_HIDE);
-    if (s != Screen::InGame) closeAllPanels();
+    ShowWindow(menus::control(app.menu, menus::ID_TOOLTIP), SW_HIDE);
+    if (s != menus::Screen::InGame) panels::closeAll(app.panels);
     app.dragging = false;
-    if (s == Screen::LoadMenu) refreshWorldList();
-    if (s == Screen::NewWorldMenu) fillNewWorldFields(app.world);
-    if (s == Screen::PauseMenu) SetWindowTextA(control(ID_SAVE_NAME), app.world.name.c_str());
-    layoutControls();
-    if (app.news) ShowWindow(app.news, s == Screen::InGame ? SW_SHOW : SW_HIDE);
-    if (s == Screen::InGame) { updateDateLabel(); SetFocus(app.hwnd); }
-    if (s == Screen::PauseMenu) {
-        HWND edit = control(ID_SAVE_NAME);
+    if (s == menus::Screen::LoadMenu) menus::refreshWorldList(app.menu, savefile::list());
+    if (s == menus::Screen::NewWorldMenu) menus::fillNewWorldFields(app.menu, app.world);
+    if (s == menus::Screen::PauseMenu)
+        SetWindowTextA(menus::control(app.menu, menus::ID_SAVE_NAME), app.world.name.c_str());
+    menus::layoutControls(app.menu, app.screen, app.cam.width, app.cam.height);
+    if (app.news.wnd) ShowWindow(app.news.wnd, s == menus::Screen::InGame ? SW_SHOW : SW_HIDE);
+    if (s == menus::Screen::InGame) {
+        updateDateLabel();
+        SetFocus(app.hwnd);
+    }
+    if (s == menus::Screen::PauseMenu) {
+        HWND edit = menus::control(app.menu, menus::ID_SAVE_NAME);
         SetFocus(edit);
         SendMessageA(edit, EM_SETSEL, 0, -1);
     }
@@ -1844,30 +110,32 @@ static void setScreen(Screen s) {
 static uint32_t randomSeed() { return (uint32_t)std::random_device{}(); }
 
 static void openNewWorldMenu() {
-    app.world = World{};
+    app.world = world::World{};
     app.world.seed = randomSeed();
-    setStatus("");
-    setScreen(Screen::NewWorldMenu);
+    menus::setStatus(app.menu, "");
+    setScreen(menus::Screen::NewWorldMenu);
 }
 
 static void generateWorld() {
-    World w;
+    world::World w;
     {
         // A seed reading "earth", in any case, is the template globe.
         char sb[64];
-        GetWindowTextA(control(ID_GEN_SEED), sb, sizeof sb);
+        GetWindowTextA(menus::control(app.menu, menus::ID_GEN_SEED), sb, sizeof sb);
         std::string st = sb;
         for (char& ch : st) ch = (char)tolower((unsigned char)ch);
         w.earth = st.find("earth") != std::string::npos;
         w.seed = w.earth ? 1u : (uint32_t)std::clamp(atof(sb), 0.0, 4294967295.0);
     }
-    w.landPercent = (float)std::clamp(getEditNumber(ID_GEN_LAND), 0.0, 100.0);
-    w.concentration = (float)std::clamp(getEditNumber(ID_GEN_CONC), 0.0, 100.0);
+    w.landPercent =
+        (float)std::clamp(menus::getEditNumber(app.menu, menus::ID_GEN_LAND), 0.0, 100.0);
+    w.concentration =
+        (float)std::clamp(menus::getEditNumber(app.menu, menus::ID_GEN_CONC), 0.0, 100.0);
     app.world = w;
     app.genKind = 0;
     app.genState = 1;
     app.genThread = std::thread([] {
-        app.world.build();
+        app.world.build(buildProgress);
         app.genOk = true;
         app.genState = 2;
     });
@@ -1879,786 +147,122 @@ static void finishGeneration() {
     app.genThread.join();
     app.genState = 0;
     if (!app.genOk) {
-        setStatus("Could not load " + app.genName);
+        menus::setStatus(app.menu, "Could not load " + app.genName);
         return;
     }
-    uploadHydrology();
+    textures::uploadAll(app.tex, app.world);
     if (app.genKind == 0) {
         app.cam.lat = 0.35;
         app.cam.lon = 0.0;
         app.cam.altitude = app.cam.maxAltitude();
     }
-    setStatus("");
-    setScreen(Screen::InGame);
+    menus::setStatus(app.menu, "");
+    setScreen(menus::Screen::InGame);
 }
 
 static void onCommand(int id) {
     if (app.genState != 0) return; // generation in progress: only the OS window moves
     switch (id) {
-    case ID_NEW_WORLD: openNewWorldMenu(); break;
-    case ID_GEN_CREATE: generateWorld(); break;
-    case ID_GEN_BACK: setScreen(Screen::MainMenu); break;
-    case ID_GEN_RANDOM: setEditNumber(ID_GEN_SEED, (double)randomSeed()); break;
-    case ID_LOAD_WORLD:
-        setStatus("");
-        setScreen(Screen::LoadMenu);
+    case menus::ID_NEW_WORLD:
+        openNewWorldMenu();
         break;
-    case ID_QUIT:
-    case ID_PAUSE_QUIT: app.running = false; break;
-    case ID_LOAD_BACK: setScreen(Screen::MainMenu); break;
-    case ID_LOAD_CONFIRM: {
-        std::string name = selectedWorld();
+    case menus::ID_GEN_CREATE:
+        generateWorld();
+        break;
+    case menus::ID_GEN_BACK:
+        setScreen(menus::Screen::MainMenu);
+        break;
+    case menus::ID_GEN_RANDOM:
+        menus::setEditNumber(app.menu, menus::ID_GEN_SEED, (double)randomSeed());
+        break;
+    case menus::ID_LOAD_WORLD:
+        menus::setStatus(app.menu, "");
+        setScreen(menus::Screen::LoadMenu);
+        break;
+    case menus::ID_QUIT:
+    case menus::ID_PAUSE_QUIT:
+        app.running = false;
+        break;
+    case menus::ID_LOAD_BACK:
+        setScreen(menus::Screen::MainMenu);
+        break;
+    case menus::ID_LOAD_CONFIRM: {
+        std::string name = menus::selectedWorld(app.menu);
         if (name.empty()) {
-            setStatus("No saved worlds");
+            menus::setStatus(app.menu, "No saved worlds");
             break;
         }
         app.genKind = 1;
         app.genName = name;
         app.genState = 1;
         app.genThread = std::thread([name] {
-            app.genOk = loadWorld(name, app.world, app.cam);
+            app.genOk = savefile::load(name, app.world, app.cam, buildProgress);
             app.genState = 2;
         });
         break;
     }
-    case ID_LOAD_DELETE: {
-        std::string name = selectedWorld();
+    case menus::ID_LOAD_DELETE: {
+        std::string name = menus::selectedWorld(app.menu);
         if (name.empty()) {
-            setStatus("No saved worlds");
+            menus::setStatus(app.menu, "No saved worlds");
             break;
         }
         std::string q = "Delete world \"" + name + "\"? This cannot be undone.";
         if (MessageBoxA(app.hwnd, q.c_str(), "Delete World", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
             break;
-        std::string path = worldsDir() + "\\" + name + ".ibw";
-        setStatus(DeleteFileA(path.c_str()) ? "Deleted " + name : "Could not delete " + name);
-        refreshWorldList();
+        std::string path = savefile::worldsDir() + "\\" + name + ".ibw";
+        menus::setStatus(app.menu, DeleteFileA(path.c_str()) ? "Deleted " + name
+                                                             : "Could not delete " + name);
+        menus::refreshWorldList(app.menu, savefile::list());
         break;
     }
-    case ID_SAVE_WORLD: {
+    case menus::ID_SAVE_WORLD: {
         char buf[128];
-        GetWindowTextA(control(ID_SAVE_NAME), buf, sizeof buf);
-        std::string name = sanitizeName(buf);
+        GetWindowTextA(menus::control(app.menu, menus::ID_SAVE_NAME), buf, sizeof buf);
+        std::string name = menus::sanitizeName(buf);
         if (name.empty()) {
-            setStatus("Enter a name for the world");
+            menus::setStatus(app.menu, "Enter a name for the world");
             break;
         }
         app.world.name = name;
-        SetWindowTextA(control(ID_SAVE_NAME), name.c_str());
-        setStatus(saveWorld(app.world, app.cam) ? "Saved as " + name : "Save failed");
+        SetWindowTextA(menus::control(app.menu, menus::ID_SAVE_NAME), name.c_str());
+        menus::setStatus(app.menu,
+                         savefile::save(app.world, app.cam) ? "Saved as " + name : "Save failed");
         break;
     }
-    case ID_TIME_GO: {
+    case menus::ID_TIME_GO: {
         static const double stepDays[] = {1.0 / 1440.0, 1.0 / 24.0, 1.0, 30.0, 365.0, 3650.0, 36500.0};
-        int sel = (int)SendMessageA(control(ID_TIME_STEP), CB_GETCURSEL, 0, 0);
+        int sel =
+            (int)SendMessageA(menus::control(app.menu, menus::ID_TIME_STEP), CB_GETCURSEL, 0, 0);
         if (sel >= 0 && sel < 7) advanceDays(stepDays[sel]);
         SetFocus(app.hwnd);
         break;
     }
-    case ID_MAIN_MENU:
-        setStatus("");
-        setScreen(Screen::MainMenu);
+    case menus::ID_MAIN_MENU:
+        menus::setStatus(app.menu, "");
+        setScreen(menus::Screen::MainMenu);
         break;
     }
 }
 
-// What is under the cursor, from the CPU mirror of the terrain function.
-static const char* SUBSTRATE_NAMES[] = {"soil", "sand", "rock", "scree", "silt", "mud", "ice"};
-static const char* COVER_NAMES[] = {"bare", "tundra", "taiga", "forest", "rainforest", "grassland",
-                                    "steppe", "savanna", "shrubland", "marsh", "desert"};
-
-// "forest 68%, grassland 22%, rock 10%": cover fractions, with bare ground
-// named by its substrate, largest first, down to 5%.
-static std::string describeMixture(const terrain::Mixture& m) {
-    std::vector<std::pair<float, std::string>> parts;
-    for (int i = 1; i < terrain::NCOV; i++) parts.push_back({m.cov[i], COVER_NAMES[i]});
-    for (int i = 0; i < terrain::NSUB; i++) parts.push_back({m.cov[0] * m.sub[i], SUBSTRATE_NAMES[i]});
-    std::sort(parts.begin(), parts.end(), [](auto& a, auto& b) { return a.first > b.first; });
-    std::string out;
-    for (auto& p : parts) {
-        if (p.first < 0.05f || out.size() > 60) break;
-        char b[48];
-        snprintf(b, sizeof b, "%s%s %d%%", out.empty() ? "" : ", ", p.second.c_str(), (int)std::lround(p.first * 100));
-        out += b;
-    }
-    return out;
-}
-
-static std::string describePoint(Vec3 n) {
-    const World& wd = app.world;
-    terrain::V3 nf = {(float)n.x, (float)n.y, (float)n.z};
-    terrain::V3 off = {(float)wd.offset.x, (float)wd.offset.y, (float)wd.offset.z};
-    float h = terrain::heightMeters(terrain::rotate(wd.rot, nf) + off, nf, wd.cp, wd.seaLevel, app.octaves,
-                                    wd.plateField, wd.rot);
-    float lat = (float)std::asin(std::clamp(n.z, -1.0, 1.0));
-    float lon = (float)std::atan2(n.y, n.x);
-    terrain::V3 wDerive = terrain::rotate(wd.rot, nf) + off;
-    // Annual mean drives the mixture (biomes don't change by the hour);
-    // the displayed temperature is the current one: seasonal mean plus the
-    // diurnal swing phased to local solar time (peak ~14:00).
-    atmosphere::DerivedClimate dcTip = atmosphere::deriveAt(wd.clim, lat, lon, wDerive, h);
-    float temp = dcTip.temp;
-    float tempNow = temp;
-    if (!wd.clim.meanT.empty()) {
-        float tSeason = sim::seasonalT(wd.clim, nf, std::max(h, 0.0f), wd.simTime);
-        float amp = atmosphere::seasonalAt(wd.clim.diurnal, atmosphere::climFuzz(nf), wd.simTime);
-        double tod = fmod(wd.simTime, 1.0);
-        double hLoc = fmod(lon * (12.0 / PI) + 24.0 * tod + 48.0, 24.0);
-        tempNow = tSeason + 0.5f * amp * (float)cos(2 * PI * (hLoc - 14.0) / 24.0);
-    }
-    char buf[240];
-    auto fmtM = [](float m) {
-        char b[32];
-        snprintf(b, sizeof b, "%d m", (int)std::lround(m));
-        return std::string(b);
-    };
-    // Climatology at the cursor, season-interpolated: shown for sea, lake, and land.
-    char climTxt[48] = "";
-    if (!wd.clim.rainMmDay.empty()) {
-        int ax = (int)(((lon + PI) / (2 * PI)) * atmosphere::W) % atmosphere::W;
-        int ay = std::clamp((int)(((lat + PI / 2) / PI) * atmosphere::H), 0, atmosphere::H - 1);
-        double sf = fmod(wd.simTime, 365.0) / 365.0 * 4.0 - 0.5;
-        int s0 = ((int)std::floor(sf) % 4 + 4) % 4, s1 = (s0 + 1) % 4;
-        double f = sf - std::floor(sf);
-        int i0 = s0 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
-        int i1 = s1 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
-        double rain = wd.clim.rainMmDay[i0] * (1 - f) + wd.clim.rainMmDay[i1] * f;
-        double snow = wd.clim.snowMmDay[i0] * (1 - f) + wd.clim.snowMmDay[i1] * f;
-        if (snow > 0.5 * rain && rain > 0.05)
-            snprintf(climTxt, sizeof climTxt, "  |  snow %.1f mm/d", rain);
-        else
-            snprintf(climTxt, sizeof climTxt, "  |  rain %.1f mm/d", rain);
-    }
-
-    if (h < 0) {
-        bool frozen = sim::seasonalT(wd.clim, nf, 0.0f, wd.simTime) < sim::FROZEN_T;
-        snprintf(buf, sizeof buf, "Sea%s, %s deep  |  %.0f C%s", frozen ? " (frozen)" : "",
-                 fmtM(-h).c_str(), tempNow, climTxt);
-        return buf;
-    }
-    // Lake: below the level of any adjacent lake cell (same rule as the shader).
-    int cx = (int)std::floor((lon + PI) / (2 * PI) * hydrology::W), cy = (int)std::floor((lat + PI / 2) / PI * hydrology::H);
-    cx = hydrology::wrapX(cx);
-    cy = std::clamp(cy, 0, hydrology::H - 1);
-    // A building under the cursor names itself: same marker positions the
-    // shader draws (sim::granaryPos, defined once), pick radius = draw
-    // radius plus ~3 px of slop.
-    std::string building;
-    {
-        float pickR = (float)std::clamp(app.cam.kmPerPixel() * 4.0, 1.5, 6.0) +
-                      (float)(app.cam.kmPerPixel() * 3.0);
-        for (const population::Field::Ruin& r : wd.pop.ruins)
-            if (sim::distKm(nf, sim::cellCentre(r.cell)) < pickR) {
-                char rb[64];
-                if (r.name[0])
-                    snprintf(rb, sizeof rb, "Ruins of %s, abandoned year %d  |  ", r.name,
-                             (int)(r.abandoned / 365.0) + 1);
-                else
-                    snprintf(rb, sizeof rb, "Ruins, abandoned year %d  |  ",
-                             (int)(r.abandoned / 365.0) + 1);
-                building = rb;
-                break;
-            }
-    }
-    if (building.empty() && !wd.pop.settlementAt.empty()) {
-        float pickR = (float)std::clamp(app.cam.kmPerPixel() * 2.0, 0.6, 2.5) +
-                      (float)(app.cam.kmPerPixel() * 3.0);
-        for (int dy = -1; dy <= 1 && building.empty(); dy++)
-            for (int dx = -1; dx <= 1 && building.empty(); dx++) {
-                int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
-                int cell = yy * hydrology::W + hydrology::wrapX(cx + dx);
-                int si = wd.pop.settlementAt[cell];
-                if (si < 0) continue;
-                const population::Settlement& st = wd.pop.settlements[si];
-                for (int k = 0; k < (int)(st.granaries + 0.5f) && k < 8; k++)
-                    if (sim::distKm(nf, sim::granaryPos(st.cell, k)) < pickR) {
-                        building = "Granary  |  ";
-                        break;
-                    }
-            }
-    }
-    if (building.empty() && !wd.pop.settlementAt.empty()) {
-        // Farmsteads stand kilometres from their village, so the search box
-        // has to reach further than the granaries' one-cell ring.
-        float pickR = (float)std::clamp(app.cam.kmPerPixel() * 2.0, 0.6, 2.5) +
-                      (float)(app.cam.kmPerPixel() * 3.0);
-        float lat = std::asin(std::clamp(nf.z, -1.0f, 1.0f));
-        int rx = std::min((int)std::ceil(1.6f / std::max(std::cos(lat), 0.05f)) + 1,
-                          hydrology::W / 2);
-        for (int dy = -2; dy <= 2 && building.empty(); dy++)
-            for (int dx = -rx; dx <= rx && building.empty(); dx++) {
-                int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
-                int cell = yy * hydrology::W + hydrology::wrapX(cx + dx);
-                int si = wd.pop.settlementAt[cell];
-                if (si < 0) continue;
-                const population::Settlement& st = wd.pop.settlements[si];
-                for (int k = 0;
-                     k < (int)(st.farmsteads + 0.5f) && k < population::FSTEAD_MAX; k++)
-                    if (sim::distKm(nf, sim::farmsteadPos(st.cell, k)) < pickR) {
-                        char fb[64];
-                        snprintf(fb, sizeof fb, "Farmstead of %s  |  ", st.name);
-                        building = fb;
-                        break;
-                    }
-            }
-    }
-    if (building.empty() && !wd.pop.settlementAt.empty() && app.cam.kmPerPixel() < 4.0) {
-        // Fields: the same annulus the shader draws, so what the cursor
-        // names and what the eye sees are one definition.
-        for (int dy = -1; dy <= 1 && building.empty(); dy++)
-            for (int dx = -1; dx <= 1 && building.empty(); dx++) {
-                int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
-                int cell = yy * hydrology::W + hydrology::wrapX(cx + dx);
-                int si = wd.pop.settlementAt[cell];
-                if (si < 0) continue;
-                const population::Settlement& st = wd.pop.settlements[si];
-                float fr = sim::farmRadiusKm(st, wd.simTime);
-                float d = sim::distKm(nf, sim::cellCentre(st.cell));
-                float inner = sim::fieldInnerKm(st.P);
-                if (fr > inner && d < fr && d > inner) {
-                    char fb[64];
-                    snprintf(fb, sizeof fb, "Fields of %s  |  ", st.name);
-                    building = fb;
-                }
-            }
-    }
-    bool nearRiver = false;
-    if (!wd.hydro.cells.empty()) {
-        const hydrology::Cell& c = wd.hydro.cells[cy * hydrology::W + cx];
-        nearRiver = c.nearRiver > 0.5f;
-        float lake = hydrology::NO_LAKE;
-        for (int dy = -1; dy <= 1; dy++)
-            for (int dx = -1; dx <= 1; dx++) {
-                int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
-                lake = std::max(lake, wd.hydro.cells[yy * hydrology::W + hydrology::wrapX(cx + dx)].lakeLevel);
-            }
-        if (lake > hydrology::NO_LAKE + 1 && h < lake + 12.0f) {
-            bool frozen = sim::seasonalT(wd.clim, nf, h, wd.simTime) < sim::FROZEN_T;
-            snprintf(buf, sizeof buf, "Lake%s, %s deep  |  %.0f C%s", frozen ? " (frozen)" : "",
-                     fmtM(lake + 12.0f - h).c_str(), tempNow, climTxt);
-            return buf;
-        }
-    }
-    terrain::V3 w = wDerive;
-    float moist = dcTip.moist;
-    float slope = terrain::slopeAt(nf, wd.cp, wd.seaLevel, std::min(app.octaves, 12), wd.plateField, wd.rot, off);
-    float uplift = wd.plateField.sample({nf.x, nf.y, nf.z}).uplift;
-    terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift, nearRiver, terrain::patchNoise(w),
-                                            dcTip.swamp, dcTip.tCold, dcTip.tWarm);
-    std::string extra;
-    if (!wd.pop.K.empty()) {
-        int ci = cy * hydrology::W + cx;
-        if (wd.pop.K[ci] > 0) {
-            char b[72];
-            char gameB[24] = "";
-            if (!wd.pop.gameG.empty() && wd.pop.kGameMap[ci] > 0) {
-                float g = wd.pop.gameG[population::gameRegion(ci)];
-                if (g < 0.98f)
-                    snprintf(gameB, sizeof gameB, "  |  game %d%%", (int)std::lround(g * 100));
-            }
-            snprintf(b, sizeof b, "  |  capacity %d%s",
-                     (int)(wd.pop.K[ci] * population::SUSTAIN_R), gameB);
-            extra = b;
-        }
-    }
-    snprintf(buf, sizeof buf, "%s%s  |  %.0f C  |  %s%s%s", building.c_str(), fmtM(h).c_str(),
-             tempNow, describeMixture(m).c_str(), climTxt, extra.c_str());
-    return buf;
-}
-
-inline int newsWidth(); // defined with the news feed, below
-
 static void updateTooltip(int x, int y) {
-    HWND tip = control(ID_TOOLTIP);
-    Vec3 hit;
-    if (app.screen != Screen::InGame || !app.cam.hitSphere(x, y, hit)) {
+    HWND tip = menus::control(app.menu, menus::ID_TOOLTIP);
+    camera::Vec3 hit;
+    if (app.screen != menus::Screen::InGame || !app.cam.hitSphere(x, y, hit)) {
         ShowWindow(tip, SW_HIDE);
         return;
     }
-    std::string txt = describePoint(hit);
-    SetWindowTextA(tip, txt.c_str());
-    int wdt = 12 + (int)txt.size() * 9;
+    char txt[240];
+    inspect::describePoint(app.world, app.cam, app.octaves, hit, txt, sizeof txt);
+    SetWindowTextA(tip, txt);
+    int wdt = 12 + (int)strlen(txt) * 9;
     // Keep clear of the news feed: the tooltip follows the cursor, and the
     // feed is a window above it, so an unclamped label hides two lines of news.
-    int right = app.cam.width - (app.news && IsWindowVisible(app.news) ? newsWidth() : 0) - 4;
+    int right = app.cam.width -
+                (app.news.wnd && IsWindowVisible(app.news.wnd) ? news::width(app.news) : 0) - 4;
     int tx = std::min(x + 18, right - wdt), ty = y + 22;
     if (ty + 26 > app.cam.height) ty = y - 30;
     SetWindowPos(tip, HWND_TOP, tx, ty, wdt, 26, SWP_SHOWWINDOW | SWP_NOACTIVATE);
-}
-
-// ------------------------------------------------ selection detail panels
-// Custom-painted tabbed windows. Layout constants shared by painting and
-// hit-testing; tab hit slots are fixed x-ranges so no text measuring is
-// needed to route a click.
-
-constexpr int PANEL_W = 470, PANEL_H = 330, PANEL_BAND_H = 260;
-constexpr int PANEL_PAD = 12, PANEL_TAB_Y = 36, PANEL_TAB_H = 24, PANEL_CONTENT_Y = 70,
-              PANEL_LINE_H = 21;
-// Slot starts, plus the right edge as a final entry: painting draws each
-// label at its slot and hit-testing takes the span up to the next, so the
-// two cannot disagree.
-static const int PANEL_TAB_X[6] = {12, 74, 176, 270, 356, 420};
-static const char* PANEL_TABS[5] = {"People", "Environment", "Technology", "Buildings",
-                                    "History"};
-constexpr int PANEL_NTABS = 5;
-enum : int { TAB_PEOPLE = 0, TAB_ENV, TAB_TECH, TAB_BUILT, TAB_HISTORY };
-static const char* TECH_NAMES[population::NTECH] = {"Farming", "Husbandry",
-                                                   "Granary building", "Archery", "Fishing"};
-
-// Settlements are erased when they pick up and leave, so panels hold an id
-// and resolve the index whenever they draw.
-static int settlementIndexById(uint32_t sid) {
-    const std::vector<population::Settlement>& v = app.world.pop.settlements;
-    for (int i = 0; i < (int)v.size(); i++)
-        if (v[i].id == sid) return i;
-    return -1;
-}
-
-static std::string fmtYears(double yr) {
-    char b[32];
-    if (yr >= 100000) return "100k+ yr";
-    if (yr >= 1000) snprintf(b, sizeof b, "%.1fk yr", yr / 1000.0);
-    else snprintf(b, sizeof b, "%.0f yr", yr);
-    return b;
-}
-
-static std::string techStateLine(const population::TechState& ts, int techId, double now) {
-    if (!ts.practising)
-        return std::string(TECH_NAMES[techId]) + (ts.aware ? ": known, not practised" : ": unknown");
-    char b[64];
-    snprintf(b, sizeof b, "%s: practising, expertise %d%%", TECH_NAMES[techId],
-             (int)std::lround(technology::expertise(ts, now) * 100));
-    return b;
-}
-
-// Who these people are, what they believe themselves good at, and what
-// they have to hand. The land they live on is the next tab along.
-static std::string peopleText(const population::Settlement& st) {
-    const World& wd = app.world;
-    double now = wd.simTime;
-    char b[128];
-    std::string out;
-    snprintf(b, sizeof b, "People: %d (capacity %d)\n", (int)st.P,
-             (int)(technology::effectiveK(st, now) * population::SUSTAIN_R));
-    out += b;
-    snprintf(b, sizeof b, "  %d men, %d women, %d children, %d elderly\n", (int)st.pop.M,
-             (int)st.pop.W, (int)st.pop.C, (int)st.pop.E);
-    out += b;
-    if (st.culture < wd.pop.cultures.size()) {
-        snprintf(b, sizeof b, "A people of the %s\n", wd.pop.cultures[st.culture].name);
-        out += b;
-    }
-    {
-        struct { const char* n; float v; } af[5] = {
-            {"hunting", st.aff.hunt},   {"gathering", st.aff.gather}, {"farming", st.aff.farm},
-            {"herding", st.aff.herd},   {"fighting", st.aff.fight}};
-        int bi = 0;
-        for (int i = 1; i < 5; i++)
-            if (af[i].v > af[bi].v) bi = i;
-        if (af[bi].v > 0.05f) {
-            snprintf(b, sizeof b, "Known for: %s (%d%%)\n", af[bi].n,
-                     (int)std::lround(af[bi].v * 100));
-            out += b;
-        }
-    }
-    if (st.starvedYr >= 0.5f) {
-        snprintf(b, sizeof b, "Hunger: %d lost this year\n", (int)std::lround(st.starvedYr));
-        out += b;
-    }
-    if (st.coldYr >= 0.5f) {
-        snprintf(b, sizeof b, "  of them to cold hearths: %d\n", (int)std::lround(st.coldYr));
-        out += b;
-    }
-    out += "\n";
-    out += "What they carry:\n";
-    snprintf(b, sizeof b, "  Food: %d days (of %d)\n", (int)(st.S / std::max(st.P, 1.0f)),
-             (int)population::storageCapDays(st.P, st.granaries));
-    out += b;
-    snprintf(b, sizeof b, "  Bows: %d (%d%% of hunters)\n", (int)st.bows,
-             (int)std::lround(population::bowCoverage(st.bows, st.P) * 100));
-    out += b;
-    if (st.herd > 0.5f) {
-        snprintf(b, sizeof b, "  Livestock: feeds %d\n", (int)st.herd);
-        out += b;
-    }
-    {
-        float need = population::fuelNeedKg(population::cachedSeasonT(st, now)) *
-                     std::max(st.P, 1.0f);
-        snprintf(b, sizeof b, "  Firewood: %d days at this season\n",
-                 (int)(st.fuelS / std::max(need, 1.0f)));
-        out += b;
-    }
-    return out;
-}
-
-static std::string envText(const population::Settlement& st) {
-    const World& wd = app.world;
-    double now = wd.simTime;
-    terrain::V3 n = sim::cellCentre(st.cell);
-    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
-    float lon = std::atan2(n.y, n.x) * 180.0f / 3.14159265f;
-    float awareKm = population::settlementAwareKm(now - st.founded,
-                                                  sim::prominenceM(wd.hydro, wd.clim, st.cell));
-    char b[128];
-    std::string out;
-    snprintf(b, sizeof b, "%.1f%c  %.1f%c\n", std::fabs(lat), lat >= 0 ? 'N' : 'S',
-             std::fabs(lon), lon >= 0 ? 'E' : 'W');
-    out += b;
-    snprintf(b, sizeof b, "Settled year %d\n", (int)(st.founded / 365.0) + 1);
-    out += b;
-    snprintf(b, sizeof b, "Land condition: %d%%\n", (int)std::lround(st.R * 100));
-    out += b;
-    {
-        float lo = 1e9f, hi = 0;
-        for (int k = 0; k < population::CLAIM_SECTORS; k++) {
-            lo = std::min(lo, st.claim[k]);
-            hi = std::max(hi, st.claim[k]);
-        }
-        float want = sim::wantedReachKm(wd.pop, st.cell, st.P, st.R);
-        const char* state = hi >= population::CLAIM_CAP_KM - 0.01f ? "all one place can reach"
-                            : want > hi + 0.01f                   ? "pressing outward"
-                                                                  : "as much as they need";
-        snprintf(b, sizeof b, "Territory: %d-%d km, %d km2 worked -- %s\n",
-                 (int)std::lround(lo), (int)std::lround(hi), (int)std::lround(st.claimKm2), state);
-        out += b;
-    }
-    if (st.kFish > 0) {
-        float ex = technology::expertise(st.tech[population::TECH_FISHING], now);
-        float fish = st.kFish * population::fishEff(ex);
-        float k = technology::effectiveK(st, now);
-        snprintf(b, sizeof b, "Water: feeds %d%s (%d%% of the food)\n", (int)std::lround(fish),
-                 st.tech[population::TECH_FISHING].practising ? ", weirs and nets" : ", by hand",
-                 (int)std::lround(fish / std::max(k, 1.0f) * 100));
-        out += b;
-    }
-    if (st.kGame > 0) {
-        float plantF = st.kFoodP - st.kGame;
-        float gameF = st.kGame * population::huntEff(st.gameNow);
-        int dietG = (int)std::lround(gameF / std::max(plantF + gameF, 1e-6f) * 100);
-        snprintf(b, sizeof b, "Wild game: %d%%%s (diet %d%% game)\n",
-                 (int)std::lround(st.gameNow * 100),
-                 st.gameNow < population::GAME_FLOOR ? " -- gone" : "", dietG);
-        out += b;
-    }
-    snprintf(b, sizeof b, "Farm suitability: %d%%   pasture: %d%%\n",
-             (int)std::lround(st.sFarm * 100), (int)std::lround(st.pasture * 100));
-    out += b;
-    snprintf(b, sizeof b, "Build materials: %d%%\n", (int)std::lround(st.buildMat * 100));
-    out += b;
-    snprintf(b, sizeof b, "Woodland: %d%%\n", (int)std::lround(st.sWood * 100));
-    out += b;
-    if (st.labFuel > 0.005f) {
-        snprintf(b, sizeof b, "Woodcutters: %d%% of the day's labour\n",
-                 (int)std::lround(st.labFuel * 100));
-        out += b;
-    }
-    snprintf(b, sizeof b, "Awareness: %d km\n", (int)awareKm);
-    out += b;
-    if (st.scarceSince >= 0) {
-        snprintf(b, sizeof b, "Scarce since year %d%s\n", (int)(st.scarceSince / 365.0) + 1,
-                 st.noProspect ? " -- nowhere to go" : "");
-        out += b;
-    }
-    return out;
-}
-
-// Everything that happened to these people during the step just taken --
-// the same events the news feed groups, filtered to this settlement.
-static std::string historyText(const population::Settlement& st) {
-    std::string out;
-    char b[160];
-    int shown = 0;
-    for (const population::Event& e : app.world.pop.events) {
-        if (e.sid != st.id && e.sid2 != st.id) continue;
-        if (++shown > 11) {
-            out += "  ...\n";
-            break;
-        }
-        snprintf(b, sizeof b, "%d: %s\n", (int)(e.t / 365.0) + 1, e.text);
-        out += b;
-        if (e.lossHere > 0 || e.lossThem > 0) {
-            // Whose dead are whose depends on which side of it you are.
-            bool theirs = e.sid != st.id;
-            snprintf(b, sizeof b, "   %d of theirs dead, %d of ours\n",
-                     (int)std::lround(theirs ? e.lossHere : e.lossThem),
-                     (int)std::lround(theirs ? e.lossThem : e.lossHere));
-            out += b;
-        }
-    }
-    if (!shown) out += "Nothing happened to them this step.\n";
-    return out;
-}
-
-// The exact numbers behind one technology's chances here: invention weight,
-// contact odds, and every adoption gate, with the blocked one named.
-static std::string techDetailText(const population::Settlement& st, int idx, int t) {
-    const World& wd = app.world;
-    double now = wd.simTime;
-    char b[160];
-    std::string out = "< back\n";
-    const population::TechState& ts = st.tech[t];
-    out += TECH_NAMES[t];
-    out += ts.practising ? " -- practising" : ts.aware ? " -- known, not practised" : " -- unknown";
-    out += "\n";
-    if (ts.practising) {
-        snprintf(b, sizeof b, "Expertise %d%% since year %d\n(matures toward 100%% over ~50 yr)\n",
-                 (int)std::lround(technology::expertise(ts, now) * 100),
-                 (int)(ts.practiceT / 365.0) + 1);
-        out += b;
-        return out;
-    }
-    if (!ts.aware) {
-        if (technology::needDriven(t)) {
-            float years =
-                t == population::TECH_FARMING
-                    ? (st.hungrySince >= 0 ? (float)((now - st.hungrySince) / 365.0) : 0.0f)
-                    : st.granNeedYrs;
-            float acute = std::clamp((years - technology::NEED_YEARS_ON) /
-                                         (technology::NEED_YEARS_SAT - technology::NEED_YEARS_ON),
-                                     0.0f, 1.0f);
-            float w = technology::needWeight(st, t, now);
-            double W = 0;
-            for (const population::Settlement& o : wd.pop.settlements)
-                W += technology::needWeight(o, t, now);
-            out += "Invention, driven by need:\n";
-            snprintf(b, sizeof b, " %s %.1f yr -> desperation %d%%\n",
-                     t == population::TECH_FARMING ? "hungry" : "stores binding", years,
-                     (int)std::lround(acute * 100));
-            out += b;
-            snprintf(b, sizeof b, " suitability %d%%, people x%.2f\n",
-                     (int)std::lround(technology::suitability(st, t) * 100),
-                     std::min(st.P / 300.0f, 3.0f));
-            out += b;
-            if (W > 0) {
-                snprintf(b, sizeof b, " weight %.2f of world %.1f (share %d%%)\n", w, W,
-                         (int)std::lround(w / W * 100));
-                out += b;
-                snprintf(b, sizeof b, " world mean %s\n",
-                         fmtYears(technology::NEED_MEAN_YEARS / std::sqrt(W)).c_str());
-                out += b;
-            } else
-                out += " nobody in the world needs it yet\n";
-        } else {
-            double unaware = 0, total = 0;
-            for (const population::Settlement& o : wd.pop.settlements) {
-                total += o.P;
-                if (!o.tech[t].aware) unaware += o.P;
-            }
-            double share = total > 0 ? unaware / total : 0;
-            out += "Invention, serendipity:\n";
-            snprintf(b, sizeof b, " unaware share %d%% -> world mean %s\n",
-                     (int)std::lround(share * 100),
-                     share > 0 ? fmtYears(technology::INVENT_MEAN_YEARS / share).c_str() : "never");
-            out += b;
-        }
-        int knowing = 0;
-        for (int j : wd.pop.neighbours[idx]) knowing += wd.pop.settlements[j].tech[t].aware ? 1 : 0;
-        if (knowing)
-            snprintf(b, sizeof b, "Hearing of it: %d neighbour%s -> mean %.1f yr\n", knowing,
-                     knowing == 1 ? " knows it" : "s know it",
-                     technology::AWARE_MEAN_YEARS / knowing);
-        else
-            snprintf(b, sizeof b, "Hearing of it: nobody within %d km knows\n",
-                     (int)population::CONTACT_KM);
-        out += b;
-        return out;
-    }
-    float suit = technology::suitability(st, t);
-    float need = technology::adoptionNeed(st, t, now);
-    float esum = 0;
-    int teachers = 0;
-    for (int j : wd.pop.neighbours[idx]) {
-        float e = technology::expertise(wd.pop.settlements[j].tech[t], now);
-        if (e > 0) { esum += e; teachers++; }
-    }
-    float phi = st.P > 1 ? technology::effectiveK(st, now) * st.R / st.P : 2.0f;
-    out += "Adoption gates (all must be open):\n";
-    snprintf(b, sizeof b, " suitable ground: %d%%%s\n", (int)std::lround(suit * 100),
-             suit <= 0 ? "  <- BLOCKED" : "");
-    out += b;
-    if (t == population::TECH_GRANARY)
-        snprintf(b, sizeof b, " need: %d%% (stores bound %.0f yr running)%s\n",
-                 (int)std::lround(need * 100), st.granNeedYrs, need <= 0 ? "  <- BLOCKED" : "");
-    else
-        snprintf(b, sizeof b, " need: %d%% (phi %.2f, content at 1.11)%s\n",
-                 (int)std::lround(need * 100), phi, need <= 0 ? "  <- BLOCKED" : "");
-    out += b;
-    snprintf(b, sizeof b, " teachers in %d km: %d, expertise sum %.2f%s\n",
-             (int)population::CONTACT_KM, teachers, esum, esum <= 0 ? "  <- BLOCKED" : "");
-    out += b;
-    double rate = (double)suit * need * esum;
-    if (rate > 0)
-        snprintf(b, sizeof b, "-> mean wait %s\n",
-                 fmtYears(technology::PRACT_MEAN_YEARS / rate).c_str());
-    else
-        snprintf(b, sizeof b, "-> will not adopt until unblocked\n");
-    out += b;
-    return out;
-}
-
-static std::string buildingsText(const population::Settlement& st, double now) {
-    char b[96];
-    std::string out;
-    if (st.granaries > 0.5f) snprintf(b, sizeof b, "Granaries: %d\n", (int)st.granaries);
-    else snprintf(b, sizeof b, "Granaries: none\n");
-    out += b;
-    if (st.buildWork > 0) {
-        snprintf(b, sizeof b, "Under construction: %d%% done\n",
-                 (int)std::lround((1.0 - st.buildWork / population::GRANARY_WORK) * 100));
-        out += b;
-    }
-    snprintf(b, sizeof b, "Storage: %d + %d days per person\n",
-             (int)population::CAP_DAYS_SETTLED,
-             (int)(population::storageCapDays(st.P, st.granaries) - population::CAP_DAYS_SETTLED));
-    out += b;
-    if (st.farmsteads > 0.5f) {
-        snprintf(b, sizeof b, "Farmsteads: %d\n", (int)st.farmsteads);
-        out += b;
-    }
-    if (st.fsteadWork > 0) {
-        snprintf(b, sizeof b, "Farmstead going up: %d%% done\n",
-                 (int)std::lround((1.0 - st.fsteadWork / population::FSTEAD_WORK) * 100));
-        out += b;
-    }
-    if (st.tech[population::TECH_FARMING].practising) {
-        float sum = 0;
-        for (int k = 0; k <= population::FSTEAD_MAX; k++) sum += st.tilled[k];
-        if (sum > 0.05f) {
-            snprintf(b, sizeof b, "Fields: %.1f km2 tilled (%.1f at the village)\n", sum,
-                     st.tilled[0]);
-            out += b;
-            snprintf(b, sizeof b, "  feeding %d at their skill\n",
-                     (int)(st.farmK *
-                           technology::expertise(st.tech[population::TECH_FARMING], now)));
-            out += b;
-        }
-        if (st.tillWork > 0) {
-            snprintf(b, sizeof b, "Clearing a plot%s: %d%% done\n",
-                     st.tillSite > 0 ? " at a farmstead" : "",
-                     (int)std::lround(
-                         (1.0 - st.tillWork / (population::PLOT_KM2 *
-                                               population::TILL_WORK_PER_KM2)) * 100));
-            out += b;
-        }
-    }
-    const population::TechState& gt = st.tech[population::TECH_GRANARY];
-    if (gt.practising) {
-        snprintf(b, sizeof b, "Build pace: craft %d%% x materials %d%%\n",
-                 (int)std::lround(technology::expertise(gt, now) * 100),
-                 (int)std::lround(st.buildMat * 100));
-        out += b;
-        if (st.buildWork <= 0) out += "No build under way: stores have\nnot both filled and drained.\n";
-    } else if (gt.aware)
-        out += "(knows the craft is possible,\nhas not learned it)\n";
-    else
-        out += "(granary building unknown here)\n";
-    return out;
-}
-
-static std::string bandText(uint32_t bandId) {
-    const World& wd = app.world;
-    double now = wd.simTime;
-    for (const population::Band& bd : wd.pop.bands)
-        if (bd.id == bandId) {
-            char b[128];
-            std::string out;
-            float away = sim::distKm({bd.px, bd.py, bd.pz}, sim::cellCentre(bd.targetCell));
-            double rest = bd.resting ? now - bd.restStart : 0.0;
-            float awareKm = population::bandAwareKm(
-                rest, sim::prominenceM(wd.hydro, wd.clim, sim::cellOf({bd.px, bd.py, bd.pz})));
-            if (bd.purpose == population::BAND_RAID)
-                snprintf(b, sizeof b,
-                         "Raiding party\nPeople: %d\nState: %s\n%s: %d km away\n"
-                         "Carrying: %d rations, %d livestock\n",
-                         (int)bd.P, bd.returning ? "homeward" : "outward",
-                         bd.returning ? "Home" : "Their mark", (int)away, (int)bd.loot,
-                         (int)bd.lootHerd);
-            else
-                snprintf(b, sizeof b, "People: %d\nStores: %d days\nState: %s\nTarget: %d km away\n",
-                         (int)bd.P, (int)(bd.S / std::max(bd.P, 1.0f)),
-                         bd.resting ? "resting" : "moving", (int)away);
-            out += b;
-            for (int t = 0; t < population::NTECH; t++)
-                out += techStateLine(bd.tech[t], t, now) + "\n";
-            snprintf(b, sizeof b, "Awareness: %d km\n", (int)awareKm);
-            out += b;
-            return out;
-        }
-    return "No longer on the move:\nsettled, merged, or perished.";
-}
-
-static std::string panelContent(const Panel& pn) {
-    if (pn.kind == 1) return bandText(pn.bandId);
-    int idx = settlementIndexById(pn.sid);
-    if (idx < 0) return "This settlement is gone:\nthey picked up and moved on.";
-    const population::Settlement& st = app.world.pop.settlements[idx];
-    if (pn.tab == TAB_PEOPLE) return peopleText(st);
-    if (pn.tab == TAB_ENV) return envText(st);
-    if (pn.tab == TAB_BUILT) return buildingsText(st, app.world.simTime);
-    if (pn.tab == TAB_HISTORY) return historyText(st);
-    if (pn.techSel >= 0) return techDetailText(st, idx, pn.techSel);
-    std::string out;
-    for (int t = 0; t < population::NTECH; t++)
-        out += techStateLine(st.tech[t], t, app.world.simTime) + "\n";
-    out += "\n(click a technology for details)";
-    return out;
-}
-
-static Panel* panelFor(HWND h) {
-    for (Panel& p : app.panels)
-        if (p.wnd == h) return &p;
-    return nullptr;
-}
-
-// ------------------------------------------------ the news feed
-// What happened while the clock was running, grouped by kind: click a
-// group to see its entries, an entry to see the detail, and "Go to" to
-// put the camera on whoever it happened to.
-
-constexpr int NEWS_W = 320, NEWS_LINE = 20, NEWS_TOP = 40;
-// Collapsed, the feed is a tab just wide enough for the chevron and a
-// three-character count, and wide enough to be an easy click target.
-constexpr int NEWS_TAB_W = 34;
-// The chevron sits in the top-right of the open panel. Its hit box must
-// stay clear of the title, which is the way back up a level -- these two
-// x-ranges are the invariant: [12, NEWS_W-30) is the title, and
-// [NEWS_W-26, NEWS_W-6) is the chevron.
-constexpr int NEWS_CHEVRON_X = NEWS_W - 26, NEWS_CHEVRON_R = NEWS_W - 6;
-
-inline int newsWidth() { return app.newsOpen ? NEWS_W : NEWS_TAB_W; }
-
-static void layoutNews() {
-    if (!app.news) return;
-    int w = newsWidth();
-    int h = app.newsOpen ? app.cam.height - 76 : NEWS_TAB_W; // shut: a small square
-    SetWindowPos(app.news, nullptr, app.cam.width - w, 56, w, h, SWP_NOZORDER);
-    InvalidateRect(app.news, nullptr, TRUE);
-}
-static const char* NEWS_LABEL[population::EV_KINDS][2] = {
-    {"tribe abandoned its home", "tribes abandoned their homes"},
-    {"band of colonists set out", "bands of colonists set out"},
-    {"tribe settled again", "tribes settled again"},
-    {"new settlement founded", "new settlements founded"},
-    {"band gave up and joined another", "bands gave up and joined others"},
-    {"band perished on the road", "bands perished on the road"},
-    {"raid was launched", "raids were launched"},
-    {"settlement was raided", "settlements were raided"},
-    {"raid was beaten off", "raids were beaten off"},
-    {"raiding party came home", "raiding parties came home"},
-    {"technology was invented!", "technologies were invented!"},
-    {"settlement took up a technology", "settlements took up technologies"},
-    {"granary was built", "granaries were built"},
-    {"regional herd was hunted out", "regional herds were hunted out"},
-    {"people lost a technology", "peoples lost technologies"},
-    {"farmstead was raised", "farmsteads were raised"},
-};
-
-// The entries of one kind, in order.
-static std::vector<const population::Event*> newsEntries(int kind) {
-    std::vector<const population::Event*> v;
-    for (const population::Event& e : app.world.pop.events)
-        if (e.kind == kind) v.push_back(&e);
-    return v;
 }
 
 static void openPanel(int kind, uint32_t sid, uint32_t bandId, int tab = -1); // defined below
@@ -2677,8 +281,8 @@ static void goToEvent(const population::Event& e) {
             if (b.id == e.bandId) { at = {b.px, b.py, b.pz}; found = true; }
     }
     if (!found) {
-        int i = settlementIndexById(e.sid);
-        if (i < 0) i = settlementIndexById(e.sid2);
+        int i = inspect::settlementIndexById(app.world.pop, e.sid);
+        if (i < 0) i = inspect::settlementIndexById(app.world.pop, e.sid2);
         if (i >= 0) { at = sim::cellCentre(app.world.pop.settlements[i].cell); found = true; }
     }
     if (!found && e.cell >= 0) { // everyone involved is gone: go to the place
@@ -2690,374 +294,80 @@ static void goToEvent(const population::Event& e) {
     for (const population::Band& b : app.world.pop.bands)
         if (b.id == e.bandId) bandAlive = true;
     if (bandAlive) openPanel(1, 0, e.bandId);
-    else if (settlementIndexById(e.sid) >= 0) openPanel(0, e.sid, 0);
-    else if (settlementIndexById(e.sid2) >= 0) openPanel(0, e.sid2, 0);
+    else if (inspect::settlementIndexById(app.world.pop, e.sid) >= 0)
+        openPanel(0, e.sid, 0);
+    else if (inspect::settlementIndexById(app.world.pop, e.sid2) >= 0)
+        openPanel(0, e.sid2, 0);
     if (!found) return;
     app.cam.lat = std::asin(std::clamp(at.z, -1.0f, 1.0f));
     app.cam.lon = std::atan2(at.y, at.x);
-    if (app.cam.altitude > 900.0 / EARTH_RADIUS_KM) app.cam.altitude = 900.0 / EARTH_RADIUS_KM;
+    if (app.cam.altitude > 900.0 / camera::EARTH_RADIUS_KM)
+        app.cam.altitude = 900.0 / camera::EARTH_RADIUS_KM;
     app.cam.clampAltitude();
-}
-
-static void paintNews(HWND h) {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(h, &ps);
-    RECT rc;
-    GetClientRect(h, &rc);
-    FillRect(dc, &rc, app.bgBrush);
-    SetBkMode(dc, TRANSPARENT);
-    SelectObject(dc, app.panelBold);
-    if (!app.newsOpen) {
-        // Shut, the feed is a small square with the way back in. Whether
-        // there is news at all shows as the colour of the chevron.
-        int total = 0;
-        for (int k = 0; k < population::EV_KINDS; k++) total += app.world.pop.eventCount[k];
-        SetTextColor(dc, total ? RGB(255, 215, 130) : RGB(140, 140, 155));
-        TextOutA(dc, 12, 7, "<", 1);
-        EndPaint(h, &ps);
-        return;
-    }
-    SetTextColor(dc, RGB(235, 235, 240));
-    const char* title = app.newsLevel == 0 ? "What happened" : "< back";
-    TextOutA(dc, 12, 10, title, (int)strlen(title));
-    SetTextColor(dc, RGB(255, 215, 130));
-    TextOutA(dc, NEWS_CHEVRON_X, 10, ">", 1);
-    SelectObject(dc, app.panelFont);
-    int y = NEWS_TOP;
-    int maxLines = (rc.bottom - NEWS_TOP) / NEWS_LINE - 1;
-    if (app.newsLevel == 0) {
-        bool any = false;
-        for (int k = 0; k < population::EV_KINDS; k++) {
-            int n = app.world.pop.eventCount[k];
-            if (!n) continue;
-            any = true;
-            char line[128];
-            snprintf(line, sizeof line, "%d %s", n, NEWS_LABEL[k][n == 1 ? 0 : 1]);
-            SetTextColor(dc, RGB(255, 215, 130));
-            TextOutA(dc, 12, y, line, (int)strlen(line));
-            y += NEWS_LINE;
-        }
-        if (!any) {
-            SetTextColor(dc, RGB(140, 140, 155));
-            const char* q = "Nothing of note.";
-            TextOutA(dc, 12, y, q, (int)strlen(q));
-        }
-    } else if (app.newsLevel == 1) {
-        std::vector<const population::Event*> v = newsEntries(app.newsKind);
-        for (int i = app.newsScroll; i < (int)v.size() && y < rc.bottom - NEWS_LINE; i++) {
-            SetTextColor(dc, RGB(255, 215, 130));
-            TextOutA(dc, 12, y, v[i]->text, (int)strlen(v[i]->text));
-            y += NEWS_LINE;
-        }
-        int shown = (int)v.size() - app.newsScroll;
-        if (shown > maxLines || app.world.pop.eventCount[app.newsKind] > (int)v.size()) {
-            SetTextColor(dc, RGB(140, 140, 155));
-            char more[96];
-            snprintf(more, sizeof more, "(%d of %d; scroll with the wheel)",
-                     std::min(shown, maxLines), app.world.pop.eventCount[app.newsKind]);
-            TextOutA(dc, 12, rc.bottom - NEWS_LINE, more, (int)strlen(more));
-        }
-    } else {
-        std::vector<const population::Event*> v = newsEntries(app.newsKind);
-        if (app.newsPick < (int)v.size()) {
-            const population::Event& e = *v[app.newsPick];
-            char line[160];
-            int yr = (int)(e.t / 365.0) + 1;
-            snprintf(line, sizeof line, "Year %d", yr);
-            SetTextColor(dc, RGB(230, 230, 235));
-            TextOutA(dc, 12, y, line, (int)strlen(line));
-            y += NEWS_LINE;
-            // The text is already the human account; wrap it over two lines.
-            std::string t = e.text;
-            size_t cut = t.size() > 40 ? t.rfind(' ', 40) : std::string::npos;
-            if (cut == std::string::npos) cut = t.size();
-            std::string l1 = t.substr(0, cut), l2 = cut < t.size() ? t.substr(cut + 1) : "";
-            TextOutA(dc, 12, y, l1.c_str(), (int)l1.size());
-            y += NEWS_LINE;
-            if (l2.size()) { TextOutA(dc, 12, y, l2.c_str(), (int)l2.size()); y += NEWS_LINE; }
-            int si = settlementIndexById(e.sid), s2 = settlementIndexById(e.sid2);
-            if (si >= 0) {
-                snprintf(line, sizeof line, "Who: %s", app.world.pop.settlements[si].name);
-                TextOutA(dc, 12, y, line, (int)strlen(line));
-                y += NEWS_LINE;
-            }
-            if (s2 >= 0) {
-                snprintf(line, sizeof line, "Other party: %s", app.world.pop.settlements[s2].name);
-                TextOutA(dc, 12, y, line, (int)strlen(line));
-                y += NEWS_LINE;
-            }
-            if (e.amount > 0) {
-                snprintf(line, sizeof line, "How many: %d", (int)e.amount);
-                TextOutA(dc, 12, y, line, (int)strlen(line));
-                y += NEWS_LINE;
-            }
-            if (e.lossHere > 0 || e.lossThem > 0) {
-                snprintf(line, sizeof line, "Dead: %d here, %d attacking",
-                         (int)std::lround(e.lossHere), (int)std::lround(e.lossThem));
-                TextOutA(dc, 12, y, line, (int)strlen(line));
-                y += NEWS_LINE;
-            }
-            if (e.bandId) { // only events where somebody set out have a band
-                bool alive = false;
-                for (const population::Band& b : app.world.pop.bands)
-                    if (b.id == e.bandId) alive = true;
-                snprintf(line, sizeof line, "%s", alive ? "The band is still out there."
-                                                        : "They are back among their people.");
-                SetTextColor(dc, RGB(140, 140, 155));
-                TextOutA(dc, 12, y, line, (int)strlen(line));
-                y += NEWS_LINE;
-            }
-            y += 6;
-            SetTextColor(dc, RGB(255, 215, 130));
-            const char* go = "[ Go to ]";
-            TextOutA(dc, 12, y, go, (int)strlen(go));
-        }
-    }
-    EndPaint(h, &ps);
 }
 
 static LRESULT CALLBACK newsProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_PAINT:
-        paintNews(h);
+        news::paint(h, app.news, app.world, app.theme);
         return 0;
     case WM_MOUSEWHEEL:
-        if (app.newsLevel == 1) {
-            app.newsScroll = std::max(0, app.newsScroll - GET_WHEEL_DELTA_WPARAM(wp) / 120);
-            InvalidateRect(h, nullptr, TRUE);
-        }
+        news::wheel(app.news, h, GET_WHEEL_DELTA_WPARAM(wp));
         return 0;
     case WM_LBUTTONDOWN: {
-        int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
-        if (!app.newsOpen) { // the whole tab opens it again
-            app.newsOpen = true;
-            layoutNews();
-            return 0;
-        }
-        if (my < NEWS_TOP && mx >= NEWS_CHEVRON_X && mx < NEWS_CHEVRON_R) {
-            app.newsOpen = false; // out of the way, without losing the news
-            layoutNews();
-            return 0;
-        }
-        if (my < NEWS_TOP) { // the title doubles as the way back
-            if (app.newsLevel > 0) app.newsLevel--;
-            app.newsScroll = 0;
-            InvalidateRect(h, nullptr, TRUE);
-            return 0;
-        }
-        int row = (my - NEWS_TOP) / NEWS_LINE;
-        if (app.newsLevel == 0) {
-            int seen = 0;
-            for (int k = 0; k < population::EV_KINDS; k++) {
-                if (!app.world.pop.eventCount[k]) continue;
-                if (seen == row) {
-                    app.newsKind = k;
-                    app.newsLevel = 1;
-                    app.newsScroll = 0;
-                    break;
-                }
-                seen++;
-            }
-        } else if (app.newsLevel == 1) {
-            std::vector<const population::Event*> v = newsEntries(app.newsKind);
-            int idx = app.newsScroll + row;
-            if (idx < (int)v.size()) {
-                app.newsPick = idx;
-                app.newsLevel = 2;
-            }
-        } else {
-            std::vector<const population::Event*> v = newsEntries(app.newsKind);
-            if (app.newsPick < (int)v.size()) goToEvent(*v[app.newsPick]);
-        }
-        InvalidateRect(h, nullptr, TRUE);
+        const population::Event* e = news::click(app.news, h, app.world.pop, GET_X_LPARAM(lp),
+                                                 GET_Y_LPARAM(lp), app.cam.width, app.cam.height);
+        if (e) goToEvent(*e);
         return 0;
     }
     }
     return DefWindowProcA(h, msg, wp, lp);
 }
 
-static void refreshNews() {
-    if (!app.news) return;
-    app.newsLevel = 0;
-    app.newsScroll = 0;
-    ShowWindow(app.news, app.screen == Screen::InGame ? SW_SHOW : SW_HIDE);
-    InvalidateRect(app.news, nullptr, TRUE);
-}
-
-static void paintPanel(HWND h) {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(h, &ps);
-    RECT rc;
-    GetClientRect(h, &rc);
-    FillRect(dc, &rc, app.bgBrush);
-    SetBkMode(dc, TRANSPARENT);
-    Panel* pn = panelFor(h);
-    if (pn) {
-        char title[48];
-        if (pn->kind == 0) {
-            int si = settlementIndexById(pn->sid);
-            const char* nm = si >= 0 ? app.world.pop.settlements[si].name : "";
-            snprintf(title, sizeof title, "%s", nm[0] ? nm : "Settlement");
-        } else {
-            const char* nm = "";
-            const char* what = "Band";
-            for (const population::Band& bd : app.world.pop.bands)
-                if (bd.id == pn->bandId) {
-                    nm = bd.name;
-                    what = bd.purpose == population::BAND_RAID ? "raiders"
-                           : bd.colonists                      ? "colonists"
-                                                               : "on the move";
-                }
-            if (nm[0]) snprintf(title, sizeof title, "%s %s", nm, what);
-            else snprintf(title, sizeof title, "Band %u", pn->bandId);
-        }
-        SelectObject(dc, app.panelBold);
-        SetTextColor(dc, RGB(235, 235, 240));
-        TextOutA(dc, PANEL_PAD, 8, title, (int)strlen(title));
-        SelectObject(dc, app.panelFont);
-        if (pn->kind == 0)
-            for (int t = 0; t < PANEL_NTABS; t++) {
-                SetTextColor(dc, pn->tab == t ? RGB(255, 225, 150) : RGB(140, 140, 155));
-                TextOutA(dc, PANEL_TAB_X[t], PANEL_TAB_Y, PANEL_TABS[t],
-                         (int)strlen(PANEL_TABS[t]));
-            }
-        std::string txt = panelContent(*pn);
-        int y = pn->kind == 0 ? PANEL_CONTENT_Y : PANEL_TAB_Y;
-        int row = 0;
-        size_t pos = 0;
-        while (pos <= txt.size()) {
-            size_t e = txt.find('\n', pos);
-            std::string line =
-                txt.substr(pos, e == std::string::npos ? std::string::npos : e - pos);
-            bool clickable = pn->kind == 0 && pn->tab == TAB_TECH &&
-                             ((pn->techSel < 0 && row < population::NTECH) ||
-                              (pn->techSel >= 0 && row == 0));
-            SetTextColor(dc, clickable ? RGB(255, 215, 130) : RGB(230, 230, 235));
-            TextOutA(dc, PANEL_PAD, y, line.c_str(), (int)line.size());
-            y += PANEL_LINE_H;
-            row++;
-            if (e == std::string::npos) break;
-            pos = e + 1;
-        }
-    }
-    EndPaint(h, &ps);
-}
-
-static void refreshPanels() {
-    for (const Panel& pn : app.panels) InvalidateRect(pn.wnd, nullptr, TRUE);
-}
-
-static void closeAllPanels() {
-    std::vector<Panel> panels = app.panels; // DestroyWindow mutates app.panels
-    for (const Panel& pn : panels)
-        if (IsWindow(pn.wnd)) DestroyWindow(pn.wnd);
-    app.panels.clear();
-    app.panelSpawn = 0;
-}
-
 static LRESULT CALLBACK panelProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_PAINT:
-        paintPanel(h);
+        panels::paint(h, app.panels, app.world, app.theme);
         return 0;
     case WM_COMMAND:
         if (LOWORD(wp) == 1) DestroyWindow(h);
         return 0;
     case WM_DESTROY:
-        if (app.panelDrag == h) { ReleaseCapture(); app.panelDrag = nullptr; }
-        for (size_t i = 0; i < app.panels.size(); i++)
-            if (app.panels[i].wnd == h) { app.panels.erase(app.panels.begin() + i); break; }
+        panels::onDestroy(app.panels, h);
         return 0;
-    case WM_LBUTTONDOWN: {
-        Panel* pn = panelFor(h);
-        int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
-        SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE); // raise on grab
-        if (pn && pn->kind == 0 && my >= PANEL_TAB_Y && my < PANEL_TAB_Y + PANEL_TAB_H) {
-            for (int t = 0; t < PANEL_NTABS; t++)
-                if (mx >= PANEL_TAB_X[t] && mx < PANEL_TAB_X[t + 1] - 6) {
-                    pn->tab = t;
-                    pn->techSel = -1;
-                    InvalidateRect(h, nullptr, TRUE);
-                    return 0;
-                }
-        }
-        if (pn && pn->kind == 0 && pn->tab == TAB_TECH && my >= PANEL_CONTENT_Y) {
-            int row = (my - PANEL_CONTENT_Y) / PANEL_LINE_H;
-            if (pn->techSel < 0 && row >= 0 && row < population::NTECH) {
-                pn->techSel = row;
-                InvalidateRect(h, nullptr, TRUE);
-                return 0;
-            }
-            if (pn->techSel >= 0 && row == 0) { // "< back"
-                pn->techSel = -1;
-                InvalidateRect(h, nullptr, TRUE);
-                return 0;
-            }
-        }
-        // Anywhere else grabs the window for dragging.
-        SetCapture(h);
-        app.panelDrag = h;
-        app.panelDragOff = {mx, my};
+    case WM_LBUTTONDOWN:
+        panels::onLeftDown(app.panels, h, GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;
-    }
     case WM_MOUSEMOVE:
-        if (app.panelDrag == h) {
-            POINT c;
-            GetCursorPos(&c);
-            ScreenToClient(app.hwnd, &c);
-            SetWindowPos(h, nullptr, c.x - app.panelDragOff.x, c.y - app.panelDragOff.y, 0, 0,
-                         SWP_NOSIZE | SWP_NOZORDER);
-        }
+        panels::onMouseMove(app.panels, h, app.hwnd);
         return 0;
     case WM_LBUTTONUP:
-        if (app.panelDrag == h) {
-            ReleaseCapture();
-            app.panelDrag = nullptr;
-        }
+        panels::onLeftUp(app.panels, h);
         return 0;
     }
     return DefWindowProcA(h, msg, wp, lp);
 }
 
 static void openPanel(int kind, uint32_t sid, uint32_t bandId, int tab) {
-    for (Panel& pn : app.panels)
-        if (pn.kind == kind && pn.sid == sid && pn.bandId == bandId) {
-            if (tab >= 0 && pn.tab != tab) {
-                pn.tab = tab;
-                pn.techSel = -1;
-                InvalidateRect(pn.wnd, nullptr, TRUE);
-            }
-            SetWindowPos(pn.wnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-            return; // already open: raise it instead of stacking a twin
-        }
-    int pw = PANEL_W, ph = kind == 0 ? PANEL_H : PANEL_BAND_H;
-    int x = 16 + (app.panelSpawn % 7) * 30, y = 56 + (app.panelSpawn % 7) * 30;
-    app.panelSpawn++;
-    HINSTANCE inst = GetModuleHandleA(nullptr);
-    HWND w = CreateWindowA("IBPanel", "", WS_CHILD | WS_BORDER | WS_VISIBLE | WS_CLIPSIBLINGS,
-                           x, y, pw, ph, app.hwnd, nullptr, inst, nullptr);
-    HWND btn = CreateWindowA("BUTTON", "X", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, pw - 34, 6, 24, 24,
-                             w, (HMENU)1, inst, nullptr);
-    SendMessageA(btn, WM_SETFONT, (WPARAM)app.font, TRUE);
-    app.panels.push_back({w, kind, sid, bandId, tab > 0 ? tab : 0});
-    SetWindowPos(w, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    panels::open(app.panels, app.hwnd, app.theme.font, kind, sid, bandId, tab);
 }
 
 // A click on the globe: open a detail panel for the settlement or band whose
 // marker is under the cursor (same radii the shader draws them with).
 static void pickAt(int x, int y) {
-    if (app.screen != Screen::InGame) return;
+    if (app.screen != menus::Screen::InGame) return;
     // An event mark is hit before anything under it: it sits above the
     // marker on purpose, and it is the smaller target. It opens the history
     // of whoever it happened to, which is the whole sentence the news feed
     // would have given.
-    for (const App::MarkHit& m : app.markHits)
+    for (const overlay::MarkHit& m : app.overlay.markHits)
         if (x >= m.x - 1 && x < m.x + m.w + 1 && y >= m.y - 1 && y < m.y + m.h + 1) {
-            if (m.sid) openPanel(0, m.sid, 0, TAB_HISTORY);
+            if (m.sid)
+                openPanel(0, m.sid, 0, panels::TAB_HISTORY);
             else if (m.bandId) openPanel(1, 0, m.bandId);
             return;
         }
-    Vec3 hit;
+    camera::Vec3 hit;
     if (!app.cam.hitSphere(x, y, hit)) return;
     terrain::V3 n = {(float)hit.x, (float)hit.y, (float)hit.z};
     const population::Field& pf = app.world.pop;
@@ -3065,7 +375,8 @@ static void pickAt(int x, int y) {
     // Close up that is the village itself; further out it is the marker, so
     // it stays the same size on screen however far the view is zoomed.
     double kmpp = app.cam.kmPerPixel();
-    float sRadius = kmpp < HUT_KMPP ? 0.15f : (float)(kmpp * (markerRadius(kmpp) + 3));
+    float sRadius =
+        kmpp < overlay::HUT_KMPP ? 0.15f : (float)(kmpp * (overlay::markerRadius(kmpp) + 3));
     int best = -1;
     float bestD = sRadius;
     for (int i = 0; i < (int)pf.settlements.size(); i++) {
@@ -3073,7 +384,8 @@ static void pickAt(int x, int y) {
         if (d < bestD) { bestD = d; best = i; }
     }
     if (best >= 0) { openPanel(0, pf.settlements[best].id, 0); return; }
-    float bRadius = kmpp < WALK_KMPP ? 0.08f : (float)(kmpp * (markerRadius(kmpp) + 3));
+    float bRadius =
+        kmpp < overlay::WALK_KMPP ? 0.08f : (float)(kmpp * (overlay::markerRadius(kmpp) + 3));
     uint32_t bestId = 0;
     bestD = bRadius;
     for (const population::Band& bd : pf.bands) {
@@ -3101,7 +413,7 @@ static std::string simDate() {
 }
 
 static void updateDateLabel() {
-    SetWindowTextA(control(ID_DATE_LABEL), simDate().c_str());
+    SetWindowTextA(menus::control(app.menu, menus::ID_DATE_LABEL), simDate().c_str());
 }
 
 static void advanceDays(double days) {
@@ -3112,43 +424,25 @@ static void advanceDays(double days) {
     population::Field& pf = app.world.pop;
     if (pf.settlements.empty()) return;
     bool any = sim::simulate(pf, app.world.tech, app.world.hydro, app.world.clim, app.world.simTime);
-    if (any && app.popTex) uploadPopulation();
-    refreshPanels();
-    refreshNews();
-}
-
-static void applyDrag(int x, int y) {
-    Camera& c = app.cam;
-    Vec3 hit;
-    if (app.anchorValid && c.hitSphere(x, y, hit)) {
-        // Rotate the camera so the grabbed surface point follows the cursor.
-        double latHit = std::asin(std::clamp(hit.z, -1.0, 1.0));
-        double lonHit = std::atan2(hit.y, hit.x);
-        double latAnc = std::asin(std::clamp(app.anchor.z, -1.0, 1.0));
-        double lonAnc = std::atan2(app.anchor.y, app.anchor.x);
-        double dLon = lonHit - lonAnc;
-        if (dLon > PI) dLon -= 2 * PI;
-        if (dLon < -PI) dLon += 2 * PI;
-        c.lon -= dLon;
-        c.lat -= latHit - latAnc;
-    } else {
-        // Cursor is off the globe: rotate by a pixel-proportional amount.
-        double radPerPx = std::min(2.0 * c.altitude * c.tanHalfV() / c.height, PI / c.height);
-        c.lon -= (x - app.lastX) * radPerPx;
-        c.lat += (y - app.lastY) * radPerPx;
-    }
-    c.lat = std::clamp(c.lat, -89.0 * PI / 180, 89.0 * PI / 180);
-    while (c.lon > PI) c.lon -= 2 * PI;
-    while (c.lon < -PI) c.lon += 2 * PI;
+    if (any && app.tex.popTex) textures::uploadPopulation(app.tex, app.world.pop);
+    panels::refreshAll(app.panels);
+    news::refresh(app.news, app.screen == menus::Screen::InGame);
 }
 
 static void onEscape() {
     switch (app.screen) {
-    case Screen::InGame: setScreen(Screen::PauseMenu); break;
-    case Screen::PauseMenu: setScreen(Screen::InGame); break;
-    case Screen::LoadMenu:
-    case Screen::NewWorldMenu: setScreen(Screen::MainMenu); break;
-    case Screen::MainMenu: break;
+    case menus::Screen::InGame:
+        setScreen(menus::Screen::PauseMenu);
+        break;
+    case menus::Screen::PauseMenu:
+        setScreen(menus::Screen::InGame);
+        break;
+    case menus::Screen::LoadMenu:
+    case menus::Screen::NewWorldMenu:
+        setScreen(menus::Screen::MainMenu);
+        break;
+    case menus::Screen::MainMenu:
+        break;
     }
 }
 
@@ -3159,29 +453,30 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         app.cam.height = std::max(1, (int)HIWORD(lp));
         app.cam.clampAltitude();
         glViewport(0, 0, app.cam.width, app.cam.height);
-        if (!app.controls.empty()) layoutControls();
-        if (app.news)
-            layoutNews();
+        if (!app.menu.controls.empty())
+            menus::layoutControls(app.menu, app.screen, app.cam.width, app.cam.height);
+        if (app.news.wnd) news::layout(app.news, app.cam.width, app.cam.height);
         return 0;
     case WM_COMMAND:
         if (HIWORD(wp) == BN_CLICKED) onCommand(LOWORD(wp));
-        else if (HIWORD(wp) == LBN_DBLCLK) onCommand(ID_LOAD_CONFIRM);
+        else if (HIWORD(wp) == LBN_DBLCLK)
+            onCommand(menus::ID_LOAD_CONFIRM);
         return 0;
     case WM_CTLCOLORSTATIC:
         SetTextColor((HDC)wp, RGB(230, 230, 235));
         SetBkColor((HDC)wp, RGB(8, 8, 16));
-        return (LRESULT)app.bgBrush;
+        return (LRESULT)app.theme.bgBrush;
     case WM_LBUTTONDOWN:
-        if (app.screen != Screen::InGame) return 0;
+        if (app.screen != menus::Screen::InGame) return 0;
         SetCapture(hwnd);
         SetFocus(hwnd);
         app.dragging = true;
-        app.lastX = GET_X_LPARAM(lp);
-        app.lastY = GET_Y_LPARAM(lp);
-        app.downX = app.lastX;
-        app.downY = app.lastY;
+        app.drag.lastX = GET_X_LPARAM(lp);
+        app.drag.lastY = GET_Y_LPARAM(lp);
+        app.downX = app.drag.lastX;
+        app.downY = app.drag.lastY;
         app.clickMoved = false;
-        app.anchorValid = app.cam.hitSphere(app.lastX, app.lastY, app.anchor);
+        app.drag.anchorValid = app.cam.hitSphere(app.drag.lastX, app.drag.lastY, app.drag.anchor);
         return 0;
     case WM_LBUTTONUP:
         ReleaseCapture();
@@ -3192,26 +487,26 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
         if (app.dragging) {
             if (std::abs(x - app.downX) + std::abs(y - app.downY) > 4) app.clickMoved = true;
-            applyDrag(x, y);
-            app.lastX = x;
-            app.lastY = y;
+            camera::applyDrag(app.cam, app.drag, x, y);
+            app.drag.lastX = x;
+            app.drag.lastY = y;
         }
         updateTooltip(x, y);
         return 0;
     }
     case WM_MOUSEWHEEL: {
-        if (app.screen != Screen::InGame) return 0;
+        if (app.screen != menus::Screen::InGame) return 0;
         int delta = GET_WHEEL_DELTA_WPARAM(wp);
         double factor = std::pow(0.8, delta / (double)WHEEL_DELTA);
         POINT cur{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}; // screen coordinates
         ScreenToClient(hwnd, &cur);
-        zoomAt(factor, (int)cur.x, (int)cur.y);
+        camera::zoomAt(app.cam, factor, (int)cur.x, (int)cur.y);
         return 0;
     }
     case WM_KEYDOWN:
         if (app.genState != 0) return 0;
         if (wp == VK_F2) { app.shotPath = "dbg_shot.bmp"; return 0; } // back-buffer screenshot
-        if (app.screen == Screen::InGame) {
+        if (app.screen == menus::Screen::InGame) {
             int mode = wp == 'P' ? 1 : wp == 'B' ? 2 : wp == 'V' ? 3 : wp == 'K' ? 4 : 0;
             if (mode) app.debugMode = app.debugMode == mode ? 0 : mode;
         }
@@ -3269,10 +564,10 @@ int main(int argc, char** argv) {
     SetPixelFormat(dc, ChoosePixelFormat(dc, &pfd), &pfd);
     HGLRC rc = wglCreateContext(dc);
     wglMakeCurrent(dc, rc);
-    if (!loadGL()) return 1;
+    if (!gl::loadGL()) return 1;
     if (wglSwapIntervalEXT) wglSwapIntervalEXT(1);
 
-    app.program = buildProgram();
+    app.program = gl::buildProgram(world::exeDir() + "\\shaders\\");
     if (!app.program) return 1;
     GLuint vao;
     glGenVertexArrays(1, &vao);
@@ -3315,10 +610,12 @@ int main(int argc, char** argv) {
     GLint uAware = glGetUniformLocation(app.program, "uAware");
     GLint uAwareCount = glGetUniformLocation(app.program, "uAwareCount");
 
-    createControls();
-    app.news = CreateWindowA("IBNews", "", WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
-                             app.cam.width - NEWS_W, 56, NEWS_W, app.cam.height - 76, app.hwnd,
-                             nullptr, inst, nullptr);
+    app.theme = theme::create();
+    overlay::init(app.overlay);
+    menus::createControls(app.menu, app.hwnd, app.theme);
+    app.news.wnd = CreateWindowA("IBNews", "", WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+                                 app.cam.width - news::NEWS_W, 56, news::NEWS_W,
+                                 app.cam.height - 76, app.hwnd, nullptr, inst, nullptr);
     app.cam.clampAltitude();
 
     // Testing shortcut:
@@ -3326,25 +623,25 @@ int main(int argc, char** argv) {
     // A seed of "@name" loads worlds\name.ibw instead of generating (testing).
     if (argc >= 3) {
         bool loaded = argc >= 5 && argv[4][0] == '@' &&
-                      loadWorld(argv[4] + 1, app.world, app.cam);
+                      savefile::load(argv[4] + 1, app.world, app.cam, buildProgress);
         if (!loaded) {
             app.world.earth = argc >= 5 && _stricmp(argv[4], "earth") == 0;
             app.world.seed = app.world.earth ? 1u : (argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0);
             if (argc >= 6) app.world.landPercent = (float)atof(argv[5]);
             if (argc >= 7) app.world.concentration = (float)atof(argv[6]);
-            app.world.build();
+            app.world.build(buildProgress);
         }
         if (argc >= 8) {
             std::string d = argv[7];
             app.debugMode = d == "plates" ? 1 : d == "substrate" ? 2 : d == "vegetation" ? 3
                           : d == "population" ? 4 : d == "climate" ? 5 : 0;
         }
-        uploadHydrology();
-        app.cam.lat = atof(argv[1]) * PI / 180;
-        app.cam.lon = atof(argv[2]) * PI / 180;
-        if (argc >= 4) app.cam.altitude = atof(argv[3]) / EARTH_RADIUS_KM;
+        textures::uploadAll(app.tex, app.world);
+        app.cam.lat = atof(argv[1]) * camera::PI / 180;
+        app.cam.lon = atof(argv[2]) * camera::PI / 180;
+        if (argc >= 4) app.cam.altitude = atof(argv[3]) / camera::EARTH_RADIUS_KM;
         app.cam.clampAltitude();
-        setScreen(Screen::InGame);
+        setScreen(menus::Screen::InGame);
         if (argc >= 9) {
             advanceDays(atof(argv[8]) * 365.0); // fast-forward years
             int gran = 0, building = 0, fstead = 0;
@@ -3367,45 +664,6 @@ int main(int argc, char** argv) {
                             ? app.world.pop.cultures[sx.culture].name
                             : "?");
             }
-            { // CLIMATE ACCEPTANCE TEST (temporary instrumentation)
-                const atmosphere::Climatology& c = app.world.clim;
-                const int AW = atmosphere::W, AH = atmosphere::H;
-                auto wgt = [&](int y) {
-                    return std::cos(((y + 0.5) / (double)AH - 0.5) * 3.14159265);
-                };
-                double gT = 0, gR = 0, gw = 0;
-                for (int y = 0; y < AH; y++)
-                    for (int x = 0; x < AW; x++)
-                        for (int se = 0; se < atmosphere::SEASONS; se++) {
-                            int i = se * AW * AH + y * AW + x;
-                            gT += c.meanT[i] * wgt(y);
-                            gR += c.rainMmDay[i] * wgt(y);
-                            gw += wgt(y);
-                        }
-                fprintf(stderr, "WATER mm/day: evap %.2f, rain %.2f\n",
-                        app.world.clim.dbgEvap, app.world.clim.dbgRain);
-                fprintf(stderr, "CLIMATE global: mean %.1f C (target 15), rain %.2f mm/d "
-                                "(target 2.7)\n", gT / gw, gR / gw);
-                struct Spot { const char* name; float lat; int season; float want; };
-                const Spot spots[] = {
-                    {"equator      ", 0, 2, 27}, {"subtropics   ", 25, 2, 30},
-                    {"mid-lat sum  ", 50, 2, 20}, {"mid-lat win  ", 50, 0, -5},
-                    {"60N summer   ", 62, 2, 15}, {"60N winter   ", 62, 0, -25},
-                    {"polar summer ", 82, 2, 0},  {"polar winter ", 82, 0, -45},
-                };
-                for (const Spot& sp : spots) {
-                    int y = std::clamp((int)((sp.lat / 180.0f + 0.5f) * AH), 0, AH - 1);
-                    double sum = 0, srain = 0;
-                    int n = 0;
-                    for (int x = 0; x < AW; x++) {
-                        sum += c.meanT[sp.season * AW * AH + y * AW + x];
-                        srain += c.rainMmDay[sp.season * AW * AH + y * AW + x];
-                        n++;
-                    }
-                    fprintf(stderr, "  %s %6.1f C (want %5.1f)  rain %.2f\n", sp.name,
-                            sum / n, sp.want, srain / n);
-                }
-            }
             double tp = std::max(totalP, 1.0);
             fprintf(stderr,
                     "people: %.0f%% children, %.0f%% men, %.0f%% women, %.0f%% elderly\n",
@@ -3420,7 +678,7 @@ int main(int argc, char** argv) {
         }
         if (argc >= 10) app.shotPath = argv[9];            // save a frame, then keep running
     } else {
-        setScreen(Screen::MainMenu);
+        setScreen(menus::Screen::MainMenu);
     }
 
     LARGE_INTEGER qpf, fpsT0;
@@ -3437,19 +695,26 @@ int main(int argc, char** argv) {
                 continue;
             }
             if (m.message == WM_KEYDOWN && m.wParam == VK_RETURN) {
-                if (app.screen == Screen::PauseMenu) { onCommand(ID_SAVE_WORLD); continue; }
-                if (app.screen == Screen::NewWorldMenu) { onCommand(ID_GEN_CREATE); continue; }
+                if (app.screen == menus::Screen::PauseMenu) {
+                    onCommand(menus::ID_SAVE_WORLD);
+                    continue;
+                }
+                if (app.screen == menus::Screen::NewWorldMenu) {
+                    onCommand(menus::ID_GEN_CREATE);
+                    continue;
+                }
             }
             TranslateMessage(&m);
             DispatchMessageA(&m);
         }
-        bool showGlobe = app.screen == Screen::InGame || app.screen == Screen::PauseMenu;
+        bool showGlobe =
+            app.screen == menus::Screen::InGame || app.screen == menus::Screen::PauseMenu;
         if (showGlobe) {
-            Camera& c = app.cam;
-            Vec3 p = c.position(), f = c.forward(), rt = c.right(), u = c.up();
+            camera::Camera& c = app.cam;
+            camera::Vec3 p = c.position(), f = c.forward(), rt = c.right(), u = c.up();
             // Finest noise octave should be around two pixels wide on screen.
             double kmpp = c.kmPerPixel();
-            int octaves = (int)std::ceil(std::log2(EARTH_RADIUS_KM / (2.0 * kmpp)));
+            int octaves = (int)std::ceil(std::log2(camera::EARTH_RADIUS_KM / (2.0 * kmpp)));
             octaves = std::clamp(octaves, 4, 16);
             app.octaves = octaves;
 
@@ -3460,11 +725,12 @@ int main(int argc, char** argv) {
                 // Awareness zones for entities with open detail panels.
                 float aw[8 * 4] = {};
                 int nAw = 0;
-                for (const Panel& pn : app.panels) {
+                for (const panels::Panel& pn : app.panels.windows) {
                     if (nAw >= 8) break;
                     terrain::V3 e{};
                     float radius = 0;
-                    int sIdx = pn.kind == 0 ? settlementIndexById(pn.sid) : -1;
+                    int sIdx =
+                        pn.kind == 0 ? inspect::settlementIndexById(app.world.pop, pn.sid) : -1;
                     if (pn.kind == 0 && sIdx < 0) continue; // moved on: no zone to draw
                     if (pn.kind == 0) {
                         const population::Settlement& st = app.world.pop.settlements[sIdx];
@@ -3515,7 +781,7 @@ int main(int argc, char** argv) {
             glUniformMatrix3fv(uWorldRot, 1, GL_FALSE, app.world.rot);
             glUniform3f(uWorldOff, (float)app.world.offset.x, (float)app.world.offset.y,
                         (float)app.world.offset.z);
-            glUniform1f(uDim, app.screen == Screen::PauseMenu ? 0.35f : 1.0f);
+            glUniform1f(uDim, app.screen == menus::Screen::PauseMenu ? 0.35f : 1.0f);
             glUniform1f(uFreq, app.world.cp.freq);
             glUniform1f(uWarp, app.world.cp.warp);
             glUniform1f(uWebness, app.world.cp.webness);
@@ -3523,26 +789,27 @@ int main(int argc, char** argv) {
             glUniform1i(uHasHydro, app.world.hydro.cells.empty() ? 0 : 1);
             glUniform1i(uUseEarth, app.world.earth && terrain::TEMPLATE.active ? 1 : 0);
             glUniform1i(uDebugMode, app.debugMode);
-            if (app.screen == Screen::InGame) {
-                ScaleBar sb = chooseScale(kmpp);
+            if (app.screen == menus::Screen::InGame) {
+                menus::ScaleBar sb = menus::chooseScale(kmpp);
                 // Pixel coordinates with origin bottom-left, as gl_FragCoord uses.
-                float x0 = (float)SCALE_MARGIN, y0 = (float)SCALE_MARGIN + 6;
+                float x0 = (float)menus::SCALE_MARGIN, y0 = (float)menus::SCALE_MARGIN + 6;
                 glUniform4f(uScaleBar, x0, y0, x0 + sb.px, y0);
-                std::string txt = scaleText(sb.km);
+                std::string txt = menus::scaleText(sb.km);
                 if (txt != lastScaleText) {
                     lastScaleText = txt;
-                    SetWindowTextA(control(ID_SCALE_LABEL), txt.c_str());
+                    SetWindowTextA(menus::control(app.menu, menus::ID_SCALE_LABEL), txt.c_str());
                 }
             } else {
                 glUniform4f(uScaleBar, -1, -1, -1, -1);
             }
             // Markers and names: redrawn every frame, since they follow the
             // camera as much as the world.
-            if (overlayStale()) {
-                paintOverlay();
-                uploadOverlay();
+            if (overlay::stale(app.overlay, app.world, app.cam, (int)app.screen)) {
+                overlay::paint(app.overlay, app.world, app.cam,
+                               app.screen == menus::Screen::InGame);
+                overlay::upload(app.overlay);
             }
-            glBindTexture(GL_TEXTURE_2D, app.hydroTex);
+            glBindTexture(GL_TEXTURE_2D, app.tex.hydroTex);
             glDrawArrays(GL_TRIANGLES, 0, 3);
             // Self-screenshot from the back buffer: defined even when the
             // window is occluded, unlike PrintWindow. Testing tooling.
@@ -3550,24 +817,8 @@ int main(int argc, char** argv) {
                 int W = app.cam.width, H = app.cam.height;
                 std::vector<unsigned char> px(W * H * 3);
                 glReadPixels(0, 0, W, H, 0x80E0 /*GL_BGR*/, GL_UNSIGNED_BYTE, px.data());
-                int rowPad = (4 - (W * 3) % 4) % 4, stride = W * 3 + rowPad;
-                unsigned int imgSize = stride * H, fileSize = 54 + imgSize;
-                unsigned char hdr[54] = {'B', 'M'};
-                *(unsigned int*)(hdr + 2) = fileSize;
-                *(unsigned int*)(hdr + 10) = 54;
-                *(unsigned int*)(hdr + 14) = 40;
-                *(int*)(hdr + 18) = W;
-                *(int*)(hdr + 22) = H; // bottom-up, matching glReadPixels
-                *(unsigned short*)(hdr + 26) = 1;
-                *(unsigned short*)(hdr + 28) = 24;
-                *(unsigned int*)(hdr + 34) = imgSize;
-                std::ofstream f(app.shotPath, std::ios::binary);
-                f.write((char*)hdr, 54);
-                unsigned char pad[4] = {};
-                for (int yy = 0; yy < H; yy++) {
-                    f.write((char*)&px[yy * W * 3], W * 3);
-                    f.write((char*)pad, rowPad);
-                }
+                if (!bmp::write(app.shotPath, W, H, px.data()))
+                    fprintf(stderr, "shot: could not write %s\n", app.shotPath.c_str());
                 fprintf(stderr, "shot: %s\n", app.shotPath.c_str());
                 app.shotPath.clear();
             }

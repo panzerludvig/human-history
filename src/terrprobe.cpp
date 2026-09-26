@@ -3,31 +3,25 @@
 // the highest peak reached Everest while the belts stood on a base that was
 // itself kilometres too tall; with the base corrected the same target gives a
 // different gain, so it is re-derived here rather than left where it was.
+//
+//   build_terrprobe.bat, then build\terrprobe.exe [seed]
 #include <cstdio>
 #include <cstdlib>
-#include <random>
 #include <algorithm>
 #include <vector>
-#include "terrain.h"
-#include "hydrology.h"
+#include "world.h"
 
 int main(int argc, char** argv) {
-    uint32_t seed = argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7;
-    float landPct = 30.0f, conc = 50.0f;
-    std::mt19937 rng(seed);
-    std::uniform_real_distribution<double> ang(0.0, 2 * 3.14159265358979), off(-2.0, 2.0);
-    double a = ang(rng), b = ang(rng), cgl = ang(rng);
-    double ca = cos(a), sa = sin(a), cb = cos(b), sb = sin(b), cc = cos(cgl), sc = sin(cgl);
-    double mm[3][3] = {{ca*cb, ca*sb*sc - sa*cc, ca*sb*cc + sa*sc},
-                       {sa*cb, sa*sb*sc + ca*cc, sa*sb*cc - ca*sc},
-                       {-sb, cb*sc, cb*cc}};
-    float rot[9];
-    for (int col = 0; col < 3; col++)
-        for (int row = 0; row < 3; row++) rot[col*3+row] = (float)mm[row][col];
-    terrain::V3 offset = {(float)off(rng), (float)off(rng), (float)off(rng)};
-    terrain::ContinentParams cp = terrain::paramsFor(conc / 100.0f);
-    plates::Field pf = plates::build(seed);
-    float seaLevel = terrain::seaLevelFor(landPct / 100.0f, cp, rot, offset, pf);
+    world::World globe;
+    globe.seed = argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7;
+    globe.concentration = 50.0f; // land 30%, the default
+    globe.build(nullptr, world::Stage::SeaLevel);
+    const uint32_t seed = globe.seed;
+    const float* rot = globe.rot;
+    const terrain::V3 offset = globe.terrainOffset();
+    const terrain::ContinentParams& cp = globe.cp;
+    const plates::Field& pf = globe.plateField;
+    const float seaLevel = globe.seaLevel;
 
     printf("seed %u\nlife:  mean 840 m   >2km 5%%   >4km 1%%   peak 8848\n\n", seed);
     printf("%6s %6s %7s %7s %7s %8s %8s\n", "relief", "gain", "mean", ">2km%", ">4km%", "peak",

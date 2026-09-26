@@ -1,15 +1,13 @@
 // Standalone atmosphere test: build a world's terrain pipeline, run the
 // atmosphere generator, and dump climatology maps as BMPs for inspection.
-// cl /O2 /EHsc /std:c++17 src\test_atmo.cpp /Fe:build\test_atmo.exe
+//
+//   build_testatmo.bat, then build\test_atmo.exe [seed] [outDir]
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
-#include <random>
 #include <string>
-#include "terrain.h"
-#include "hydrology.h"
-#include "atmosphere.h"
+#include "world.h"
 
 static void saveBmp(const std::string& path, int W, int H, const std::vector<unsigned char>& rgb) {
     int rowPad = (4 - (W * 3) % 4) % 4, stride = W * 3 + rowPad;
@@ -43,31 +41,22 @@ static void tempColor(double t, unsigned char* p) {
 }
 
 int main(int argc, char** argv) {
-    uint32_t seed = argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7;
-    float landPct = 30.0f, conc = 60.0f;
+    world::World globe;
+    globe.seed = argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7;
+    // land 30%, concentration 60: the World defaults
     std::string out = argc >= 3 ? argv[2] : ".";
 
-    // Same derivation as World::build.
-    std::mt19937 rng(seed);
-    std::uniform_real_distribution<double> ang(0.0, 2 * 3.14159265358979), off(-2.0, 2.0);
-    double a = ang(rng), b = ang(rng), cgl = ang(rng);
-    double ca = cos(a), sa = sin(a), cb = cos(b), sb = sin(b), cc = cos(cgl), sc = sin(cgl);
-    double mm[3][3] = {
-        {ca * cb, ca * sb * sc - sa * cc, ca * sb * cc + sa * sc},
-        {sa * cb, sa * sb * sc + ca * cc, sa * sb * cc - ca * sc},
-        {-sb, cb * sc, cb * cc},
-    };
-    float rot[9];
-    for (int col = 0; col < 3; col++)
-        for (int row = 0; row < 3; row++) rot[col * 3 + row] = (float)mm[row][col];
-    terrain::V3 offset = {(float)off(rng), (float)off(rng), (float)off(rng)};
-    terrain::ContinentParams cp = terrain::paramsFor(conc / 100.0f);
-
     fprintf(stderr, "building plates/sea/hydrology...\n");
-    plates::Field pf = plates::build(seed);
-    float seaLevel = terrain::seaLevelFor(landPct / 100.0f, cp, rot, offset, pf);
-    hydrology::Result hy = hydrology::build(cp, seaLevel, rot, offset, 12000.0f, pf);
+    globe.build(nullptr, world::Stage::Hydrology);
+    const float* rot = globe.rot;
+    const terrain::V3 offset = globe.terrainOffset();
+    const terrain::ContinentParams& cp = globe.cp;
+    const plates::Field& pf = globe.plateField;
+    const hydrology::Result& hy = globe.hydro;
+    const float seaLevel = globe.seaLevel;
 
+    // The climate is run here rather than by World::build for its verbose
+    // flag: the monthly probe line on stderr, which the game never prints.
     fprintf(stderr, "running atmosphere...\n");
     atmosphere::Climatology c = atmosphere::build(cp, seaLevel, rot, offset, pf, hy, true);
 

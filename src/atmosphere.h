@@ -9,10 +9,6 @@
 #pragma once
 #include "terrain.h"
 #include "hydrology.h"
-#include "dynamics2.h"
-#include "qg2.h"
-#include "qg2geo.h"
-#include "water2geo.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -347,7 +343,8 @@ constexpr double CLOUD_LW = 0.75;   // share of the remaining window a full deck
 // 70 in the storm tracks at 70. The exponential stays, with its scale
 // re-derived for the two-layer saturation so that 85 percent saturation
 // gives 60 percent cloud; the fronts' cloud and the anvils are added
-// where the water model makes them (see WATER2's cloud).
+// where a water model that resolves them would make them (none does
+// today; the two-layer mesh water that did left main on 2026-09-15).
 constexpr double RH_CLOUD = 0.89;
 inline double cloudOf(double rh) {
     double r = std::max(rh, 0.0) / RH_CLOUD;
@@ -355,13 +352,6 @@ inline double cloudOf(double rh) {
 }
 constexpr double C_WATER = 1.0e8;               // ~25 m slab ocean
 constexpr double C_LAND = 3.0e6;                // thin soil; scaled by inertia
-// Winds: diagnostic Ekman-style balance r*u - f x u = -grad(P)/rho, solved
-// per cell. Integrating momentum at this grid and step is numerically
-// unstable; the balanced response keeps the same circulation (convergence on
-// heat lows, Coriolis deflection into trades and westerlies) with winds
-// bounded by construction.
-constexpr double P_PER_DEG = 120.0;             // Pa of thermal low per degC
-constexpr double FRICTION = 1.0 / (8.0 * 3600.0); // balance friction r
 constexpr double RHO = 1.2;
 // Moisture (kg/m^2 precipitable water)
 // Saturation capacity of the column, in millimetres, as a function of
@@ -571,17 +561,11 @@ inline double FRONT_SIDE_K = 4.0; // K above the neighbours for full lift, below
 // world sat at 85% humidity, which -- since cloudiness was humidity, one for
 // one -- covered the globe in cloud. A column is about half saturated in
 // life.
-constexpr double DIV_CAP_SCALE = 0.05;          // m/s of uplift for a ~46% capacity swing
 // Over land, moisture rains out progressively along its path (precipitation
 // is not withheld until a convergence line): an e-folding of ~3 days, i.e.
 // ~1300 km at typical winds. This is what makes coasts wetter than deep
 // continental interiors.
 // (LAND_RAINOUT_TAU, the 3-day e-folding, is no longer referenced anywhere.)
-// Frontal-storm rain: mid-latitude rain on Earth is mostly baroclinic storms
-// riding the temperature gradient, which steady diagnostic winds cannot
-// produce. Parameterized as rain ~ |grad T| * moisture: strong on the winter
-// storm tracks, negligible in the flat-gradient tropics.
-constexpr double K_STORM = 900.0;               // per hour, per (K/m) of gradient
 constexpr double SNOW_T = 0.5;                  // degC: colder precipitation is snow
 // Heat is transported by diffusion alone: the surface wind is the convergent
 // branch of an overturning cell, and advecting T with it refrigerates heat
@@ -718,37 +702,26 @@ inline bool PRESCRIBED = true;
 // PROBES and runs every stage, so its figures are the full column's; the
 // game leaves it off and runs only what survives (see Model::step).
 inline bool PROBES = false;
-// THE TWO-LEVEL DYNAMICS (dynamics2.h): when on, the wind the water rides
-// on is made by a two-level primitive-equation atmosphere whose levels
-// relax toward the painted temperatures, instead of by the belt tables.
-// Temperatures stay painted; only the circulation is computed. Judged on
-// its wind and pressure fields first, before it is trusted with the rain.
-inline bool DYN2 = false;
-// THE TWO-LAYER QUASI-GEOSTROPHIC WEATHER (qg2.h): when on, the wind the
-// water rides on poleward of the tropics is the lower layer of a two-layer
-// QG model relaxed toward the painted climate, and the belts stay painted
-// equatorward, blended across the channel's edge.
-inline bool QG2 = false;
-constexpr double QG2_BLEND_DEG = 6.0;   // degrees over which the QG wind fades into the painted belts
-// THE SAME WEATHER ON THE GEODESIC GRID (qg2geo.h): one global domain,
-// sampled onto the mesh from this grid's painted fields each hour and
-// sampled back by nearest cell for the water. The lat-lon QG2 stays as
-// the comparison until this one beats it.
+// THE MESH WEATHER (qg2geo.h): the two-layer quasi-geostrophic model on
+// the geodesic grid, one global domain, sampled onto the mesh from this
+// grid's painted fields each hour, its lower layer's wind sampled back by
+// nearest cell to replace the belts poleward of the tropics. Only the
+// sweep carries it (work order 03): sweep.cpp defines HH_QG2GEO and
+// includes qg2geo.h before this header, and the game compiles none of
+// it. Its lat-lon predecessors, the sigma core (DYN2) and the channel QG
+// model (QG2), and the two-layer mesh water it drove (WATER2) left main
+// on 2026-09-15; the branch map in Meta/Git.md has their last state.
+#ifdef HH_QG2GEO
 inline bool QG2GEO = false;
-// THE WATER IN TWO LAYERS ON THE MESH (water2geo.h), riding the two QG
-// winds, with the lift between them from the dynamics. Needs QG2GEO. The
-// lat-lon column below is then only a mirror: evaporation is still
-// computed here from the mirrored column, the rain and the vapour come
-// back by nearest mesh cell.
-inline bool WATER2 = false;
+#endif
+constexpr double QG2_BLEND_DEG = 6.0;   // degrees over which the mesh weather's wind fades into the painted belts
 // NOTHING PAINTED BUT THE LAND (decision of 2026-09-08): with PRESCRIBED
 // off, the painted climate may set the state once, at the first hour, as
 // the initial guess every climate model starts from, and after that no
 // climate field is set by anything but the equations. The physics path
-// (see PRESCRIBED for what it is), the mesh weather for the wind, the
-// two-layer water on the mesh. sweep.exe earth 0 physgeo 1.
+// (see PRESCRIBED for what it is) with the mesh weather for the wind:
+// sweep.exe earth 0 geo 1.
 inline bool PAINT_INIT = true;
-constexpr int DYN2_SUBSTEPS = 30;   // of dyn2::DT, per hour
 constexpr double PRE_LAPSE = 6.5;          // K/km on the model's smoothed elevation
 constexpr double PRE_CONT_KM = 500.0;      // e-folding of continentality with distance from the sea: 500 km inland is already continental
 // The old diagnostic model's 120 Pa/K was tuned on its own small land-sea
@@ -1267,7 +1240,7 @@ struct Climatology {
     // column, how near saturation it is, the height field that is the
     // pressure map, and the air's own temperature.
     std::vector<float> wv, rh, press, airT, airTf;
-    std::vector<float> d2u1, d2u2, d2ps, d2psSd, d2eke; // [cell] annual: the two-level dynamics' probes (see DYN2)
+    std::vector<float> d2u1, d2u2, d2ps, d2psSd, d2eke; // [cell] annual: the mesh weather's probes (see QG2GEO); d2psSd stays zero
     std::vector<float> upConv, upDiv, upFront, upOrog, capX; // PROBE: what lifts the air
     std::vector<float> evapF, latF;                          // PROBE: the water budget
     std::vector<float> spdF, capSkinF, supplyF, affordF;     // PROBE: and the evaporation
@@ -1343,7 +1316,7 @@ struct Model {
     // against the mass the dynamics ended with. Summed per day.
     std::vector<double> hbNew, physRow;
     double dbgE[3] = {0, 0, 0};
-    long dbgN[3] = {0, 0, 0};                 // cell-hours at the Tb clamp, Tf clamp, flux limiter
+    long dbgN[2] = {0, 0};                    // cell-hours at the Tb clamp, Tf clamp
     double dbgX[4] = {1e9, -1e9, -1e9, 1e9};  // hP min, hP max, Tb max, Tf min
     double tRelaxPool = 0; // temperature of the mass the relaxation takes, this hour
     double wTopMean = 0;                   // its area-weighted mean: what comes back down
@@ -1359,23 +1332,15 @@ struct Model {
     Prescribed pre;                    // the painted climate (see PRESCRIBED)
     Rules rul;                         // the climate as rules of thumb (see THE CLIMATE AS RULES OF THUMB)
     std::vector<double> anomA, anomB;  // its thermal-anomaly pressure, smoothed
-    dyn2::Model d2;                    // the two-level dynamics (see DYN2)
-    qg2::Model qg;                     // the two-layer QG weather (see QG2)
-    bool qgInit = false;
-    qg2geo::Model qgg;                 // the same on the geodesic grid (see QG2GEO)
+#ifdef HH_QG2GEO
+    qg2geo::Model qgg;                 // the mesh weather (see QG2GEO)
     bool qggInit = false;
-    bool painted = false;              // the initial state has been painted (see PAINT_INIT)
     std::vector<int> meshOfCell;       // nearest mesh cell for each cell here
     std::vector<int> cellOfMesh;       // and the cell here under each mesh cell
     std::vector<double> qggT;          // the mesh's near-surface temperature
-    water2::Model w2;                  // the two-layer water on the mesh (see WATER2)
-    std::vector<float> qggElev; std::vector<unsigned char> qggWater;
-    std::vector<double> evapBuf, wUpBuf, wConvBuf;   // this grid's evaporation, large-scale and convective ascent, for the mesh
-    std::vector<double> w2Evap, w2Wup, w2Conv;         // the same averaged onto the mesh
-    std::vector<int> meshCount;
-    bool d2init = false;
-    std::vector<double> tnsBuf;
-    static void d2Filter(std::vector<double>& f, void* ctx) { ((Model*)ctx)->polarFilter(f, false); }
+    std::vector<double> tnsBuf;        // this grid's near-surface air reduced to sea level: the weather's target
+#endif
+    bool painted = false;              // the initial state has been painted (see PAINT_INIT)
     std::vector<double> evapAcc, rainAcc;          // PROBE, one cell per thread: no atomics
     std::vector<double> pSpd, pCapSkin, pSupply, pAfford; // PROBE: the evaporation, term by term
     std::vector<double> cloudF;                    // and how much of it has condensed out
@@ -1385,7 +1350,7 @@ struct Model {
     std::vector<double> wvAcc;                     // PROBE: column water over time
     // probe diagnostics (an equatorial cell): daily sums of the T budget terms
     int probe = 4 * W + W / 2; // south-polar cell for the current investigation
-    double pSw = 0, pOlr = 0, pAdv = 0, pDif = 0;
+    double pSw = 0, pOlr = 0, pDif = 0;
 
     int idx(int x, int y) const { return y * W + x; }
 
@@ -1733,6 +1698,7 @@ struct Model {
         }
         std::swap(u, nu2);
         std::swap(v, nv2);
+#ifdef HH_QG2GEO
         if (QG2GEO && qggInit) {
             // The mesh weather's wind is the wind poleward of the tropics
             // (see QG2GEO): this layer's own momentum stands only where the
@@ -1745,6 +1711,7 @@ struct Model {
                 v[i] = (1 - w) * v[i] + w * qgg.v2[j];
             }
         }
+#endif
         std::swap(hP, nhP);
         std::swap(hT, nhT);
         polarFilter(u, true);
@@ -1840,100 +1807,10 @@ struct Model {
             u[idx(x, 0)] = v[idx(x, 0)] = u[idx(x, H - 1)] = v[idx(x, H - 1)] = 0.0;
     }
 
-    // The painting, then the dynamics hooks, which run either way.
+    // The painting, then the mesh weather, in the build that carries it.
     void prescribeHour(double doy, double hour) {
         if (PRESCRIBED || (PAINT_INIT && !painted)) paintHour(doy, hour);
-        if (DYN2) {
-            // The two-level atmosphere makes the wind instead (see DYN2):
-            // its levels are relaxed toward the painted near-surface air,
-            // and its lower level's wind is what the water rides on.
-            if (tnsBuf.empty()) tnsBuf.assign(W * H, 0.0);
-            // the near-surface air, reduced to sea level: a plateau's cold
-            // surface is not a cold column at 2.5 km beside the lowland's
-            for (int i = 0; i < W * H; i++)
-                tnsBuf[i] = T[i] - (water[i] ? 1.5 : 2.0) + (water[i] ? 0.0 : 6.5 * std::max((double)elev[i], 0.0) / 1000.0);
-            if (!d2init) {
-                d2.init(W, H, elev, latRad, water);
-                d2.setTargets(tnsBuf, true);
-                d2init = true;
-            } else {
-                d2.setTargets(tnsBuf, false);
-            }
-            d2.refreshExner();
-            static int dbgHours = 0;
-            bool dbg = std::getenv("HH_DYN_DEBUG") && dbgHours < 36;
-            if (dbg) {
-                double tmn = 1e9, tmx = -1e9, thmn = 1e9, thmx = -1e9;
-                for (int i = 0; i < W * H; i++) {
-                    tmn = std::min(tmn, tnsBuf[i]); tmx = std::max(tmx, tnsBuf[i]);
-                    thmn = std::min(thmn, d2.th1t[i]); thmx = std::max(thmx, d2.th1t[i]);
-                }
-                fprintf(stderr, "DYN hour %d: tns [%.1f, %.1f]  th1t [%.1f, %.1f]\n", dbgHours, tmn, tmx, thmn, thmx);
-            }
-            for (int k = 0; k < DYN2_SUBSTEPS; k++) {
-                d2.step(dyn2::DT, &Model::d2Filter, this);
-                if (dbg && k == DYN2_SUBSTEPS - 1) {
-                    double pmn = 1e9, pmx = -1e9, umx = 0; int iu = 0;
-                    for (int i = 0; i < W * H; i++) {
-                        pmn = std::min(pmn, d2.ps[i]); pmx = std::max(pmx, d2.ps[i]);
-                        double sp = std::fabs(d2.u1[i]) + std::fabs(d2.v1[i]);
-                        if (sp > umx) { umx = sp; iu = i; }
-                    }
-                    fprintf(stderr, "  hour %2d: ps [%.1f, %.1f] hPa  |u1| max %.2f at x %d y %d (lon %.0f lat %.0f)  th1 [%.0f, %.0f]\n",
-                            dbgHours, pmn / 100, pmx / 100, umx, iu % W, iu / W, ((iu % W) + 0.5) / W * 360.0 - 180.0,
-                            ((iu / W) + 0.5) / (double)H * 180.0 - 90.0,
-                            *std::min_element(d2.th1.begin(), d2.th1.end()), *std::max_element(d2.th1.begin(), d2.th1.end()));
-                }
-            }
-            if (dbg) { dbgHours++; if (dbgHours >= 36 && std::getenv("HH_DYN_STOP")) std::exit(0); }
-            for (int i = 0; i < W * H; i++) { u[i] = d2.u1[i]; v[i] = d2.v1[i]; }
-            d2.bank();
-            d2.bankEddy();
-        }
-        if (QG2) {
-            // The QG weather makes the wind poleward of the tropics (see
-            // QG2). Its thickness target is the painted near-surface air,
-            // reduced to sea level; its lower layer's wind replaces the
-            // painted belts inside the channels, fading into them over
-            // QG2_BLEND_DEG at the equatorward wall.
-            if (tnsBuf.empty()) tnsBuf.assign(W * H, 0.0);
-            for (int i = 0; i < W * H; i++)
-                tnsBuf[i] = T[i] - (water[i] ? 1.5 : 2.0) + (water[i] ? 0.0 : 6.5 * std::max((double)elev[i], 0.0) / 1000.0);
-            if (!qgInit) {
-                qg.init(W, H, elev, latRad, water);
-                qg.setTargets(tnsBuf, true);
-                // a seed for the eddies
-                for (int y = 0; y < H; y++)
-                    if (qg.inChannel(y))
-                        for (int x = 0; x < W; x++) qg.q2[idx(x, y)] += 1e-6 * std::sin(5.0 * 2 * 3.14159265 * (x + 0.5) / W + 0.7 * y);
-                qgInit = true;
-            } else {
-                qg.setTargets(tnsBuf, false);
-            }
-            for (int k = 0; k < (int)(DT / qg2::DT); k++) qg.step(qg2::DT);
-            if (std::getenv("HH_QG_DEBUG")) {
-                static int qgHours = 0; qgHours++;
-                double m1 = 0, m2 = 0; int bad = -1, i1 = 0, i2 = 0;
-                for (int i = 0; i < W * H; i++) {
-                    if (!std::isfinite(qg.u2[i]) || !std::isfinite(qg.u1[i])) { bad = i; break; }
-                    double a1 = std::fabs(qg.u1[i]) + std::fabs(qg.v1[i]), a2 = std::fabs(qg.u2[i]) + std::fabs(qg.v2[i]);
-                    if (a1 > m1) { m1 = a1; i1 = i; }
-                    if (a2 > m2) { m2 = a2; i2 = i; }
-                }
-                if (bad >= 0) { fprintf(stderr, "QG non-finite at hour %d, cell %d (x %d y %d)\n", qgHours, bad, bad % W, bad / W); std::exit(1); }
-                if (qgHours % 24 == 0 || qgHours > 2690)
-                    fprintf(stderr, "QG day %d h %d |u up| %.1f at (%d, %.0f)  |u low| %.1f at (%d, %.0f)\n", qgHours / 24, qgHours, m1, i1 % W,
-                            latRad[i1] * 180 / 3.14159265, m2, i2 % W, latRad[i2] * 180 / 3.14159265);
-            }
-            for (int i = 0; i < W * H; i++) {
-                double la = std::fabs(latRad[i] * 180.0 / 3.14159265);
-                double w = std::clamp((la - qg2::QG_EQ) / QG2_BLEND_DEG, 0.0, 1.0) *
-                           std::clamp((qg2::QG_CAP - la) / QG2_BLEND_DEG, 0.0, 1.0);
-                u[i] = (1 - w) * u[i] + w * qg.u2[i];
-                v[i] = (1 - w) * v[i] + w * qg.v2[i];
-            }
-            qg.bank();
-        }
+#ifdef HH_QG2GEO
         if (QG2GEO) {
             // The mesh weather (see QG2GEO): the painted near-surface air,
             // reduced to sea level, goes onto the mesh by the cell under
@@ -1969,9 +1846,6 @@ struct Model {
                     meshOfCell[i] = best;
                 }
                 qgg.init(mElev, mWater);
-                qggElev = mElev; qggWater = mWater;
-                meshCount.assign(M, 0);
-                for (int i = 0; i < W * H; i++) meshCount[meshOfCell[i]]++;
                 qggT.assign(M, 0.0);
                 for (int j = 0; j < M; j++) qggT[j] = tnsBuf[cellOfMesh[j]];
                 qgg.setTargets(qggT, true);
@@ -1981,37 +1855,10 @@ struct Model {
                 for (int j = 0; j < qgg.N; j++) qggT[j] = tnsBuf[cellOfMesh[j]];
                 qgg.setTargets(qggT, false);
             }
-            if (WATER2) {
-                int M = qgg.N;
-                if (evapBuf.empty()) { evapBuf.assign(W * H, 0.0); wUpBuf.assign(W * H, 0.0); wConvBuf.assign(W * H, 0.0); w2Evap.assign(M, 0.0); w2Wup.assign(M, 0.0); w2Conv.assign(M, 0.0); }
-                if (!w2.started) w2.init(qgg, qggElev, qggWater);
-                // last hour's evaporation and painted ascent, averaged over
-                // the cells under each mesh cell
-                std::fill(w2Evap.begin(), w2Evap.end(), 0.0); std::fill(w2Wup.begin(), w2Wup.end(), 0.0); std::fill(w2Conv.begin(), w2Conv.end(), 0.0);
-                for (int i = 0; i < W * H; i++) { int j = meshOfCell[i]; w2Evap[j] += evapBuf[i]; w2Wup[j] += wUpBuf[i]; w2Conv[j] += wConvBuf[i]; }
-                for (int j = 0; j < M; j++) {
-                    if (meshCount[j] > 0) { w2Evap[j] /= meshCount[j]; w2Wup[j] /= meshCount[j]; w2Conv[j] /= meshCount[j]; }
-                    else { w2Evap[j] = evapBuf[cellOfMesh[j]]; w2Wup[j] = wUpBuf[cellOfMesh[j]]; w2Conv[j] = wConvBuf[cellOfMesh[j]]; }
-                }
-                for (int j = 0; j < M; j++) qggT[j] = Tb[cellOfMesh[j]];
-                w2.setInputs(qggT, w2Evap, w2Wup, w2Conv);
-                for (int k = 0; k < (int)(DT / qg2geo::DT); k++) { w2.beginStep(); qgg.step(qg2geo::DT); w2.step(qg2geo::DT); }
-            } else {
-                for (int k = 0; k < (int)(DT / qg2geo::DT); k++) qgg.step(qg2geo::DT);
-            }
+            for (int k = 0; k < (int)(DT / qg2geo::DT); k++) qgg.step(qg2geo::DT);
             if (std::getenv("HH_QG_DEBUG")) {
                 static int qgHours = 0; qgHours++;
                 double m1 = 0, m2 = 0; int bad = -1, i1 = 0, i2 = 0;
-                if (WATER2 && qgHours % 24 == 0) {
-                    double zw[6] = {0, 0, 0, 0, 0, 0}, za = 0, lw = 0, lu = 0, la2 = 0;   // 30-60N: wl, wu, rainL, rainU, lift
-                    for (int j = 0; j < qgg.N; j++) {
-                        double la = qgg.lat[j] * 180 / 3.14159265, a = qgg.g.area[j];
-                        if (la > 30 && la < 60) { zw[0] += w2.wl[j] * a; zw[1] += w2.wu[j] * a; zw[2] += w2.rainLHour[j] * a; zw[3] += w2.rainUHour[j] * a; zw[4] += w2.liftHour[j] * a; za += a; }
-                        lw += w2.wl[j] * a; lu += w2.wu[j] * a; la2 += a;
-                    }
-                    fprintf(stderr, "W2 day %d  30-60N: wl %.1f wu %.1f mm, rain low %.2f up %.2f mm/h, lift %.3f mm/h | global wl %.1f wu %.1f\n",
-                            qgHours / 24, zw[0] / za, zw[1] / za, zw[2] / za, zw[3] / za, zw[4] / za, lw / la2, lu / la2);
-                }
                 for (int j = 0; j < qgg.N; j++) {
                     if (!std::isfinite(qgg.u2[j]) || !std::isfinite(qgg.u1[j])) { bad = j; break; }
                     double a1 = geodesic::len(qgg.V1[j]), a2 = geodesic::len(qgg.V2[j]);
@@ -2040,6 +1887,7 @@ struct Model {
             }
             qgg.bank();
         }
+#endif
     }
 
     // THE HOUR, IN STAGES (work order 02). `step` is the list; each stage
@@ -2458,7 +2306,11 @@ struct Model {
         // storms, the Budyko diffusion that stood in for the storms
         // would count them twice (measured on the geodesic branch,
         // 2026-09-02): the layer keeps KT_BL_SHARE of it.
-        double kShare = (QG2GEO && qggInit) ? KT_BL_SHARE : 1.0;
+#ifdef HH_QG2GEO
+        const double kShare = (QG2GEO && qggInit) ? KT_BL_SHARE : 1.0;
+#else
+        const double kShare = 1.0;
+#endif
         double kxa = c.ktx * kShare, kya = c.kty * kShare;
         c.difT = kxa * (Tb[c.xe] + Tb[c.xw] - 2 * Tb[i]) +
                  kya * (c.fN * (Tb[c.yn] - Tb[i]) + c.fS * (Tb[c.ys] - Tb[i]));
@@ -2734,13 +2586,12 @@ struct Model {
         dbgE[0] += dE / wsum / DT;
         dbgE[1] += ph / wsum / DT;
         dbgE[2] += mm / wsum / DT;
-        // and where it could have gone: clamps, limiter, thickness
-        int cb = 0, cf2 = 0, sh = 0;
+        // and where it could have gone: clamps, thickness
+        int cb = 0, cf2 = 0;
         double hmin = 1e9, hmax = -1e9, tbmax = -1e9, tfmin = 1e9;
         for (int i = 0; i < W * H; i++) {
             if (nTb[i] <= -95.0 || nTb[i] >= 70.0) cb++;
             if (nTf[i] <= -95.0 || nTf[i] >= 70.0) cf2++;
-            (void)sh;
             hmin = std::min(hmin, hP[i]);
             hmax = std::max(hmax, hP[i]);
             tbmax = std::max(tbmax, nTb[i]);
@@ -2748,7 +2599,6 @@ struct Model {
         }
         dbgN[0] += cb;
         dbgN[1] += cf2;
-        dbgN[2] += sh;
         dbgX[0] = std::min(dbgX[0], hmin);
         dbgX[1] = std::max(dbgX[1], hmax);
         dbgX[2] = std::max(dbgX[2], tbmax);
@@ -2756,7 +2606,11 @@ struct Model {
     }
 
     void step(double doy, double hour) {
-        if (PRESCRIBED || PAINT_INIT || DYN2 || QG2 || QG2GEO) prescribeHour(doy, hour);
+#ifdef HH_QG2GEO
+        if (PRESCRIBED || PAINT_INIT || QG2GEO) prescribeHour(doy, hour);
+#else
+        if (PRESCRIBED || PAINT_INIT) prescribeHour(doy, hour);
+#endif
         const HourCtx h = hourContext(doy, hour);
         // The full column, or only what survives the painting (see PROBES).
         const bool full = !PRESCRIBED || PROBES;
@@ -2909,7 +2763,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
                     "  probe T %.1f  W %.2f rain/h %.4f  day-sums: sw %+.2f olr %+.2f dif %+.2f (K/day)%c",
                     m.T[m.probe], m.Wv[m.probe], m.rainStep[m.probe], m.pSw / 30, m.pOlr / 30,
                     m.pDif / 30, 10);
-            m.pSw = m.pOlr = m.pAdv = m.pDif = 0;
+            m.pSw = m.pOlr = m.pDif = 0;
             double tmin = 1e9, tmax = -1e9, umax = 0, wmax = 0;
             for (int i = 0; i < W * H; i++) {
                 tmin = std::min(tmin, m.T[i]);
@@ -2920,16 +2774,15 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             fprintf(stderr, "atmo: day %d/%d  T [%.0f, %.0f]  |u|max %.0f  Wmax %.0f\n",
                     day, totalDays, tmin, tmax, umax, wmax);
         }
-        if (day % 30 == 0 && DYN2) fprintf(stderr, "dyn2: day %d, ps [%.0f, %.0f] hPa, u1 rms %.1f\n", day, *std::min_element(m.d2.ps.begin(), m.d2.ps.end()) / 100.0, *std::max_element(m.d2.ps.begin(), m.d2.ps.end()) / 100.0, std::sqrt(std::inner_product(m.d2.u1.begin(), m.d2.u1.end(), m.d2.u1.begin(), 0.0) / (W * H)));
         if (day % 30 == 0 && !PRESCRIBED) { // PROBE: the leak is the point (painted air conserves nothing)
             fprintf(stderr, "  air heat, 30-day mean W/m2: changed %+.2f  given %+.2f  leak %+.2f"
                             "  mass-mismatch %+.2f\n",
                     m.dbgE[0] / 720, m.dbgE[1] / 720, (m.dbgE[0] - m.dbgE[1]) / 720,
                     m.dbgE[2] / 720);
-            fprintf(stderr, "    clamped cell-hours: Tb %ld  Tf %ld  limiter %ld;  hP [%.0f, %.0f]  Tb max %.0f  Tf min %.0f\n",
-                    m.dbgN[0], m.dbgN[1], m.dbgN[2], m.dbgX[0], m.dbgX[1], m.dbgX[2], m.dbgX[3]);
+            fprintf(stderr, "    clamped cell-hours: Tb %ld  Tf %ld;  hP [%.0f, %.0f]  Tb max %.0f  Tf min %.0f\n",
+                    m.dbgN[0], m.dbgN[1], m.dbgX[0], m.dbgX[1], m.dbgX[2], m.dbgX[3]);
             m.dbgE[0] = m.dbgE[1] = m.dbgE[2] = 0;
-            m.dbgN[0] = m.dbgN[1] = m.dbgN[2] = 0;
+            m.dbgN[0] = m.dbgN[1] = 0;
             m.dbgX[0] = 1e9; m.dbgX[1] = -1e9; m.dbgX[2] = -1e9; m.dbgX[3] = 1e9;
         }
     }
@@ -2962,6 +2815,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         c.dbgRH = rh / wsum;
     }
     c.isWater.assign(m.water.begin(), m.water.end());
+#ifdef HH_QG2GEO
     if (QG2GEO && m.qgg.hoursBanked > 0) {
         double n = m.qgg.hoursBanked;
         c.d2u1.assign(W * H, 0.0f); c.d2u2.assign(W * H, 0.0f); c.d2ps.assign(W * H, 0.0f);
@@ -2974,30 +2828,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             c.d2eke[i] = (float)(m.qgg.ekeAcc[j] / n);
         }
     }
-    if (QG2 && m.qg.hoursBanked > 0) {
-        double n = m.qg.hoursBanked;
-        c.d2u1.assign(W * H, 0.0f); c.d2u2.assign(W * H, 0.0f); c.d2ps.assign(W * H, 0.0f);
-        c.d2psSd.assign(W * H, 0.0f); c.d2eke.assign(W * H, 0.0f);
-        for (int i = 0; i < W * H; i++) {
-            c.d2u1[i] = (float)(m.qg.u2Acc[i] / n);   // "low": the QG lower layer
-            c.d2u2[i] = (float)(m.qg.u1Acc[i] / n);   // "up": the upper
-            c.d2ps[i] = (float)(m.qg.psiAcc[i] / n * 1e-4 + 1e5); // the lower streamfunction, scaled into hPa-like units
-            c.d2eke[i] = (float)(m.qg.ekeAcc[i] / n);
-        }
-    }
-    if (DYN2 && m.d2.hoursBanked > 0) {
-        double n = m.d2.hoursBanked;
-        c.d2u1.assign(W * H, 0.0f); c.d2u2.assign(W * H, 0.0f); c.d2ps.assign(W * H, 0.0f);
-        c.d2psSd.assign(W * H, 0.0f); c.d2eke.assign(W * H, 0.0f);
-        for (int i = 0; i < W * H; i++) {
-            double mp = m.d2.psAcc[i] / n;
-            c.d2u1[i] = (float)(m.d2.u1Acc[i] / n);
-            c.d2u2[i] = (float)(m.d2.u2Acc[i] / n);
-            c.d2ps[i] = (float)mp;
-            c.d2psSd[i] = (float)std::sqrt(std::max(m.d2.ps2Acc[i] / n - mp * mp, 0.0));
-            c.d2eke[i] = (float)(m.d2.ekeAcc[i] / n);
-        }
-    }
+#endif
     {
         double s[Climatology::NTB] = {};
         for (int y = 0; y < H; y++)
@@ -3125,22 +2956,34 @@ inline terrain::V3 climFuzz(terrain::V3 n) {
     return {r.x / l, r.y / l, r.z / l};
 }
 
-// Bilinear sample of one season band of a climatology field at a (fuzzed)
-// unit-sphere position.
-inline float bilinearAt(const std::vector<float>& v, int season, terrain::V3 n) {
+// The climate-grid cell south-west of a (fuzzed) unit-sphere position and
+// the fractions towards its eastern and northern neighbours: the mapping
+// every bilinear sample shares (bilinearAt here, the sweep's land-masked
+// landMaskedT). x0 is unwrapped and y0 unclamped; the sampler does both.
+struct BilinearCell {
+    int x0, y0;
+    float fx, fy;
+};
+inline BilinearCell bilinearCellAt(terrain::V3 n) {
     float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
     float lon = std::atan2(n.y, n.x);
     float u = ((lon + 3.14159265f) / (2 * 3.14159265f)) * W - 0.5f;
     float vv = ((lat + 3.14159265f / 2) / 3.14159265f) * H - 0.5f;
     int x0 = (int)std::floor(u), y0 = (int)std::floor(vv);
-    float fx = u - x0, fy = vv - y0;
+    return {x0, y0, u - x0, vv - y0};
+}
+
+// Bilinear sample of one season band of a climatology field at a (fuzzed)
+// unit-sphere position.
+inline float bilinearAt(const std::vector<float>& v, int season, terrain::V3 n) {
+    const BilinearCell b = bilinearCellAt(n);
     auto at = [&](int xx, int yy) {
         xx = (xx % W + W) % W;
         yy = std::clamp(yy, 0, H - 1);
         return v[season * W * H + yy * W + xx];
     };
-    return (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) +
-           (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy;
+    return (at(b.x0, b.y0) * (1 - b.fx) + at(b.x0 + 1, b.y0) * b.fx) * (1 - b.fy) +
+           (at(b.x0, b.y0 + 1) * (1 - b.fx) + at(b.x0 + 1, b.y0 + 1) * b.fx) * b.fy;
 }
 
 inline float annualAt(const std::vector<float>& v, terrain::V3 n) {

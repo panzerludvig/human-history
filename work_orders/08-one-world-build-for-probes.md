@@ -1,6 +1,6 @@
 # 08 — One world build shared by the game and every probe
 
-**Status:** queued (2026-09-15)
+**Status:** done (2026-09-15)
 
 ## Problem
 
@@ -63,3 +63,118 @@ must build the same world the game does), `standards/cpp.md` §Shape. The probe 
 ## Depends on
 
 05 (step 2).
+
+## Run
+
+**Status:** done (merged into `nightly/2026-09-15`, see below). Branch `wo/08-one-world-build`, forked from `8c1d5e2`
+(the head of `nightly/2026-09-15` after orders 03, 04 and 05).
+
+Commits, one per step:
+
+- `15cc915` step 1: `World::build` takes the stage to stop at (`world::Stage`: Plates,
+  SeaLevel, Hydrology, Climate, Rivers, Settlements) and a null progress callback;
+  `World::terrainOffset()` is the float offset the samplers take. `terrprobe` builds to the
+  sea level, `test_atmo` to the hydrology, `sweep` and `transect` to the climate,
+  `test_resources` through the reweighted rivers. The five derivation and build-chain
+  copies are gone. `test_atmo` keeps its own `atmosphere::build(..., true)` call for the
+  verbose flag (a monthly probe line on stderr the game never prints).
+- `3a193d0` step 2: `sweep.cpp` is one static function per report (`reportLakes`,
+  `reportLandSeaVote`, `reportScore`, `reportTropics`, `reportContrast`, `reportDynamics`,
+  `reportWorldReview`, `reportNorthSplit`, `reportSurfaceZonal`, `reportMapMoisture`,
+  `reportHeightSources`, `reportLift`, `reportCycle`, `reportFullRes`, `reportRainSpread`,
+  `reportRaster`, `reportLandCover` (which prints `reportLandVsSea` and `reportPalette`
+  between its table and its last line), `reportProfile`, `reportCloud`), a table in print
+  order, and a `main` that sets the atmosphere's mode, builds the world, and runs every
+  report or the comma-separated names in a fifth argument, refusing a name that is no
+  report. The header was rewritten instead of renaming the file (the order allowed either):
+  `sweep.exe` is the run line in `Technical/Climate Review.md`, `Technical/Globe Viewer.md`,
+  `Technical/Geodesic Grid.md`, `Meta/Git.md`, `standards/general.md` and order 03's Run
+  section, none of which are in this order's Files.
+- `511a2e4` step 3: `writePpm` (six sites), `coastalCell` (three), `petMmDay` (five) are one
+  function each in `sweep.cpp`; `atmosphere::bilinearCellAt` is the position-to-cell
+  mapping that `bilinearAt` and the sweep's `landMaskedT` both call.
+
+**Done when, checked** (after every step; the final numbers are from `511a2e4`):
+
+1. `grep -n "paramsFor" src/*.cpp src/*.h`:
+
+        src/terrain.h:49:inline ContinentParams paramsFor(float concentration) {
+        src/world.h:102:        cp = terrain::paramsFor(concentration / 100.0f);
+
+   Called from `World::derive` only. Passes.
+2. `sweep.cpp` `main`: line 1638 of 1696, 59 lines. Passes.
+3. Probe outputs identical by seed. Baseline captured from every probe built in the
+   untouched tree at `8c1d5e2`; after each step every `build_*.bat` was rerun and the same
+   six runs captured and compared with `fc /b` (29 files: the sweep's stderr and its ten
+   PPM images for both seeds, `test_resources` stderr, `transect` stdout and stderr,
+   `terrprobe` stdout, `test_atmo` stdout, stderr and nine BMPs):
+
+        build\sweep.exe earth 0 rules 1     (from the repo root; 32,372 bytes of stderr)
+        build\sweep.exe 7 0 rules 1         (19,885 bytes)
+        build\test_resources.exe 7 40       (stderr, 24,980 bytes)
+        build\transect.exe                  (10,913 + 427 bytes)
+        build\terrprobe.exe                 (802 bytes)
+        build\test_atmo.exe 7 build\atmo    (504 + 5,570 bytes, 9 BMPs of 55,350)
+
+   Result after step 1, step 2 and step 3: `29 files compared, 0 differ`. Passes. The
+   `CLIMATE` block is unchanged from order 03's baseline (earth: err 7.1, mean 14.9, rain
+   2.40, pRain 0.9, dry 20%, cloud 45%; Wv 26.78 mm, residence 11.1 d, wind 9.3 m/s, RH 69%,
+   coast 2.05 inland 1.34; evap 3.06 rain 2.40; seed 7: err 11.8, mean 14.3, rain 2.28, dry
+   31%, cloud 44%). `test_resources 7 40` ends as order 04 recorded it (`wooded 376 /
+   149174`, `0 settlements farm`).
+
+Builds: every `build_*.bat` at the root exits 0 after every step, no warning other than
+C4996. Counts moved: `build_terrprobe.bat` 2 to 3 (the `getenv` C4996 in `atmosphere.h`,
+which terrprobe now includes through `world.h`), `build_sweep.bat` 10 to 5 (six `fopen`
+sites became one).
+
+Picker: `build\sweep.exe 7 0 rules 1 lakes,raster` prints the lake census and the raster
+terrain block only; `build\sweep.exe 7 0 rules 1 nosuch` prints `no report named "nosuch";
+the reports are lakes vote score ... cloud` and exits 1.
+
+**Files beyond the order's list:**
+
+- `src/world.h` (listed as read only): the stage argument and the null-safe progress are
+  what lets a probe stop where its measurement starts; without them every probe would run
+  the climate and the settlements to get a sea level, and `test_atmo`'s stderr would
+  change. `build(progress)` for the game is unchanged (`main.cpp`, `savefile.h`,
+  `test_savefile.cpp` untouched); the body is now `buildStages` with an early return after
+  each stage.
+- `src/atmosphere.h`: the one extraction `bilinearCellAt`, same float expressions in the
+  same order; the probes that sample the climate (`test_resources`, the sweep's full-res
+  report through `bilinearAt` itself) are byte-identical.
+
+**Unsure of, for the morning:**
+
+- **PET.** Step 3 says one PET function. Calling `hydrology::petMmDay` (float) from the
+  sweep's double averages moves one byte of `map_seed7.ppm` (offset 0x5127, 0x8B to 0x8C;
+  every other file identical). The sweep keeps a double twin, `petMmDay` in `sweep.cpp`,
+  with the reason next to it. The renderer's PET is the float one, so the honest choice
+  may be to take it and accept the pixel; that is a change of output, which this order
+  forbade.
+- **The angle constant.** The probes used `2 * 3.14159265358979` for the rotation angles;
+  `World::derive` uses `2 * camera::PI` (`3.14159265358979323846`), a different double by
+  seven ulps. The float rotation matrix came out identical for seeds 1 (earth) and 7, as
+  the byte comparison shows; for some other seed the last bit of one entry could differ.
+  The probes now build the game's world, which is the point.
+- **Report order in the sweep.** The atmosphere now runs before the lake census and the
+  land/sea vote (the world builds through the climate in one call), while the reports
+  print in their old order. `atmosphere::build` prints nothing to stderr in the modes the
+  sweep can reach (`verbose` is false, `PRESCRIBED` is never cleared), so the text is the
+  same; only the `HH_DEBUG_PRE` lines, when that environment variable is set, would now
+  come before `LAKES:` instead of after.
+- `reportLandVsSea` and `reportPalette` are not in the picker's table; `landcover` prints
+  them, in the old order, so a default run is unchanged.
+- `test_atmo.cpp`'s `saveBmp` duplicates `bmp::write` (`src/bmp.h`) except for the
+  top-down row order; outside step 3's list and left alone.
+- The whole of `sweep.cpp` was clang-formatted in step 2 (every line moved into a
+  function); steps 1 and 3 formatted changed lines only.
+- The capture scripts and the baseline `test_atmo` built from `8c1d5e2` are under `build\`
+  in the worktree (`probe_base`, `probe_step1..3`), untracked.
+
+**Merged into `nightly/2026-09-15`** as `c7ad22a`, last of the night, after 03, 04 and 05.
+Second probe on `nightly`: every `build_*.bat` succeeds; `build\sweep.exe earth 0 rules 1`,
+`build\sweep.exe 7 0 rules 1` and `build\test_resources.exe 7 40` stderr, and the
+`map_seed7.ppm` and `rain_seedearth.ppm` images, are byte-identical to the `8c1d5e2`
+baseline (32372, 19885, 24980, 55310, 55310 bytes). The probes must be run from the repo
+root, where `data/` is; run from `build\` they fail to find the Earth template.

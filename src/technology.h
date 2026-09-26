@@ -3,6 +3,7 @@
 // awareness and practice spread by contact. Rules in Design/Technology.md.
 #pragma once
 #include "population.h"
+#include "events.h"
 #include <cmath>
 #include <cstdio>
 
@@ -68,12 +69,11 @@ inline double expDraw(uint64_t& rng, double meanDays) { return -meanDays * std::
 
 // Build a culture: a handful of sounds it favours, and its own name.
 inline population::Culture makeCulture(uint64_t& rng) {
-    using namespace population;
-    Culture c;
-    for (int i = 0; i < 5; i++) c.onset[i] = (uint8_t)(urand(rng) * N_ONSET);
-    for (int i = 0; i < 4; i++) c.nucleus[i] = (uint8_t)(urand(rng) * N_NUCLEUS);
-    for (int i = 0; i < 3; i++) c.coda[i] = (uint8_t)(urand(rng) * N_CODA);
-    for (int i = 0; i < 2; i++) c.ending[i] = (uint8_t)(urand(rng) * N_ENDING);
+    population::Culture c;
+    for (int i = 0; i < 5; i++) c.onset[i] = (uint8_t)(urand(rng) * population::N_ONSET);
+    for (int i = 0; i < 4; i++) c.nucleus[i] = (uint8_t)(urand(rng) * population::N_NUCLEUS);
+    for (int i = 0; i < 3; i++) c.coda[i] = (uint8_t)(urand(rng) * population::N_CODA);
+    for (int i = 0; i < 2; i++) c.ending[i] = (uint8_t)(urand(rng) * population::N_ENDING);
     return c;
 }
 
@@ -81,19 +81,24 @@ inline population::Culture makeCulture(uint64_t& rng) {
 // its endings, so everything it names sounds related.
 inline void makeName(const population::Culture& c, uint64_t& rng, char out[16],
                      int minSyllables = 1) {
-    using namespace population;
     char buf[32] = {};
     int n = 0;
     int syllables = std::max(urand(rng) < 0.55 ? 2 : 1, minSyllables); // plus the ending
     for (int s = 0; s < syllables; s++) {
-        const char* on = NAME_ONSET[c.onset[(int)(urand(rng) * 5)] % N_ONSET];
-        const char* nu = NAME_NUCLEUS[c.nucleus[(int)(urand(rng) * 4)] % N_NUCLEUS];
-        const char* co = urand(rng) < 0.4 ? NAME_CODA[c.coda[(int)(urand(rng) * 3)] % N_CODA] : "";
+        const char* on =
+            population::NAME_ONSET[c.onset[(int)(urand(rng) * 5)] % population::N_ONSET];
+        const char* nu =
+            population::NAME_NUCLEUS[c.nucleus[(int)(urand(rng) * 4)] % population::N_NUCLEUS];
+        const char* co =
+            urand(rng) < 0.4
+                ? population::NAME_CODA[c.coda[(int)(urand(rng) * 3)] % population::N_CODA]
+                : "";
         for (const char* q = on; *q && n < 12; q++) buf[n++] = *q;
         for (const char* q = nu; *q && n < 12; q++) buf[n++] = *q;
         for (const char* q = co; *q && n < 12; q++) buf[n++] = *q;
     }
-    const char* en = NAME_ENDING[c.ending[(int)(urand(rng) * 2)] % N_ENDING];
+    const char* en =
+        population::NAME_ENDING[c.ending[(int)(urand(rng) * 2)] % population::N_ENDING];
     for (const char* q = en; *q && n < 15; q++) buf[n++] = *q;
     buf[0] = (char)std::toupper((unsigned char)buf[0]);
     buf[n] = 0;
@@ -135,26 +140,28 @@ inline float suitability(const population::Settlement& s, int tech) {
     return s.tech[population::TECH_FARMING].practising ? 1.0f : 0.15f;
 }
 
-// Annual food capacity: foraging scaled by the seasonal mean (with the
-// game-borne share tracking the regional pool's health), farming's
-// harvest-shaped total, the herd's current flow (seasonal mean ~0.85), and
-// the farmyard bonus; water caps the whole.
-inline float effectiveK(const population::Settlement& s, double now) {
+// The skill side of a SeasonCtx: what this settlement is good at today,
+// with no climate attached. sim::seasonCtx adds the site for the seasonal
+// integration; between wakes, the annual mean is asked through this.
+inline population::SeasonCtx annualCtx(const population::Settlement& s, double now) {
+    population::SeasonCtx ctx;
+    ctx.farmExp = expertise(s.tech[population::TECH_FARMING], now);
     // Farm food comes from the standing plots (sim::updateFarmland caches
     // farmK from them), not from an abstract multiplier: no fields, no crop.
-    float farm = s.farmK * expertise(s.tech[population::TECH_FARMING], now);
-    float hExp = expertise(s.tech[population::TECH_HUSBANDRY], now);
-    float husb = s.herd * 0.85f + population::FARMYARD_SHARE_POP * s.kFoodP * hExp;
-    float archExp = expertise(s.tech[population::TECH_ARCHERY], now);
-    float fishExp = expertise(s.tech[population::TECH_FISHING], now);
-    float cover = population::bowCoverage(s.bows, s.P);
-    float bigEff = population::huntEff(s.gameNow) *
-                   (1.0f + population::BOW_BIG_GAIN * cover * archExp);
-    float forage = s.kFoodP - s.kGame - s.kSmall + s.kGame * bigEff +
-                   s.kSmall * population::smallGameEff(cover, archExp);
-    // Fish carry no land-condition term: the water is not worn out.
-    return std::min(forage * s.meanF + farm + husb + s.kFish * population::fishEff(fishExp),
-                    s.kWater);
+    ctx.farmFlow = s.farmK * ctx.farmExp;
+    ctx.husbExp = expertise(s.tech[population::TECH_HUSBANDRY], now);
+    ctx.granExp = expertise(s.tech[population::TECH_GRANARY], now);
+    ctx.gameG = s.gameNow;
+    ctx.archExp = expertise(s.tech[population::TECH_ARCHERY], now);
+    ctx.fishExp = expertise(s.tech[population::TECH_FISHING], now);
+    ctx.bowCover = population::bowCoverage(s.bows, s.P);
+    ctx.aff = s.aff;
+    return ctx;
+}
+
+// Annual food capacity at today's skills: population::effectiveFood.
+inline float effectiveK(const population::Settlement& s, double now) {
+    return population::effectiveFood(s, annualCtx(s, now));
 }
 
 // Is there anything here to practise on? Not "how much is it worth" but
@@ -163,12 +170,15 @@ inline float effectiveK(const population::Settlement& s, double now) {
 // on share of the food instead, a people would lose husbandry the day they
 // took it up, when the seed herd feeds one person out of three hundred.
 inline bool meansPresent(const population::Settlement& s, int tech) {
-    using namespace population;
     switch (tech) {
-    case TECH_FARMING: return s.sFarm >= 0.05f;
-    case TECH_HUSBANDRY: return s.herd > 0.0f;
-    case TECH_GRANARY: return s.granaries > 0.0f || s.buildWork > 0.0f;
-    case TECH_FISHING: return s.sFish >= 0.15f;
+    case population::TECH_FARMING:
+        return s.sFarm >= 0.05f;
+    case population::TECH_HUSBANDRY:
+        return s.herd > 0.0f;
+    case population::TECH_GRANARY:
+        return s.granaries > 0.0f || s.buildWork > 0.0f;
+    case population::TECH_FISHING:
+        return s.sFish >= 0.15f;
     default: return true; // archery: the compression we already made
     }
 }
@@ -214,9 +224,8 @@ inline float adoptionNeed(const population::Settlement& s, int tech, double now)
 
 // Redraw a settlement's next contact event for one technology.
 inline void redraw(population::Field& pf, int i, WorldState& ws, int tech, double now) {
-    using namespace population;
-    Settlement& s = pf.settlements[i];
-    TechState& ts = s.tech[tech];
+    population::Settlement& s = pf.settlements[i];
+    population::TechState& ts = s.tech[tech];
     if (s.leaving || ts.practising) { s.nextTech[tech] = INF_T; return; }
     if (!ts.aware) {
         int knowing = 0;
@@ -278,16 +287,16 @@ inline void scheduleInvention(population::Field& pf, WorldState& ws, int tech, d
 }
 
 inline void startPractising(population::Field& pf, int i, WorldState& ws, int tech, double now) {
-    using namespace population;
-    Settlement& s = pf.settlements[i];
+    population::Settlement& s = pf.settlements[i];
     s.tech[tech].aware = true;
     s.tech[tech].practising = true;
     s.tech[tech].practiceT = now;
     s.nextTech[tech] = INF_T;
-    if (tech == TECH_HUSBANDRY) s.herd = std::max(s.herd, HERD_SEED); // bred from capture
+    if (tech == population::TECH_HUSBANDRY)
+        s.herd = std::max(s.herd, HERD_SEED); // bred from capture
     // Taking up farming raises granary suitability ~7x: redraw that clock so
     // the new rate applies now rather than at the next resample.
-    if (tech == TECH_FARMING) redraw(pf, i, ws, TECH_GRANARY, now);
+    if (tech == population::TECH_FARMING) redraw(pf, i, ws, population::TECH_GRANARY, now);
     for (int j : pf.neighbours[i]) redraw(pf, j, ws, tech, now);
 }
 
@@ -354,6 +363,84 @@ inline void init(population::Field& pf, WorldState& ws, uint32_t seed, double no
     for (int t = 0; t < population::NTECH; t++) {
         for (int i = 0; i < (int)pf.settlements.size(); i++) redraw(pf, i, ws, t, now);
         scheduleInvention(pf, ws, t, now);
+    }
+}
+
+// What a people can still do, and what they have let go.
+//
+// Practice slides back when the means is gone -- no herd, no water, no
+// ground -- and when there are too few practitioners in reach to teach it
+// faithfully. Expertise is a function of the day practice began, so both
+// are one arithmetic: push that day forward. When it catches up with today
+// the skill has fallen to a beginner's and practice lapses; the people stay
+// aware of it, and three generations after the last person in reach did the
+// thing, they stop knowing it can be done at all.
+//
+// A settlement that is practising never loses awareness of what it is
+// doing. That is what lets one settlement invent something and hold it
+// alone until its neighbours learn it.
+inline void decaySkills(population::Field& pf, technology::WorldState& ws, int si, double now) {
+    population::Settlement& s = pf.settlements[si];
+    if (s.leaving || s.P <= 0) return;
+    double span = now - s.t; // the settlement's own last-integrated day
+    if (span <= 0) return;
+    for (int tech = 0; tech < population::NTECH; tech++) {
+        population::TechState& ts = s.tech[tech];
+        if (!ts.aware) continue;
+        // Who else within reach still does this, and how many of them.
+        float others = 0;
+        bool teacher = false;
+        for (int j : pf.neighbours[si]) {
+            const population::Settlement& o = pf.settlements[j];
+            if (o.leaving || !o.tech[tech].practising) continue;
+            teacher = true;
+            others += o.P;
+        }
+        if (ts.practising || teacher) ts.lostT = now; // somebody in reach still knows
+        if (!ts.practising) {
+            // Knowledge outlives practice, but not by much.
+            if (ts.lostT >= 0 && now - ts.lostT > population::AWARE_FORGET_YEARS * 365.0) {
+                ts.aware = false;
+                technology::redraw(pf, si, ws, tech, now);
+                technology::scheduleInvention(pf, ws, tech, now); // they are in the pool again
+            }
+            continue;
+        }
+        bool means = technology::meansPresent(s, tech);
+        float critical = population::criticalPractitioners(tech);
+        float carriers = s.P + others;
+        float shortfall = critical > 0 ? std::clamp(1.0f - carriers / critical, 0.0f, 1.0f) : 0.0f;
+        // Doing the thing every day blunts even the transmission problem.
+        double k = 1.0;
+        if (!means) k = std::max(k, population::SKILL_DISUSE_K);
+        if (shortfall > 0)
+            k = std::max(k, 1.0 + (population::SKILL_ISOLATED_K - 1.0) * shortfall *
+                                      (means ? population::SKILL_USE_SLOWS : 1.0f));
+        // Skill slides back, but never past a beginner's hands.
+        if (k > 1.0) ts.practiceT = std::min(now, ts.practiceT + (k - 1.0) * span);
+        if (now - ts.practiceT > 1.0) { // still has something in hand
+            ts.strainT = -1;
+            continue;
+        }
+        // At the floor. A new practice starts here too, which is why the
+        // lapse waits: a people who have just taken something up have no
+        // skill to lose yet, and their means may not exist until they build
+        // it. Only staying at the floor for a generation and a half ends it.
+        if (ts.strainT < 0) ts.strainT = now;
+        if (now - ts.strainT < population::SKILL_GRACE_YEARS * 365.0) continue;
+        ts.practising = false;
+        ts.strainT = -1;
+        ts.lostT = now;
+        if (tech == population::TECH_HUSBANDRY) s.herd = 0;
+        {
+            char txt[96];
+            snprintf(txt, sizeof txt, "%s no longer practises %s", s.name,
+                     technology::techName(tech));
+            sim::note(pf, population::EV_TECH_LOST, now, s.id, 0, 0, (float)tech, txt);
+        }
+        technology::redraw(pf, si, ws, tech, now);
+        for (int j : pf.neighbours[si]) technology::redraw(pf, j, ws, tech, now);
+        technology::scheduleInvention(pf, ws, tech, now);
     }
 }
 
