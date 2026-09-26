@@ -2,6 +2,8 @@
 
 **Status:** open (2026-09-18)
 
+Line references re-checked against f9c731f on 2026-09-26.
+
 ## Problem
 
 [[Design/Resources]] says the labour ledger is one capped budget of man-days and that
@@ -37,7 +39,8 @@ ledger's own stated rule.
 - `Settlement::labFuel` (`src/settlement.h:654`) is the one allocation readout that exists;
   there is no equivalent for the crafts, so the panel cannot show the split either.
 
-Line references checked against commit `8d974f3` on 2026-09-18.
+Line references checked against commit `8d974f3` on 2026-09-18; re-checked against
+`f9c731f` on 2026-09-26, all unchanged.
 
 ## Design
 
@@ -69,10 +72,12 @@ The seam is `Step`: it already carries the sub-step's derived state between stag
 
 - `src/population.h` (`Step`, `stepHeat`, `stepBuilding`, `stepBows`)
 - `src/settlement.h` (the four constants' comments; one new readout field)
-- `src/inspect.h` (the panel line beside the woodcutter share)
+- `src/inspect.h` (the panel line beside the woodcutter share, `inspect.h:393-395`)
 - `src/test_resources.cpp` (the assertion in Done when)
 
-Overlaps order 04's files if that is still open; queue after it.
+Overlaps order 04's files if that is still open; queue after it. Order 04 is merged into
+`main` (2026-09-26), so this no longer applies; it shares `src/population.h` with orders
+12 and 13 and `src/inspect.h` with orders 06 and 13 instead.
 
 ## Done when
 
@@ -84,4 +89,5 @@ Overlaps order 04's files if that is still open; queue after it.
 
 ## Depends on
 
-Order 04 (split population and sim), if its `population.h` changes have not merged.
+Order 04 (split population and sim), if its `population.h` changes have not merged. They
+have (merged into `main` 2026-09-26), so nothing.

@@ -87,3 +87,9 @@ month-end probe prints inline, and `stepDynamics` is 138.
 ## Depends on
 
 01. Order 03 owns the sub-model drivers in `prescribeHour`; this order does not touch them.
+
+## Review
+
+Closed 2026-09-15, implemented in a daytime session before the first night. The
+reasoning and the timings are in `Dev Log/Log.md` 2026-09-15, "The atmosphere's hour is a
+list of stages". Moved to `done/` in the review of 2026-09-26.

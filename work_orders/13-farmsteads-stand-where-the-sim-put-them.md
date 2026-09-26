@@ -2,6 +2,8 @@
 
 **Status:** open (2026-09-18)
 
+Line references re-checked against f9c731f on 2026-09-26.
+
 ## Problem
 
 Three defects in the farmstead layer, all from the 2026-09-14 session, two of them accepted
@@ -33,13 +35,24 @@ Violates `standards/general.md` §Mirrored code: `farmsteadPos` exists on the CP
 - `src/farmland.h:68-73` — the built slots are priced at their own cell (`sFarmMap`), which
   is the rule the drawing does not know about (defect 1).
 - `src/textures.h:73-75` — the back-pointer write, last writer wins (defect 2).
-- `shaders/globe.frag` — `hutsNear`'s farmstead block draws a house and yard for every slot
-  `k < site.a` with no land test; `fieldsNear`'s farmstead block does the same for fields.
-  Both read the back-pointer written above.
+- `shaders/globe.frag` — `hutsNear`'s farmstead block (`globe.frag:441-480` at `f9c731f`)
+  draws a house and yard for every slot `k < site.a` with no land test; `fieldsNear`'s
+  farmstead block (`globe.frag:616-653`) does the same for fields. Both read the
+  back-pointer written above. Correction on re-check: `fieldsNear` skips a slot whose
+  tilled area is `<= 0.05` km2, and a slot priced at zero is never tilled
+  (`farmland.h:71`), so no fields are drawn on water; only the house is.
 - `src/inspect.h:166` — the tooltip pick walks the same slots and names a farmstead on
   water too.
+- Also found on re-check, for the run to confirm before relying on defect 1: a farmstead
+  is only started when `fsteadNextOk` passes for its slot (`population.h:550-551`,
+  `stepFillCycle`), and `sFarmMap` is fixed at build (`population.h:167`), so in a fresh
+  world every standing slot passed the suitability test; and `main` calls `hutsNear` only
+  where `!isWater` (`globe.frag:1133` at `f9c731f`), so a house on a water pixel is not
+  drawn. A house in open water therefore needs a slot whose cell is priced above 0.05
+  while its point is lake, or a save back-filled by `savefile.h:320-324`.
 
-Line references checked against commit `8d974f3` on 2026-09-18.
+Line references checked against commit `8d974f3` on 2026-09-18; re-checked against
+`f9c731f` on 2026-09-26, all unchanged.
 
 ## Design
 

@@ -132,3 +132,13 @@ merge: `build.bat` and `build_sweep.bat` succeed; `build\sweep.exe earth 0 rules
 the same `CLIMATE` block, water line and rules report as the baseline (err 7.1, mean 14.9,
 rain 2.40, pRain 0.9, dry 20%, cloud 45%; Wv 26.78 mm, residence 11.1 d, wind 9.3 m/s,
 RH 69%, coast 2.05 inland 1.34; evap 3.06 rain 2.40 mm/day).
+
+## Review
+
+**Keep**, 2026-09-26. Merged into `main` with the rest of the night (`4548c63`). The
+per-model calls are the right ones: QG2GEO is the atmosphere being redone on the mesh and
+stays in the sweep's build; DYN2, QG2 and WATER2 are recorded in the branch map at
+`4ac16a0`. The sweep's `CLIMATE` block is identical to the baseline. The `Meta/Open
+Threads.md` entry of 2026-09-07 still names `qg2.h` as a dated record, which is what it
+is; it stays. That the probe scripts other than `build.bat` do not create `build\` is a
+fresh-checkout papercut, not a defect of this order.

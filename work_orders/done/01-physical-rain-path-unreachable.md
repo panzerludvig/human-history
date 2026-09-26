@@ -51,3 +51,9 @@ place it comes back, not this file.
 ## Depends on
 
 Nothing.
+
+## Review
+
+Closed 2026-09-15, implemented in a daytime session before the first night, as option 1
+(the physical path deleted). The reasoning is in `Dev Log/Log.md` 2026-09-15, "The physical
+rain path is deleted". Moved to `done/` in the review of 2026-09-26.

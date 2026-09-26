@@ -178,3 +178,13 @@ Second probe on `nightly`: every `build_*.bat` succeeds; `build\sweep.exe earth 
 `map_seed7.ppm` and `rain_seedearth.ppm` images, are byte-identical to the `8c1d5e2`
 baseline (32372, 19885, 24980, 55310, 55310 bytes). The probes must be run from the repo
 root, where `data/` is; run from `build\` they fail to find the Earth template.
+
+## Review
+
+**Keep**, 2026-09-26. Merged into `main` (`4548c63`). Every probe builds its world
+through `World::build`, 29 probe outputs are byte-identical to the baseline, and
+`sweep.cpp`'s `main` is one screen. On PET: the sweep keeps its double twin, since the
+order forbade a change of output and one byte of one image is not worth a rule break;
+folding it into `hydrology::petMmDay` is a one-line change for whenever the sweep's
+numbers are next allowed to move. The probes must run from the repo root, where `data\`
+is, which the order's Run section records.

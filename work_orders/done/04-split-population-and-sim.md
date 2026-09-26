@@ -161,3 +161,14 @@ Unsure of, for the morning:
 and `3 40` stderr byte-identical to the `4ac16a0` baseline (`fc /b`: no differences;
 24980 and 7729 bytes). The probe writes only to stderr; capturing it through PowerShell's
 `2>` wraps lines and breaks the comparison, so capture through `cmd /c`.
+
+## Review
+
+**Keep**, 2026-09-26. Merged into `main` (`4548c63`). `test_resources` output is
+byte-identical to the baseline for both seeds, no `using namespace` is left in a header,
+and `advance` is its seven blocks. The deviation in `sim::gameTick` (the herds' flow keeps
+its old factor order, so seed 7 moves by one person when grouped as `foodTerms` does) is
+accepted as written next to the code. `sphere.h` beyond the Files list is the right home
+for the geometry every carved header shares. `technology.h` naming `sim::note` through
+`events.h` is a lower header reaching up; left as is until something else needs the same
+seam.

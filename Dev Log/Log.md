@@ -1,5 +1,40 @@
 # Dev Log
 
+## 2026-09-26 — The first night, reviewed eleven days late
+
+### What was done
+The first night run (`nightly/2026-09-15`) implemented orders 03, 04, 05 and 08. Reviewed
+on 2026-09-26: all four kept, and `nightly/2026-09-15` merged into `main` as `4548c63`.
+Each order's Review section says why; the orders, and 01 and 02 from the day before, are
+in `work_orders/done/`. The line references of the orders still open (06, 07, 09, 11-14)
+were re-checked against the carved tree.
+
+### Decisions and reasoning
+
+**All four kept without rework**
+Every order had been checked twice by the run, on its own branch and again on `nightly`
+after the merge, against a baseline built from the untouched tree: probe outputs
+byte-identical (the sweep's `CLIMATE` block, `test_resources` for seeds 7 and 3, 29 probe
+files for order 08), the game's four screenshots byte-identical after each of order 05's
+twelve steps, and a new save round-trip probe passing. Nothing that behaved differently was
+found, which is what a refactoring night should produce. The remaining open points are
+small and written in the Review sections: the tooltip after order 05's step 7b still wants
+a mouse-over in the game, since no screenshot covers a Win32 control, and the sweep keeps a
+double-precision PET twin rather than move one byte of one image.
+
+**What the first night says about the process**
+The second probe on `nightly` earned its place: it is what made merging four orders that
+touched overlapping vault notes safe to accept without re-reading every diff. The Run
+sections' "Unsure of" lists were the most useful part of the review; they are where each
+deviation from an order's Files list was explained. The cost was on the review side: the
+night sat unreviewed for eleven days, during which `main` still called the four orders
+`queued` and the orders written on 2026-09-18 (11-14) were drafted against line numbers
+the night had already moved. A night should be reviewed the next morning; the README's
+provisional rules are left as they are until a second and third night give more than one
+data point.
+
+---
+
 ## 2026-09-15 — Work orders become a queue for nightly runs
 
 ### What was done

@@ -176,3 +176,14 @@ Second probe on `nightly`: `build.bat` and `build_testsavefile.bat` succeed; the
 retaken on the merged build are SHA-256 identical to the `4ac16a0` baseline (2,764,854
 bytes each); `build\test_savefile.exe 7 3` prints
 `roundtrip seed 7 year 3.0: 61352 fields compared, 0 mismatches -- PASS`.
+
+## Review
+
+**Keep**, 2026-09-26. Merged into `main` (`4548c63`). `main.cpp` is under 900 lines, the
+four screenshots are byte-identical after every step and on `nightly`, and the save
+round-trip probe passes. The rebuilt game was used for the frame-rate work of
+2026-09-26 (`f9c731f`), whose nine screenshots also matched. Not yet checked: the
+tooltip after step 7b (`describePoint` into a caller buffer) is a Win32 control outside
+the frame, so no screenshot covers it; it needs a mouse-over in the game. The
+`world::activeProgress` pointer stays until `atmosphere::build` takes a context
+parameter.

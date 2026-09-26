@@ -2,6 +2,8 @@
 
 **Status:** open (2026-09-18) — blocked on a design line; see Design below
 
+Line references re-checked against f9c731f on 2026-09-26.
+
 ## Problem
 
 Tilled land became a built stock on 2026-09-14, but nothing ever takes it away. `tilled[]`
@@ -32,12 +34,14 @@ see a farming people who have lost their fields.
   — so the yield is correctly zero while lapsed, and returns in full on re-adoption. The
   stock, not the flow, is what is wrong.
 - `src/settlement.h:660` — `float tilled[1 + FSTEAD_MAX]`, written only by
-  `population.h:588-591` (the clearing work order) and the save loader.
+  `population.h:588-591` (the clearing work order, in `stepBuilding`) and the save loader
+  (`savefile.h:316-324`, which also back-fills old saves).
 - Measured: `build\test_resources.exe 7 700` reports 10,209 km2 tilled with 480 settlements
   farming; the 2026-08-31 decay measurement had 522 settlements lapse from farming somewhere
   along the way, every one of which still holds its fields.
 
-Line references checked against commit `8d974f3` on 2026-09-18.
+Line references checked against commit `8d974f3` on 2026-09-18; re-checked against
+`f9c731f` on 2026-09-26, all unchanged.
 
 ## Design
 

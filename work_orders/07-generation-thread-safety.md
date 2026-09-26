@@ -1,6 +1,9 @@
 # 07 — Make the world-generation thread safe
 
-**Status:** open (2026-09-15) — waits for 05 to be merged into `main`
+**Status:** open (2026-09-26) — 05 is merged and `World` has its own header, so nothing
+blocks it
+
+Line references re-checked against f9c731f on 2026-09-26.
 
 ## Problem
 
@@ -14,16 +17,22 @@ and stays in `main.cpp`; that permits it, it does not permit unsynchronised shar
 
 ## Evidence
 
-- `src/main.cpp:277-278` — comment: the build runs on the UI thread.
-- `src/main.cpp:794-796` — comment: a worker owns `app.world`.
-- `src/main.cpp:796, 1869, 1918` — `app.genThread` creation and joins.
-- `src/main.cpp:1616` — `buildProgress` calls `SetWindowTextA` and `UpdateWindow` from the
-  worker.
-- `src/main.cpp:1919` — the load path writes `app.cam` from the worker.
-- `src/main.cpp:3587` — `simDate()` reads `app.world.simTime` on the main thread regardless
-  of screen.
+- `src/main.cpp:40-41` — comment: the build runs on the UI thread.
+- `src/main.cpp:55-56` — comment: a worker owns `app.world`.
+- `src/main.cpp:57` — `App::genThread`; created at 137 (`generateWorld`) and 198
+  (`onCommand`, `ID_LOAD_CONFIRM`), joined at 147 (`finishGeneration`) and 883 (exit).
+- `src/main.cpp:79-86` — `buildProgress` calls `SetWindowTextA` and `UpdateWindow` (84-85)
+  from the worker.
+- `src/main.cpp:198-199` — the load path hands `app.world` and `app.cam` to
+  `savefile::load` (`src/savefile.h:104`), which writes both from the worker.
+- `src/main.cpp:403` — `simDate()` reads `app.world.simTime`; the title bar calls it at 876
+  on the main thread twice a second regardless of screen.
+- Since this was written, an atomic `App::genState` (`main.cpp:58`) marks the worker
+  finished and `finishGeneration` (146) runs on the main thread; that orders the handover
+  at the end, but the worker still builds into `app.world` in place, so the reads above
+  still race it.
 - Line references checked against commit `9f598d3` on 2026-09-15, after orders 01 and 02
-  landed.
+  landed; re-checked against `f9c731f` on 2026-09-26.
 
 ## Design
 
@@ -40,14 +49,16 @@ say which thread builds the world and how the handover works.
 3. Delete whichever of the two comments is false.
 
 Best done after order 05 step 2 gives `World` its own header, since the handover is then a
-function over `World` rather than over `App`.
+function over `World` rather than over `App`. That has happened: `world::World` is in
+`src/world.h`, with `World::build` at `world.h:109`.
 
 ## Files
 
 - `src/main.cpp` (worker creation and joins, `buildProgress`, the load path, `simDate`)
-- `src/world.h`, once order 05 has created it
+- `src/world.h` (`World::build`)
+- `src/savefile.h`, if the handover changes what `savefile::load` is given
 - `Technical/Globe Viewer.md`
-- Same file as order 05, so it runs on a later night.
+- Order 05, which shared `main.cpp`, is merged; of the open orders only 09 still lists `main.cpp`.
 
 ## Done when
 
@@ -59,4 +70,4 @@ function over `World` rather than over `App`.
 
 ## Depends on
 
-05 (step 2), preferably.
+05 (step 2), preferably. Merged into `main` on 2026-09-26, so nothing now.
