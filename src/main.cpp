@@ -681,6 +681,27 @@ int main(int argc, char** argv) {
         setScreen(menus::Screen::MainMenu);
     }
 
+    // Frame-time measurement, testing tooling: HH_BENCH=<frames> turns vsync
+    // off, times that many globe draws on the GPU after a warm-up, prints
+    // the spread to stderr and exits. The title-bar fps is capped by vsync
+    // and includes the CPU; this is the shader alone.
+    int benchFrames = 0, benchWarmup = 30;
+    {
+        char v[16];
+        if (GetEnvironmentVariableA("HH_BENCH", v, sizeof v) > 0) benchFrames = atoi(v);
+    }
+    GLuint benchQuery = 0;
+    std::vector<double> benchMs;
+    if (benchFrames > 0) {
+        if (!glGenQueries || !glBeginQuery || !glEndQuery || !glGetQueryObjectui64v) {
+            fprintf(stderr, "bench: no GPU timer queries on this context\n");
+            return 1;
+        }
+        glGenQueries(1, &benchQuery);
+        benchMs.reserve(benchFrames);
+        if (wglSwapIntervalEXT) wglSwapIntervalEXT(0);
+    }
+
     LARGE_INTEGER qpf, fpsT0;
     QueryPerformanceFrequency(&qpf);
     QueryPerformanceCounter(&fpsT0);
@@ -810,7 +831,24 @@ int main(int argc, char** argv) {
                 overlay::upload(app.overlay);
             }
             glBindTexture(GL_TEXTURE_2D, app.tex.hydroTex);
+            if (benchQuery) glBeginQuery(GL_TIME_ELAPSED, benchQuery);
             glDrawArrays(GL_TRIANGLES, 0, 3);
+            if (benchQuery) {
+                glEndQuery(GL_TIME_ELAPSED);
+                GLuint64 ns = 0;
+                glGetQueryObjectui64v(benchQuery, GL_QUERY_RESULT, &ns); // waits for the GPU
+                if (benchWarmup > 0) benchWarmup--;
+                else benchMs.push_back(ns / 1e6);
+                if ((int)benchMs.size() == benchFrames) {
+                    std::sort(benchMs.begin(), benchMs.end());
+                    fprintf(stderr,
+                            "bench: %dx%d, %.4f km/px, %d octaves, %d frames: "
+                            "median %.2f ms, min %.2f, max %.2f\n",
+                            app.cam.width, app.cam.height, kmpp, octaves, benchFrames,
+                            benchMs[benchMs.size() / 2], benchMs.front(), benchMs.back());
+                    app.running = false;
+                }
+            }
             // Self-screenshot from the back buffer: defined even when the
             // window is occluded, unlike PrintWindow. Testing tooling.
             if (!app.shotPath.empty()) {

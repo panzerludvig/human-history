@@ -37,6 +37,9 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_RG32F 0x8230
 #define GL_RG 0x8227
 #define GL_CLAMP_TO_EDGE 0x812F
+#define GL_TIME_ELAPSED 0x88BF
+#define GL_QUERY_RESULT 0x8866
+typedef unsigned long long GLuint64;
 
 typedef GLuint(APIENTRY* PFNGLCREATESHADERPROC)(GLenum);
 typedef void(APIENTRY* PFNGLSHADERSOURCEPROC)(GLuint, GLsizei, const GLchar* const*, const GLint*);
@@ -61,6 +64,10 @@ typedef void(APIENTRY* PFNGLACTIVETEXTUREPROC)(GLenum);
 typedef void(APIENTRY* PFNGLGENVERTEXARRAYSPROC)(GLsizei, GLuint*);
 typedef void(APIENTRY* PFNGLBINDVERTEXARRAYPROC)(GLuint);
 typedef BOOL(APIENTRY* PFNWGLSWAPINTERVALEXTPROC)(int);
+typedef void(APIENTRY* PFNGLGENQUERIESPROC)(GLsizei, GLuint*);
+typedef void(APIENTRY* PFNGLBEGINQUERYPROC)(GLenum, GLuint);
+typedef void(APIENTRY* PFNGLENDQUERYPROC)(GLenum);
+typedef void(APIENTRY* PFNGLGETQUERYOBJECTUI64VPROC)(GLuint, GLenum, GLuint64*);
 
 static PFNGLCREATESHADERPROC glCreateShader;
 static PFNGLSHADERSOURCEPROC glShaderSource;
@@ -85,6 +92,10 @@ static PFNGLACTIVETEXTUREPROC glActiveTexture;
 static PFNGLGENVERTEXARRAYSPROC glGenVertexArrays;
 static PFNGLBINDVERTEXARRAYPROC glBindVertexArray;
 static PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT;
+static PFNGLGENQUERIESPROC glGenQueries;
+static PFNGLBEGINQUERYPROC glBeginQuery;
+static PFNGLENDQUERYPROC glEndQuery;
+static PFNGLGETQUERYOBJECTUI64VPROC glGetQueryObjectui64v;
 
 namespace gl {
 
@@ -121,6 +132,11 @@ inline bool loadGL() {
     ok &= load(glGenVertexArrays, "glGenVertexArrays");
     ok &= load(glBindVertexArray, "glBindVertexArray");
     load(wglSwapIntervalEXT, "wglSwapIntervalEXT"); // optional
+    // Optional: the GPU timer the HH_BENCH frame-time measurement reads.
+    load(glGenQueries, "glGenQueries");
+    load(glBeginQuery, "glBeginQuery");
+    load(glEndQuery, "glEndQuery");
+    load(glGetQueryObjectui64v, "glGetQueryObjectui64v");
     return ok;
 }
 

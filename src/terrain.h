@@ -292,12 +292,19 @@ inline float heightMeters(V3 p, V3 n, const ContinentParams& cp, float seaLevel,
     }
     // Below ~10 km the rock is ridges and gullies carved into the heap
     // faces: a ridged multifractal added on top, not more blocks.
-    float gullies = octaves >= 11 ? ridged(p * 60.0f + 5.0f, std::max(octaves - 8, 1)) - 0.45f : 0.0f;
+    // Gullies and hills are evaluated only where their mask is non-zero:
+    // the mask would multiply them to exactly 0, and each is several
+    // octaves of noise per pixel. Mirrored in shaders/globe.frag.
+    float gullies = blockMask > 0.0f && octaves >= 11
+                        ? ridged(p * 60.0f + 5.0f, std::max(octaves - 8, 1)) - 0.45f
+                        : 0.0f;
     float ranges = stack * blockMask * 0.7f * (0.55f + 0.45f * peaks) + peaks * 0.5f +
                    gullies * blockMask * 0.4f;
-    float hills = ridged(p * 4.0f + 2.0f, std::clamp(octaves - 2, 1, 6)) *
-                  smoothstep(0.02f, 0.25f, continent) *
-                  smoothstep(0.3f, 0.7f, fbm(p * 2.2f + 41.0f, 3, 0.5f) * 0.5f + 0.5f);
+    float hills = continent > 0.02f
+                      ? ridged(p * 4.0f + 2.0f, std::clamp(octaves - 2, 1, 6)) *
+                            smoothstep(0.02f, 0.25f, continent) *
+                            smoothstep(0.3f, 0.7f, fbm(p * 2.2f + 41.0f, 3, 0.5f) * 0.5f + 0.5f)
+                      : 0.0f;
     // The continent field, its fine detail and its hills are all land relief;
     // only the range term and the trenches are built at the mountain scale.
     float h = (continent + detail * 0.06f + hills * 0.12f) * LAND_RELIEF +

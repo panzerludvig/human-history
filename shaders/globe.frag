@@ -240,12 +240,18 @@ float terrainHeight(vec3 p, vec3 n, int octaves) {
     }
     // Below ~10 km the rock is ridges and gullies carved into the heap
     // faces: a ridged multifractal added on top, not more blocks.
-    float gullies = octaves >= 11 ? ridged(p * 60.0 + 5.0, max(octaves - 8, 1)) - 0.45 : 0.0;
+    // Gullies and hills are evaluated only where their mask is non-zero:
+    // the mask would multiply them to exactly 0, and each is several
+    // octaves of noise per pixel.
+    float gullies = blockMask > 0.0 && octaves >= 11
+                        ? ridged(p * 60.0 + 5.0, max(octaves - 8, 1)) - 0.45
+                        : 0.0;
     float ranges = stack * blockMask * 0.7 * (0.55 + 0.45 * peaks) + peaks * 0.5 +
                    gullies * blockMask * 0.4;
-    float hills = ridged(p * 4.0 + 2.0, clamp(octaves - 2, 1, 6)) *
-                  smoothstep(0.02, 0.25, continent) *
-                  smoothstep(0.3, 0.7, fbm(p * 2.2 + 41.0, 3, 0.5) * 0.5 + 0.5);
+    float hills = continent > 0.02 ? ridged(p * 4.0 + 2.0, clamp(octaves - 2, 1, 6)) *
+                                         smoothstep(0.02, 0.25, continent) *
+                                         smoothstep(0.3, 0.7, fbm(p * 2.2 + 41.0, 3, 0.5) * 0.5 + 0.5)
+                                   : 0.0;
     float h = (continent + detail * 0.06 + hills * 0.12) * LAND_RELIEF +
               ranges * max(uplift, 0.0) * RANGE_GAIN + min(uplift, 0.0) * 0.12;
     return h * HEIGHT_SCALE_M;
@@ -650,6 +656,9 @@ vec4 fieldsNear(vec3 n) {
 
 // Climate lookups are warped by a small noise (~60 km) so the coarse grid's
 // bilinear creases become organic wiggles. Mirrors atmosphere::climFuzz.
+// Every climate lookup below takes the warped normal `nf`, not the surface
+// normal: main warps once per pixel, since the warp is six octaves of noise
+// and a land pixel makes about ten lookups.
 vec3 climFuzz(vec3 n) {
     vec3 o = vec3(fbm(n * 23.0 + 5.0, 2, 0.5), fbm(n * 23.0 + 11.0, 2, 0.5),
                   fbm(n * 23.0 + 17.0, 2, 0.5));
@@ -657,10 +666,9 @@ vec3 climFuzz(vec3 n) {
 }
 
 // Season-interpolated climatology sample at a surface point.
-vec4 climSample(sampler2D tex, vec3 nRaw) {
-    vec3 n = climFuzz(nRaw);
-    float lat = asin(clamp(n.z, -1.0, 1.0));
-    float lon = atan(n.y, n.x);
+vec4 climSample(sampler2D tex, vec3 nf) {
+    float lat = asin(clamp(nf.z, -1.0, 1.0));
+    float lon = atan(nf.y, nf.x);
     float cx = (lon + 3.14159265) / 6.2831853;
     float cy = clamp((lat + 1.5707963) / 3.14159265, 0.02, 0.98);
     float sf = uDoy / 365.0 * 4.0 - 0.5;
@@ -670,13 +678,12 @@ vec4 climSample(sampler2D tex, vec3 nRaw) {
     vec4 b = texture(tex, vec2(cx, (s1 + cy) * 0.25));
     return mix(a, b, f);
 }
-vec4 climAt(vec3 n) { return climSample(uClim, n); }
+vec4 climAt(vec3 nf) { return climSample(uClim, nf); }
 
 // Annual mean over the four season bands.
-vec4 climAnnual(sampler2D tex, vec3 nRaw) {
-    vec3 n = climFuzz(nRaw);
-    float lat = asin(clamp(n.z, -1.0, 1.0));
-    float lon = atan(n.y, n.x);
+vec4 climAnnual(sampler2D tex, vec3 nf) {
+    float lat = asin(clamp(nf.z, -1.0, 1.0));
+    float lon = atan(nf.y, nf.x);
     float cx = (lon + 3.14159265) / 6.2831853;
     float cy = clamp((lat + 1.5707963) / 3.14159265, 0.02, 0.98);
     vec4 sum = vec4(0.0);
@@ -687,16 +694,13 @@ vec4 climAnnual(sampler2D tex, vec3 nRaw) {
 
 // Derived climate (mirrors atmosphere::derivedTempC / derivedMoisture): the
 // painted temperatureC / moistureAt retire in favour of these.
-float derivedTempC(vec3 n, float h) {
-    vec4 c2 = climAnnual(uClim2, n);
+float derivedTempC(vec3 nf, float h) {
+    vec4 c2 = climAnnual(uClim2, nf);
     return c2.r - 6.5 * (max(h, 0.0) - c2.b) / 1000.0;
 }
 
 // Coldest-season surface temperature (rainforest gate).
-float derivedTCold(vec3 n, float h) {
-    float lat = asin(clamp(n.z, -1.0, 1.0));
-    float lon = atan(n.y, n.x);
-    vec3 nf = climFuzz(n);
+float derivedTCold(vec3 nf, float h) {
     float lat2 = asin(clamp(nf.z, -1.0, 1.0));
     float lon2 = atan(nf.y, nf.x);
     float cx = (lon2 + 3.14159265) / 6.2831853;
@@ -713,8 +717,7 @@ float derivedTCold(vec3 n, float h) {
 
 // Warmest-season surface temperature. The treeline, the tundra edge and the
 // polar desert all key on this, not on the annual mean.
-float derivedTWarm(vec3 n, float h) {
-    vec3 nf = climFuzz(n);
+float derivedTWarm(vec3 nf, float h) {
     float lat2 = asin(clamp(nf.z, -1.0, 1.0));
     float lon2 = atan(nf.y, nf.x);
     float cx = (lon2 + 3.14159265) / 6.2831853;
@@ -729,9 +732,9 @@ float derivedTWarm(vec3 n, float h) {
     return t - 6.5 * (max(h, 0.0) - e) / 1000.0;
 }
 
-float derivedMoist(vec3 n, vec3 w, float h) {
-    float rain = climAnnual(uClim, n).g;
-    float t = derivedTempC(n, h);
+float derivedMoist(vec3 nf, vec3 w, float h) {
+    float rain = climAnnual(uClim, nf).g;
+    float t = derivedTempC(nf, h);
     float pet = max(0.4, 0.11 * (t + 8.0));
     float m = clamp(0.5 * rain / pet, 0.0, 1.0);
     return clamp(m + 0.12 * fbm(w * 5.0 + 31.0, 3, 0.5), 0.0, 1.0);
@@ -742,22 +745,22 @@ float derivedMoist(vec3 n, vec3 w, float h) {
 // must fall to supply the snow.
 // Ice factor 0..1 for water surfaces: seasonal local temperature below
 // freezing (soft edge). hLocal 0 for the sea.
-float iceAt(vec3 n, float hLocal) {
-    vec4 c2 = climSample(uClim2, n);
+float iceAt(vec3 nf, float hLocal) {
+    vec4 c2 = climSample(uClim2, nf);
     float tLoc = c2.r - 6.5 * (max(hLocal, 0.0) - c2.b) / 1000.0;
     return smoothstep(-1.0, -4.0, tLoc);
 }
 
-float snowCoverAt(vec3 n, float h) {
-    vec4 c2 = climSample(uClim2, n);
+float snowCoverAt(vec3 nf, float h) {
+    vec4 c2 = climSample(uClim2, nf);
     float tLoc = c2.r - 6.5 * (max(h, 0.0) - c2.b) / 1000.0;
-    return smoothstep(1.0, -3.0, tLoc) * smoothstep(0.01, 0.15, c2.g + climAt(n).g * 0.05);
+    return smoothstep(1.0, -3.0, tLoc) * smoothstep(0.01, 0.15, c2.g + climAt(nf).g * 0.05);
 }
 
 // Cloud cover at n: climatological cloudiness gates a drifting noise field.
 // Returns opacity 0..1; rain out-parameter darkens the veil beneath.
-float cloudsAt(vec3 n, out float rainV) {
-    vec4 cl = climAt(n);
+float cloudsAt(vec3 n, vec3 nf, out float rainV) {
+    vec4 cl = climAt(nf);
     // wind (m/s) -> angular drift; the local wind warps the noise domain
     vec3 east = normalize(vec3(-n.y, n.x, 0.0));
     vec3 north = normalize(cross(n, east));
@@ -1007,6 +1010,7 @@ void main() {
     float t = -b - sqrt(disc);
     vec3 p = uCamPos + dir * t;
     vec3 n = normalize(p);
+    vec3 nf = climFuzz(n); // where the climate is read (see climFuzz)
     float lat = asin(clamp(n.z, -1.0, 1.0));
 
     // Terrain is sampled in a per-world noise space.
@@ -1062,7 +1066,7 @@ void main() {
     if (!isWater && h > 0.0 && h < 1500.0) {
         float pondField = fbm(w * 700.0 + 91.0, 3, 0.5);
         float flatness = 1.0 - smoothstep(0.0, 0.015, slopePhys);
-        float wetness = smoothstep(-0.4, 0.8, climSample(uClim2, n).a);
+        float wetness = smoothstep(-0.4, 0.8, climSample(uClim2, nf).a);
         if (pondField > 0.42 + 0.20 * (1.0 - wetness) && flatness > 0.3) { isWater = true; isPond = true; waterLevel = h + 3.0; }
     }
 
@@ -1103,7 +1107,7 @@ void main() {
         return;
     }
     if (uDebugMode == 2 || uDebugMode == 3) {
-        vec3 base = isWater ? vec3(0.05, 0.1, 0.25) : debugClassColor(uDebugMode, h, slopePhys, lat, w, upliftHere, nearRiverHere, 0.55 * smoothstep(0.5, 2.5, climSample(uClim2, n).a), derivedTempC(n, h), derivedMoist(n, w, h), derivedTCold(n, h), derivedTWarm(n, h));
+        vec3 base = isWater ? vec3(0.05, 0.1, 0.25) : debugClassColor(uDebugMode, h, slopePhys, lat, w, upliftHere, nearRiverHere, 0.55 * smoothstep(0.5, 2.5, climSample(uClim2, nf).a), derivedTempC(nf, h), derivedMoist(nf, w, h), derivedTCold(nf, h), derivedTWarm(nf, h));
         fragColor = vec4(scaleBarOverlay(base * uDim), 1.0);
         return;
     }
@@ -1118,7 +1122,7 @@ void main() {
         return;
     }
     if (uDebugMode == 5) {
-        vec4 cl = climAt(n);
+        vec4 cl = climAt(nf);
         vec3 c = vec3(0.08, 0.07, 0.06);
         if (h <= 0.0) c = vec3(0.05, 0.06, 0.10);
         c += vec3(0.1, 0.5, 0.9) * clamp(cl.g / 8.0, 0.0, 1.0);   // rain
@@ -1138,25 +1142,25 @@ void main() {
     else if (built == 2) albedo = vec3(0.80, 0.64, 0.26); // granaries: straw-coloured stores
     else if (uHasHydro == 1 && !isWater && ruinNear(n) > 0.0)
         albedo = vec3(0.42, 0.40, 0.38); // ruins: weathered stone and ash
-    else if (isRiver) albedo = mix(vec3(0.10, 0.30, 0.48), vec3(0.80, 0.86, 0.92), iceAt(n, h));
-    else if (isPond) albedo = mix(vec3(0.14, 0.36, 0.50), vec3(0.80, 0.86, 0.92), iceAt(n, h));
+    else if (isRiver) albedo = mix(vec3(0.10, 0.30, 0.48), vec3(0.80, 0.86, 0.92), iceAt(nf, h));
+    else if (isPond) albedo = mix(vec3(0.14, 0.36, 0.50), vec3(0.80, 0.86, 0.92), iceAt(nf, h));
     else if (isWater) {
         albedo = waterColor(waterLevel - h, lat, w);
         // frozen lakes sit at altitude; the sea freezes at its own level
-        albedo = mix(albedo, vec3(0.83, 0.88, 0.93), iceAt(n, h > 0.0 ? h : 0.0));
+        albedo = mix(albedo, vec3(0.83, 0.88, 0.93), iceAt(nf, h > 0.0 ? h : 0.0));
     }
     else {
-        float swampV = 0.55 * smoothstep(0.5, 2.5, climSample(uClim2, n).a);
+        float swampV = 0.55 * smoothstep(0.5, 2.5, climSample(uClim2, nf).a);
         albedo = terrainColor(w, h, slopePhys, lat, upliftHere, nearRiverHere, swampV,
-                              derivedTempC(n, h), derivedMoist(n, w, h), derivedTCold(n, h),
-                              derivedTWarm(n, h));
-        albedo = mix(albedo, vec3(0.91, 0.93, 0.96), snowCoverAt(n, h)); // winter snow
+                              derivedTempC(nf, h), derivedMoist(nf, w, h), derivedTCold(nf, h),
+                              derivedTWarm(nf, h));
+        albedo = mix(albedo, vec3(0.91, 0.93, 0.96), snowCoverAt(nf, h)); // winter snow
         // Fields work on the ground itself, so they come after it is
         // coloured and before the snow that lies over everything -- not in
         // the marker chain above, where there is no ground colour yet.
         if (fields.w > 0.0) {
             albedo = mix(albedo, fields.rgb, fields.w);
-            albedo = mix(albedo, vec3(0.91, 0.93, 0.96), snowCoverAt(n, h));
+            albedo = mix(albedo, vec3(0.91, 0.93, 0.96), snowCoverAt(nf, h));
         }
     }
 
@@ -1168,10 +1172,11 @@ void main() {
     float diff = max(dot(shadeN, sun), 0.0);
     float limb = pow(1.0 - max(dot(n, -dir), 0.0), 3.0);
     vec3 col = mix(albedo * vec3(0.045, 0.055, 0.10), albedo * (0.22 + 0.8 * diff), dayF);
-    float rainV;
-    float cloudA = cloudsAt(n, rainV);
-    // Clouds fade out at close zoom so they never hide the terrain being read.
-    cloudA *= smoothstep(0.15, 0.9, uKmPerPixel);
+    // Clouds fade out at close zoom so they never hide the terrain being
+    // read, and once faded out they are not computed at all.
+    float cloudFade = smoothstep(0.15, 0.9, uKmPerPixel);
+    float rainV = 0.0;
+    float cloudA = cloudFade > 0.0 ? cloudsAt(n, nf, rainV) * cloudFade : 0.0;
     col = mix(col, col * (1.0 - 0.35 * rainV), cloudA);            // rain veil darkens
     vec3 cloudCol = vec3(1.0) * (0.06 + 0.9 * dayF * max(dot(n, normalize(uSun)), 0.15));
     col = mix(col, cloudCol, cloudA);
