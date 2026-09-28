@@ -99,6 +99,9 @@ static void compareSettlements(const population::Field& a, const population::Fie
         check("tillSite", k, s.tillSite, l.tillSite);
         for (int c = 0; c <= population::FSTEAD_MAX; c++)
             check("tilled", k * 100 + c, s.tilled[c], l.tilled[c]);
+        check("hadFields", k, s.hadFields, l.hadFields);
+        for (int c = 0; c <= population::FSTEAD_MAX; c++)
+            check("wildPace", k * 100 + c, s.wildPace[c], l.wildPace[c]);
         checkTech("tech", k, s.tech, l.tech);
     }
 }

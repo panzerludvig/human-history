@@ -64,6 +64,8 @@ inline terrain::V3 farmsteadPos(int cell, int k) {
 // decides the next work order's site (the village's daily-walk disc first,
 // then each farmstead's block in the order they stand), how many farmstead
 // slots the claim can hold, and whether the next slot is worth building on.
+// It reads only the land that stands: a block gone back to the wild
+// (population::stepReversion) feeds nothing and is room for the next plot.
 // Recomputed on every wake; a few map lookups.
 inline void updateFarmland(population::Field& pf, population::Settlement& s) {
     float k = s.sFarm * s.tilled[0];

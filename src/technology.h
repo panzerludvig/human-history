@@ -169,10 +169,18 @@ inline float effectiveK(const population::Settlement& s, double now) {
 // up is practice, and a novice farmer on farmable ground is a farmer. Judged
 // on share of the food instead, a people would lose husbandry the day they
 // took it up, when the seed herd feeds one person out of three hundred.
+// Farming's means are the fields: they stand, or a plot is being cleared.
+// A people who have never had a field are judged on the ground instead, so
+// a farming people is not lost for not yet having needed to clear anything.
 inline bool meansPresent(const population::Settlement& s, int tech) {
     switch (tech) {
-    case population::TECH_FARMING:
-        return s.sFarm >= 0.05f;
+    case population::TECH_FARMING: {
+        if (!s.hadFields) return s.sFarm >= 0.05f;
+        if (s.tillWork > 0) return true;
+        for (int k = 0; k <= population::FSTEAD_MAX; k++)
+            if (s.tilled[k] > 0) return true;
+        return false;
+    }
     case population::TECH_HUSBANDRY:
         return s.herd > 0.0f;
     case population::TECH_GRANARY:
@@ -432,6 +440,8 @@ inline void decaySkills(population::Field& pf, technology::WorldState& ws, int s
         ts.strainT = -1;
         ts.lostT = now;
         if (tech == population::TECH_HUSBANDRY) s.herd = 0;
+        // Farming's fields are not cleared here: nobody tends them any more,
+        // so population::stepReversion lets them go back to the wild.
         {
             char txt[96];
             snprintf(txt, sizeof txt, "%s no longer practises %s", s.name,
