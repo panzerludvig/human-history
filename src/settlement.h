@@ -361,6 +361,16 @@ constexpr float FARM_KM2_PER_PERSON = 0.08f;
 constexpr float PLOT_KM2 = 0.5f;
 constexpr float TILL_WORK_PER_KM2 = 2000.0f;
 constexpr float TILL_LABOUR_SHARE = 0.02f;
+// Fields go back to the wild (Design/Technology.md, decided 2026-09-28):
+// land nobody tends reverts at no labour cost, steadily, so a block is gone
+// this long after the last hand left it. Stands in for the regrowth of scrub
+// and wood over an abandoned clearing, which is not modelled (there is no
+// wood stock yet); it is the clock that stock will run on when it exists.
+constexpr double FIELD_REVERT_YEARS = 50.0;
+// Hands tend the fields nearest the village first, so what reverts is the
+// outermost land. That order is the slot order only because the spiral
+// puts each farmstead farther out than the last.
+static_assert(FSTEAD_DR_KM > 0.0f, "farmstead slots must stand in order of distance");
 
 // Heat (Design/Resources.md): the second need, the first that is not
 // calories. The demand is warmth -- cooking fires always, hearths against
@@ -661,6 +671,11 @@ struct Settlement {
     float farmK = 0;                   // people the standing fields feed at full expertise
                                        // (sim::updateFarmland caches it from tilled and the
                                        // suitability where each site stands)
+    // km2/day each site's untended land is reverting at, fixed when its last
+    // hand left (FIELD_REVERT_YEARS); 0 while every km2 there is worked.
+    float wildPace[1 + FSTEAD_MAX] = {};
+    bool hadFields = false;            // ever held tilled land: farming's means are
+                                       // then the fields, not the ground (meansPresent)
     float tillWork = 0;                // man-days left on the plot being cleared, 0 = none
     int8_t tillSite = -1;              // where that plot is: 0 the village, 1+k farmstead k
     int8_t tillSiteNext = -1;          // where the next order would go, -1 = no room

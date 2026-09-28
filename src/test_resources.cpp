@@ -4,9 +4,18 @@
 // and reports what the second need changed: who spends labour on wood,
 // where the cold kills, and whether the map itself moved.
 //
-//   build_testresources.bat, then build\test_resources.exe [seed] [years]
+// Fields going back to the wild (work order 12) are measured too: the
+// tilled land still held by settlements that no longer farm, by how long
+// ago they lapsed, and the farming lapses for want of means among
+// settlements that never had a field. With `lapse`, farming is ended
+// everywhere at year 300 (and kept ended) and the world's tilled km2 is
+// printed at years 300, 310, 325, 350 and 360 -- the reversion clock.
+//
+//   build_testresources.bat, then build\test_resources.exe [seed] [years] [lapse]
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <unordered_map>
 #include <vector>
 #include "world.h"
 #include "sim.h"
@@ -31,9 +40,32 @@ struct Report {
     double tilledKm2 = 0;     // world total under the rotation
     double farmFed = 0;       // people the fields feed at current expertise
     double farmerPop = 0;
+    // Fields nobody farms: tilled km2 held by settlements not practising,
+    // by whether they lapsed within FIELD_REVERT_YEARS or earlier.
+    double idleRecentKm2 = 0, idleOldKm2 = 0;
+    int idleOldSettlements = 0;
+    double worldTilledKm2 = 0; // every settlement's, farming or not
+    // Counted over the run, not surveyed:
+    int farmLapses = 0;        // farming lapses
+    int farmLapsesNoField = 0; // ...of those, for want of means, never having had a field
+    int forcedReadoptions = 0; // `lapse` mode: farming found practised again after year 300
 };
 
-static Report survey(const population::Field& pf, double now) {
+// Who farmed at the last yearly look, and when each settlement's farming
+// last lapsed, by settlement id. TechState::lostT cannot say this: it is
+// also moved forward while any neighbour still practises.
+struct LapseLog {
+    std::unordered_map<uint32_t, bool> farming;
+    std::unordered_map<uint32_t, double> lapsedDay;
+};
+
+static double tilledOf(const population::Settlement& s) {
+    double t = 0;
+    for (int k = 0; k <= population::FSTEAD_MAX; k++) t += s.tilled[k];
+    return t;
+}
+
+static Report survey(const population::Field& pf, double now, const LapseLog& log) {
     Report r;
     for (const population::Settlement& s : pf.settlements) {
         if (s.leaving || s.P <= 0) continue;
@@ -53,12 +85,26 @@ static Report survey(const population::Field& pf, double now) {
         } else {
             r.nWooded++; r.pWooded += s.P; r.cutWooded += s.labFuel * s.P;
         }
+        r.worldTilledKm2 += tilledOf(s);
+        const population::TechState& farm = s.tech[population::TECH_FARMING];
+        if (!farm.practising && tilledOf(s) > 0) {
+            // A holder of land never seen to lapse counts as old: it should
+            // not exist, and fails the check loudly.
+            auto at = log.lapsedDay.find(s.id);
+            if (at != log.lapsedDay.end() &&
+                now - at->second <= population::FIELD_REVERT_YEARS * 365.0) {
+                r.idleRecentKm2 += tilledOf(s);
+            } else {
+                r.idleOldKm2 += tilledOf(s);
+                r.idleOldSettlements++;
+            }
+        }
         if (s.tech[population::TECH_FARMING].practising) {
             r.farmers++;
             r.farmsteads += s.farmsteads;
             if (s.fsteadWork > 0) r.building++;
             if (s.tillWork > 0) r.clearing++;
-            for (int k = 0; k <= population::FSTEAD_MAX; k++) r.tilledKm2 += s.tilled[k];
+            r.tilledKm2 += tilledOf(s);
             r.farmFed += s.farmK * technology::expertise(
                                        s.tech[population::TECH_FARMING], now);
             r.farmerPop += s.P;
@@ -67,10 +113,58 @@ static Report survey(const population::Field& pf, double now) {
     return r;
 }
 
+// Farming lapses in the year ending at `now`: settlements that farmed at
+// the last look and do not now. The means are judged as
+// technology::decaySkills judged them: for a settlement that never had a
+// field that is the ground, which does not change, so judging it at the
+// year's end is judging it at the lapse.
+static void countLapses(const population::Field& pf, double now, LapseLog& log, Report& r) {
+    for (const population::Settlement& s : pf.settlements) {
+        const population::TechState& ts = s.tech[population::TECH_FARMING];
+        bool& was = log.farming[s.id];
+        if (was && !ts.practising) {
+            r.farmLapses++;
+            log.lapsedDay[s.id] = ts.lostT >= 0 ? ts.lostT : now;
+            if (!s.hadFields && !technology::meansPresent(s, population::TECH_FARMING))
+                r.farmLapsesNoField++;
+        }
+        was = ts.practising;
+    }
+}
+
+// `lapse` mode: nobody farms from year 300. Every settlement and band that
+// practises farming stops, as technology::decaySkills stops it, and the
+// neighbours are redrawn so nobody takes it up again from them.
+static int endFarming(population::Field& pf, technology::WorldState& ws, double now) {
+    int ended = 0;
+    const int tech = population::TECH_FARMING;
+    for (int i = 0; i < (int)pf.settlements.size(); i++) {
+        population::TechState& ts = pf.settlements[i].tech[tech];
+        if (!ts.practising) continue;
+        ts.practising = false;
+        ts.strainT = -1;
+        ts.lostT = now;
+        ended++;
+    }
+    for (population::Band& b : pf.bands)
+        if (b.tech[tech].practising) {
+            b.tech[tech].practising = false;
+            b.tech[tech].lostT = now;
+            ended++;
+        }
+    for (int i = 0; i < (int)pf.settlements.size(); i++) technology::redraw(pf, i, ws, tech, now);
+    technology::scheduleInvention(pf, ws, tech, now);
+    return ended;
+}
+
 int main(int argc, char** argv) {
     world::World globe;
     globe.seed = argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7;
     int years = argc >= 3 ? atoi(argv[2]) : 500;
+    const bool forceLapse = argc >= 4 && strcmp(argv[3], "lapse") == 0;
+    const int LAPSE_YEAR = 300;
+    const int lapseProbeYears[] = {300, 310, 325, 350, 360};
+    double lapseTilledKm2[2][5] = {};
     globe.concentration = 50.0f; // land 30%, the default
 
     fprintf(stderr, "terrain and climate once...\n");
@@ -93,22 +187,34 @@ int main(int argc, char** argv) {
         technology::WorldState ws;
         technology::init(pf, ws, seed, 0.0);
         Report r;
+        LapseLog log;
         for (int y = 1; y <= years; y++) {
             sim::simulate(pf, ws, hy, clim, y * 365.0);
+            countLapses(pf, y * 365.0, log, r);
+            if (forceLapse) {
+                for (int k = 0; k < 5; k++)
+                    if (y == lapseProbeYears[k])
+                        lapseTilledKm2[pass][k] = survey(pf, y * 365.0, log).worldTilledKm2;
+                if (y == LAPSE_YEAR) endFarming(pf, ws, y * 365.0);
+                if (y > LAPSE_YEAR) r.forcedReadoptions += endFarming(pf, ws, y * 365.0);
+            }
             if (population::HEAT_ENABLED) {
                 for (const population::Settlement& s : pf.settlements)
                     if (!s.leaving) r.coldSampled += s.coldYr;
             }
             if (y % 100 == 0) {
-                Report m = survey(pf, y * 365.0);
+                Report m = survey(pf, y * 365.0, log);
                 fprintf(stderr,
                         "year %4d: %5d settlements, %8.0f people, cold/yr %6.0f, "
                         "hunger/yr %6.0f, low piles %4d\n",
                         y, m.settlements, m.people, m.coldYr, m.starvedYr, m.lowPile);
             }
         }
-        Report m = survey(pf, years * 365.0);
+        Report m = survey(pf, years * 365.0, log);
         m.coldSampled = r.coldSampled;
+        m.farmLapses = r.farmLapses;
+        m.farmLapsesNoField = r.farmLapsesNoField;
+        m.forcedReadoptions = r.forcedReadoptions;
         out[pass] = m;
     }
 
@@ -138,5 +244,27 @@ int main(int argc, char** argv) {
                 p ? "heat    " : "baseline", out[p].farmers, out[p].farmerPop,
                 out[p].tilledKm2, out[p].clearing, out[p].farmFed, out[p].farmsteads,
                 out[p].building);
+    fprintf(stderr, "\nfields nobody farms (work order 12):\n");
+    for (int p = 0; p < 2; p++) {
+        fprintf(stderr,
+                "%s: farming lapses %d, of which for want of means never having had a field "
+                "%d\n",
+                p ? "heat    " : "baseline", out[p].farmLapses, out[p].farmLapsesNoField);
+        fprintf(stderr,
+                "%s: tilled km2 held by settlements not farming: lapsed within %.0f years "
+                "%.1f, earlier %.1f (%d settlements)\n",
+                p ? "heat    " : "baseline", population::FIELD_REVERT_YEARS, out[p].idleRecentKm2,
+                out[p].idleOldKm2, out[p].idleOldSettlements);
+    }
+    if (forceLapse) {
+        fprintf(stderr, "\nforced lapse at year %d: world tilled km2\n", LAPSE_YEAR);
+        for (int p = 0; p < 2; p++) {
+            fprintf(stderr, "%s:", p ? "heat    " : "baseline");
+            for (int k = 0; k < 5; k++)
+                if (lapseProbeYears[k] <= years)
+                    fprintf(stderr, "  y%d %.1f", lapseProbeYears[k], lapseTilledKm2[p][k]);
+            fprintf(stderr, "  (farming found again and re-ended: %d)\n", out[p].forcedReadoptions);
+        }
+    }
     return 0;
 }

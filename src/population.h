@@ -7,6 +7,7 @@
 #pragma once
 #include "settlement.h"
 #include "daylight.h"
+#include <cassert>
 #include <cstdio>
 
 namespace population {
@@ -593,6 +594,36 @@ inline void stepBuilding(Settlement& s, const SeasonCtx& ctx, Step& st) {
     }
 }
 
+// Fields go back to the wild (Design/Technology.md). The people tend
+// FARM_KM2_PER_PERSON each -- nothing, once farming has lapsed -- and the
+// hands go to the land nearest the village first: the village's own fields,
+// then the farmsteads outward. What is left over nobody works, and it
+// reverts with no labour spent, at a steady pace fixed when its last hand
+// left, so that it is all gone FIELD_REVERT_YEARS later. Reverted land is
+// simply unbuilt again: the next plot there costs the full clearing.
+inline void stepReversion(Settlement& s, Step& st) {
+    float tendKm2 = s.tech[TECH_FARMING].practising ? st.P * FARM_KM2_PER_PERSON : 0.0f;
+    const double revertDays = FIELD_REVERT_YEARS * 365.0;
+    float sum = 0;
+    for (int i = 0; i <= FSTEAD_MAX; i++) {
+        float& t = s.tilled[i];
+        if (t > 0) s.hadFields = true;
+        float tended = std::min(t, tendKm2);
+        tendKm2 -= tended;
+        float untended = t - tended;
+        if (!(untended > 0)) {
+            s.wildPace[i] = 0;
+            sum += t;
+            continue;
+        }
+        s.wildPace[i] = std::max(s.wildPace[i], (float)(untended / revertDays));
+        t -= std::min(s.wildPace[i] * st.hstep, untended);
+        assert(t >= 0.0f);
+        sum += t;
+    }
+    st.sumTilled = sum;
+}
+
 // Bows: one bowyer finishes one bow in BOW_WORK_DAYS however large the
 // settlement, so a crowd only carves more of them at once. They are made
 // up to one per hunter and no further, and they wear out.
@@ -667,7 +698,8 @@ inline void scheduleWake(Settlement& s, float K, const SeasonCtx& ctx, float fue
 // most five days, then schedule the next re-evaluation (scheduleWake).
 // Each sub-step: the day's food flow and work day, the derivatives, the
 // hearth, the cohorts, the stores, then the annual judgement, the builds,
-// the bows and the herd. Returns whether anything visible changed.
+// the fields nobody tends, the bows and the herd. Returns whether anything
+// visible changed.
 inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     if (K <= 0) {
         s.t = now;
@@ -713,6 +745,7 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
         st.fill = st.S / cap;
         stepFillCycle(s, ctx, st);
         stepBuilding(s, ctx, st);
+        stepReversion(s, st);
         stepBows(s, ctx, st);
         stepHerd(s, herdCap, st.hstep);
     }

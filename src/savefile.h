@@ -39,7 +39,7 @@ inline bool save(const world::World& w, const camera::Camera& c) {
     std::ofstream f(worldsDir() + "\\" + w.name + ".ibw");
     if (!f) return false;
     f.precision(17);
-    f << "version 24\n";
+    f << "version 25\n";
     f << "seed " << w.seed << "\n";
     f << "earth " << (w.earth ? 1 : 0) << "\n";
     f << "time " << w.simTime << "\n";
@@ -65,6 +65,8 @@ inline bool save(const world::World& w, const camera::Camera& c) {
         f << " " << s.farmsteads << " " << s.fsteadWork;
         f << " " << s.tillWork << " " << (int)s.tillSite;
         for (int k = 0; k <= population::FSTEAD_MAX; k++) f << " " << s.tilled[k];
+        f << " " << (int)s.hadFields;
+        for (int k = 0; k <= population::FSTEAD_MAX; k++) f << " " << s.wildPace[k];
         f << "\n";
     }
     for (const population::Band& b : w.pop.bands) {
@@ -119,6 +121,8 @@ inline bool load(const std::string& name, world::World& w, camera::Camera& c,
         double claimT = 0, fuelS = -1, coldYr = 0, farmsteads = 0, fsteadWork = 0;
         double tillWork = 0, tillSite = -1;
         double tilled[1 + population::FSTEAD_MAX] = {};
+        double hadFields = -1; // -1: the save predates the flag
+        double wildPace[1 + population::FSTEAD_MAX] = {};
         double claim[population::CLAIM_SECTORS] = {};
         double tech[population::NTECH][4] = {};
     };
@@ -189,6 +193,10 @@ inline bool load(const std::string& name, world::World& w, camera::Camera& c,
                 if (version >= 24) {
                     f >> sv.tillWork >> sv.tillSite;
                     for (int k = 0; k <= population::FSTEAD_MAX; k++) f >> sv.tilled[k];
+                }
+                if (version >= 25) {
+                    f >> sv.hadFields;
+                    for (int k = 0; k <= population::FSTEAD_MAX; k++) f >> sv.wildPace[k];
                 }
             } else {
                 if (version >= 4)
@@ -323,6 +331,14 @@ inline bool load(const std::string& name, world::World& w, camera::Camera& c,
                 for (int k = 0; k < (int)(st.farmsteads + 0.5f) && k < population::FSTEAD_MAX; k++)
                     st.tilled[k + 1] = population::FSTEAD_KM2;
             }
+            // Saves that predate fields going back to the wild did not
+            // remember who had had fields: whoever holds any has. Their
+            // untended land starts reverting from the load.
+            for (int k = 0; k <= population::FSTEAD_MAX; k++) {
+                st.wildPace[k] = (float)sv.wildPace[k];
+                if (st.tilled[k] > 0) st.hadFields = true;
+            }
+            if (sv.hadFields >= 0) st.hadFields = sv.hadFields > 0.5;
             st.gRegion = population::gameRegion(cell);
             for (int t = 0; t < population::NTECH; t++) {
                 st.tech[t].aware = sv.tech[t][0] > 0.5;
