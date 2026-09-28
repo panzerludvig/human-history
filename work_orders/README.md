@@ -1,89 +1,162 @@
 # Work orders
 
-One file per piece of planned work, queued during the day and implemented unattended at
-night. The process, and why it is shaped this way, is in `Meta/Work Orders.md`; this file
-is the format and the rules a run follows.
+One file per piece of planned work, moving through four stages from an idea to code on
+`main`. The process, and why it is shaped this way, is in `Meta/Work Orders.md`; this file
+is the format and the rules a night run follows.
+
+## Stages
+
+Each stage is a folder, and an order is in exactly one of them. It moves by `git mv`, in a
+commit that says why.
+
+- **`ideas/`**: a described problem worth building something for, not yet ready for a run.
+  Anything can go here. It is where an order is shaped.
+- **`planned/`**: passes the planning checklist below, so a run can finish it without
+  asking anyone. Only planned orders are picked up at night.
+- **`nightly/`**: taken by a night run. It stays here, whatever the outcome, until the
+  morning review.
+- **`implemented/`**: kept in the review and merged into `main`.
+
+An order leaves `nightly/` in the morning in one of four directions:
+
+- to `implemented/`, kept, when the night is merged into `main`;
+- back to `planned/`, when the order was deferred or skipped, or when the plan was sound
+  and the code was not (a failed build or probe with a cause the order can name);
+- back to `ideas/`, when the night showed the plan itself was wrong;
+- deleted, when it is dropped: the night's review note says why, and git keeps the file.
 
 ## Which note an item goes in
 
 - A **todo** (`Meta/Todo.md`) is a task doable in one sitting with no design.
-- A **suggestion** (`Meta/Suggestions.md`) is an option raised with no commitment.
+- A **suggestion** (`Meta/Suggestions.md`) is an option Claude raised with no commitment.
+  It becomes an idea only when the developer promotes it.
 - An **open thread** (`Meta/Open Threads.md`) is a question with no recommended answer.
 - A **work order** is a problem with evidence and a recommended change, expected to take
-  several commits, that a run can finish without asking anyone.
+  several commits. It starts in `ideas/`.
 
 ## Naming
 
-`NN-slug.md`. The number is the queue position: the run takes orders in numeric order and
-does not reorder to fit more in. Reprioritise by renaming. Numbers are not reused within a
-batch; a closed order keeps its number in `done/`.
+`NN-slug.md`. The number is the order's id and, in `planned/`, its priority: a run takes
+planned orders in numeric order and does not reorder to fit more in. Reprioritise by
+renaming. Numbers are never reused.
 
 ## Sections
 
 Every order has these, in this order:
 
-- **Status**: one of `open`, `queued`, `in progress`, `done`, `failed`, `skipped`,
-  `dropped`, with the date it changed. `queued` means the order passes the checklist
-  below; only `queued` orders are picked up.
+- **Status**: one line: the date the order entered its folder, and what it is waiting on
+  or how its stage ended (`failed on 2026-10-02: ...`). The folder is the stage; the line
+  never contradicts it.
 - **Problem**: what is wrong, measured against `standards/` where a rule applies.
 - **Evidence**: file and line references, verified at the date of writing.
 - **Design**: the design or Technical note the order implements, by vault path. A game
   addition needs its note at status Designed or later; a refactoring names the standard
   it serves.
-- **Recommended change**: the seam, not the rewrite. Steps are listed when there are
-  several; each step is a commit.
-- **Files**: the files the order expects to touch. Two orders in one night sharing a file
-  is fixed during the day.
+- **Outcome**: what must be true when the order is done, and every design decision that
+  outcome rests on, stated as decided. It says what, not how: which functions to write,
+  where a value lives and in what order to change things are the implementer's calls. An
+  approach that shaped the order may be given as a suggestion, marked as one.
+- **Files**: the files the order is expected to touch, as a guide for the run's
+  scheduling. Not binding.
 - **Done when**: the build and the probe run, and the numbers or image the probe must
   produce. This is what the run checks, so it has to be checkable without a person.
-- **Depends on**: orders that must be merged into `nightly` first, or none.
+- **Depends on**: orders whose result this one needs (it builds on their code or their
+  behaviour), or none. It runs only once they are on `main`. Sharing files is not a
+  dependency; the run keeps orders that collide on different nights.
 
 Two sections are appended later, never written up front:
 
-- **Run** (by the night run): `done`, `failed`, or `skipped`; the branch; the commit or
-  merge hash; the probe output quoted; anything the run was unsure of.
-- **Review** (by the developer, in the morning): keep, revert, or rework, and why.
+- **Run** (by the night run): the outcome (`passed`, `failed`, `deferred` or `skipped`);
+  the branch;
+  the commit or merge hash; the probe output quoted; anything the run was unsure of.
+- **Review** (in the morning): one line with the verdict and a link to the night's review
+  note, where the reasons are.
 
-## Queueability checklist
+An idea may leave sections as `_To be filled in._`; a planned order may not.
 
-An order moves from `open` to `queued` when all of these hold:
+## Planning checklist
+
+Planning settles what is wanted; implementing settles how. An order moves from `ideas/`
+to `planned/` when all of these hold:
 
 1. The Design section names a note that exists at the required status.
-2. Done when names a probe and its expected output, not a judgement.
-3. Files is filled in and does not overlap another `queued` order.
-4. Every order in Depends on is `done` or is queued ahead of it.
+2. The Outcome leaves no design decision open: anything a player would notice, anything
+   that changes what the simulation does, and any choice between rules is decided in the
+   order or its design note. What remains open is only how to write the code.
+3. Done when names a probe and its expected output, not a judgement.
+4. Every order in Depends on is implemented or planned.
+5. The Evidence line references were checked against the tree on the day it moved.
+
+Overlap with other planned orders is not a criterion. Which orders share a night is the
+run's decision, and it only puts independent orders together.
 
 ## What the run does
 
-1. Fork `nightly/YYYY-MM-DD` from `main`.
-2. For each `queued` order in numeric order: set `in progress`; fork `wo/NN-slug` from
-   the same base, or from the current `nightly` head when the order depends on one merged
-   earlier that night; implement; build; run the probe named in Done when.
-3. If it passes, merge the order branch into `nightly` and run the probe again there. If
-   that passes too, the order is `done`. If the merge does not apply cleanly or the
-   second probe fails, the order is `failed`, the branch is left as is, and `nightly` is
+1. Fork `nightly/YYYY-MM-DD` from `main`. Note the time: it is where the token count
+   starts.
+2. Choose the night's orders from `planned/`. The numbers are the developer's priority
+   and the run follows them. An order is eligible only when everything in its Depends on
+   is implemented, that is, already on `main`. Orders are never stacked: of two orders that
+   are not independent of each other, only the higher-priority one is taken, and the other
+   waits for a later night. The run also leaves an order out when the time box cannot hold
+   it. Every order left out is named in the review note with the reason.
+3. For each chosen order: `git mv` it to `nightly/`; fork `wo/NN-slug` from `main` (the
+   base `nightly` was forked from), so every branch is its own order's change and nothing
+   else; implement it in a subagent described exactly `Implement work order NN` (the token
+   count finds orders by that description); build; run the probe named in Done when.
+4. If it passes, merge the order branch into `nightly` and run the probe again there. If
+   that passes too, the order `passed`. If the merge conflicts with an order merged
+   earlier, the run may resolve it only when both sides are additions that can simply
+   both be kept: every line of each side taken as written, nothing edited, as when two
+   orders each add a paragraph to the same note or an entry to the same list. It then
+   runs both orders' probes on `nightly` and names the files in both Run sections. Any
+   conflict that would need a line edited is not resolved: the merge is aborted and the
+   order is `deferred`, to be taken again from `main` on a later night. If a probe fails on
+   `nightly`, the order `failed`. Either way its branch is left as is and `nightly` is
    restored to its state before the merge.
-4. If the build breaks or the first probe fails, the order is `failed`; the branch is
-   left as is.
-5. An order whose Depends on is not on `nightly` is `skipped`.
-6. Append the Run section, then move on. Stop at the end of the list or the time box.
+5. If the build breaks or the first probe fails, the order `failed`; the branch is left as
+   is.
+6. An order that could not be started (its dependency turned out not to be on `main`, or
+   the tree would not build before it began) is `skipped`.
+7. Append the Run section, then move on. Stop at the end of the chosen orders or the time
+   box.
+8. Write the night's review note (below), run the token count into it, and commit the
+   order files and the note on `nightly`.
 
-`main` is never touched. Nothing is force-resolved. The run does not choose between orders.
+`main` is never touched. Nothing is stacked, and no conflict is resolved by editing: an
+order that is not independent of the rest of the night waits for another night.
 
 **Deviation from `standards/agent-use.md`** ("an agent never commits without being
 asked"): the launch of a run is the instruction to commit. It covers commits on `wo/*`
 branches and merges into the night's `nightly/*` branch, and nothing else.
 
+## The night's review note
+
+`Dev Log/Nightly/YYYY-MM-DD.md`, in the vault, one per night. It is the night's Dev Log
+entry: `Dev Log/Log.md` gets one line linking to it. The run writes every section but the
+verdicts:
+
+- **Summary**: what the night changed, in a few sentences a reader can take in without the
+  diffs, and the list of orders with their outcome.
+- **One section per order**: what it changed (commits, files beyond its Files list), the
+  probe result, what the run was unsure of, and a **Verdict** line left empty for the
+  morning.
+- **Tokens**: the table from `python tools/night_tokens.py --since <start time>`, one row
+  per order, one for the run's own overhead, and the total. Output, input, cache writes
+  and cache reads are kept apart: cache reads are most of the count and cost least.
+- **Morning**: left empty for the review.
+
 ## What the morning does
 
-Read each Run section and the nightly branch. Per order: keep, revert (revert the merge
-on `nightly`, or drop the branch), or rework (write a new order). Merge `nightly` into
-`main` only by deliberate decision. Then move `done` and `dropped` orders into `done/`
-with their Review section filled in, delete the night's branches, write one Dev Log entry
-for the night, and check the line references of the orders still open against the tree.
+Read the review note and the nightly branch. Per order, write the Verdict (keep, revert,
+rework, drop) and why, and move the file as Stages says. Merge `nightly` into `main` only
+by deliberate decision. Then fill the Morning section (the merge hash or why not, the
+branches deleted), add the line to `Dev Log/Log.md`, and check the Evidence line
+references of the orders in `planned/` against the tree, since they rot with every merge.
 
 ## Provisional
 
-Written 2026-09-15 before any night has run. The unit of one order per branch, the
-second probe on `nightly`, and how much a Run section needs to say are decided from the
-first two or three nights on orders 01-09, and recorded here when they are.
+The stages were written on 2026-09-27 after one night had run under the queue that came
+before them. The unit of one order per branch, the second probe on `nightly`, and how much a
+Run section needs to say are still decided from the next two or three nights, and recorded
+here when they are.

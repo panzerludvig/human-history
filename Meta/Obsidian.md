@@ -20,7 +20,8 @@ Guidelines for keeping this vault useful and consistent.
 |--------|---------|
 | Design | Game design: mechanics, systems, loops |
 | Technical | Architecture, stack, tooling |
-| Dev Log | Chronological progress notes |
+| Dev Log | Chronological progress notes; `Dev Log/Nightly/` holds one review note per night run |
+| work_orders | Work orders, one folder per stage: ideas, planned, nightly, implemented ([[Meta/Work Orders]]) |
 | Assets | References to art, audio, and other files |
 | Meta | Notes about the project process itself |
 

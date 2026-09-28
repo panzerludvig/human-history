@@ -1,6 +1,6 @@
 # 08 — One world build shared by the game and every probe
 
-**Status:** done (2026-09-15)
+**Status:** implemented (2026-09-26)
 
 ## Problem
 
@@ -188,3 +188,5 @@ order forbade a change of output and one byte of one image is not worth a rule b
 folding it into `hydrology::petMmDay` is a one-line change for whenever the sweep's
 numbers are next allowed to move. The probes must run from the repo root, where `data\`
 is, which the order's Run section records.
+
+Review note for the night: [[Dev Log/Nightly/2026-09-15]].

@@ -43,6 +43,16 @@ stops cutting wood, so famine in a cold climate compounds into a fuel crisis
 — historically honest, and it gives cold-country collapse a distinct
 signature.
 
+**Sharing the surplus among projects.** Each project a settlement works on —
+a granary, a farmstead, a plot being cleared, bows — has a ceiling: the share
+of its people it would put on the work if hands were free. When the surplus
+after food and heat covers every ceiling, each project gets its ceiling. When
+it does not, every project is scaled by the same fraction: all of them slow
+together, none stops while another goes on at full pace. There is no ranking
+among them yet because there is no reason for one; a ranking comes with a
+reason to have it. A settlement in famine has no surplus, so nothing is built
+or carved. (Designed 2026-09-28; implemented by work order 11.)
+
 ---
 
 ## Needs are abstract; production has modes
@@ -219,8 +229,9 @@ be observed.
 
 ## Open Questions
 
-- The allocator's exact form: a strict priority stack, or marginal-utility
-  weights? The stack is simpler and matches the existing hoarding gate.
+- ~~The allocator's exact form: a strict priority stack, or marginal-utility
+  weights?~~ A strict stack, with projects within the last level scaled
+  together (2026-09-28, "Sharing the surplus among projects" above).
 - The wood stock's unit and radius: the settlement's woodshed against the
   regional pool pattern — wood is local, but how local?
 - Byproduct fractions: what share of foraging labour yields wood/stone, and

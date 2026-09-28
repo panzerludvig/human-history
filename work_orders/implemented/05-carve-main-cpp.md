@@ -1,6 +1,6 @@
 # 05 — Carve main.cpp into modules
 
-**Status:** done (2026-09-15)
+**Status:** implemented (2026-09-26)
 
 ## Problem
 
@@ -187,3 +187,5 @@ tooltip after step 7b (`describePoint` into a caller buffer) is a Win32 control 
 the frame, so no screenshot covers it; it needs a mouse-over in the game. The
 `world::activeProgress` pointer stays until `atmosphere::build` takes a context
 parameter.
+
+Review note for the night: [[Dev Log/Nightly/2026-09-15]].

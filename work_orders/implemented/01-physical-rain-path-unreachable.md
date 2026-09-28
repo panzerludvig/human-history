@@ -1,6 +1,6 @@
 # 01 — Decide the fate of the physical rain path
 
-**Status:** done (2026-09-15) — option 1; see `Dev Log/Log.md` 2026-09-15
+**Status:** implemented (2026-09-15) — option 1; see `Dev Log/Log.md` 2026-09-15
 
 ## Problem
 

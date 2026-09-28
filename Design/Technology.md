@@ -147,7 +147,48 @@ slot that falls on scree or water opens nothing, which is the map talking.
 Farmsteads anchor relocation like granaries (sunk investment), leave
 ruins, and are drawn as lone farmhouses on a golden-angle spiral walking
 outward to ~23 km (`sim::farmsteadPos`, mirrored in the shader), each
-among its own fields.
+among its own fields. The spiral is replaced by the design below.
+
+**Where farmsteads stand, and how they end** (designed 2026-09-28;
+implemented by work order 13). The same spiral around every village made
+every village look alike, and only the newest farmstead could ever be
+taken away.
+
+- **A chain of places.** A settlement keeps its farmsteads as a chain in
+  the order they were founded. Each place in it is a farm or a ruin, with
+  the date it became one. The chain is the settlement's state; the
+  positions are not stored, they are worked out from the chain when needed.
+- **Where the next one goes.** The place for the next link is the best of a
+  handful of candidate points drawn from the settlement's own seed: near the
+  village core (beyond the village's own fields, within the day's reach),
+  away from the settlement's earlier places, farms and ruins alike, and on
+  good ground at that exact point: never on water, not on steep slopes,
+  flat land preferred. The terrain is judged at the point itself, not on
+  the 20 km suitability grid.
+- **Nothing moves.** A place depends only on the settlement's seed, the
+  village centre, the terrain and the places before it in the chain, none
+  of which changes in play. Other settlements' farmsteads and the claim
+  border do not enter it: a neighbour's growth never shifts a farm. A place
+  moves only if the village itself moves.
+- **A farm becomes a ruin when its fields are gone** (see "Fields go back to
+  the wild": the land reverts first, then the house is left). A new farm is
+  spared until it has had its first field; one that has had none within 10
+  years of its founding is abandoned all the same.
+- **The farthest goes first.** When a settlement cannot tend all its
+  fields, the fields of the farm farthest from the village revert first, so
+  a settlement pulls back to its core whatever order its farms were built
+  in.
+- **Ruins are reoccupied first.** A new farmstead rebuilds the ruin nearest
+  the village, in its old place and at the full building cost, before the
+  chain takes a new place.
+- **Ruins weather** like a settlement's: gone from the map 400 years after
+  abandonment (`RUIN_LIFE_DAYS`). The place stays in the chain, empty, so
+  the places after it keep their positions, and it can be built on again.
+- **A village that moves leaves its farms behind.** On relocation the whole
+  chain becomes ruins where it stood, recorded with their positions as a
+  settlement's ruins are, and the settlement starts a new chain.
+- Every standing farmstead is drawn, however many settlements' farmsteads
+  share a stretch of ground.
 
 The boundary against colonization: a farmstead only works land whose
 people can reach the village within the day — one community. Beyond the
@@ -155,6 +196,24 @@ day's radius, dispersal is not a farmstead but a daughter settlement,
 which is the existing fission machinery. Between neighbouring settlements
 closer than two day-radii, unworked borderland remains — correctly: the
 waste, the wood-pasture, the hunting ground.
+
+**Fields go back to the wild** (designed 2026-09-28; implemented by work
+order 12). Cleared land stays cleared only while hands work it.
+
+- **What reverts is what nobody can tend.** A settlement can work 8 ha a
+  person (`FARM_KM2_PER_PERSON`); tilled land beyond that reverts whether or
+  not the settlement still farms. A halved village loses its outfields and
+  keeps its infields. A people whose farming has lapsed tends nothing, so all
+  of its land reverts.
+- **Reversion is the land's own clock, not an event.** It costs no labour
+  and happens at a steady pace, so a block nobody works is gone about 50
+  years after the last hand left it: visible for a generation, gone in two
+  or three. That is the regrowth clock the wood stock will use when it
+  exists.
+- **Outermost first.** Farmstead blocks go before the village's own fields,
+  the farmstead farthest from the village first, so the map shows a village
+  pulling back to its core. Land that has reverted
+  can be cleared again, at the full clearing cost.
 
 ## Animal husbandry (the second technology)
 
@@ -296,6 +355,14 @@ a herd of one is a herd, a granary going up is practice, a novice on
 farmable ground is a farmer. Judged on share of the food instead, a people
 would lose husbandry the day they took it up, when the seed herd feeds one
 person in three hundred.
+
+For farming the means are the fields (designed 2026-09-28; implemented by
+work order 12): fields stand, or a plot is being cleared. A people that has
+never yet had a field is judged on the ground instead, as before -- a
+farming people that eats well may go decades before it needs to clear
+anything, and it must not lose farming for not having needed it yet. Once
+a settlement has had fields, losing them all is losing the means, and the
+grace period below runs from there.
 
 **The carriers, not the village.** The transmission test counts the
 practitioners who can reach each other: the settlement's own people plus

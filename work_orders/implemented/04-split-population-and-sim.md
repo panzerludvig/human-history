@@ -1,6 +1,6 @@
 # 04 — Split population.h and sim.h by concern
 
-**Status:** done (2026-09-15)
+**Status:** implemented (2026-09-26)
 
 ## Problem
 
@@ -172,3 +172,5 @@ accepted as written next to the code. `sphere.h` beyond the Files list is the ri
 for the geometry every carved header shares. `technology.h` naming `sim::note` through
 `events.h` is a lower header reaching up; left as is until something else needs the same
 seam.
+
+Review note for the night: [[Dev Log/Nightly/2026-09-15]].

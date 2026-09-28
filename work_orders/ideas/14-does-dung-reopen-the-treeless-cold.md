@@ -1,6 +1,7 @@
 # 14 — Measure whether dung reopens the treeless cold
 
-**Status:** open (2026-09-18)
+**Status:** idea (2026-09-27; open since 2026-09-18) — the baseline in Done when has no
+source; the probe's own no-heat pass has to replace it before planning
 
 Line references re-checked against f9c731f on 2026-09-26.
 

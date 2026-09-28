@@ -1,6 +1,6 @@
 # 02 — Split atmosphere `step` into named stages
 
-**Status:** done (2026-09-15) — see `Dev Log/Log.md` 2026-09-15
+**Status:** implemented (2026-09-15) — see `Dev Log/Log.md` 2026-09-15
 
 Rewritten 2026-09-15 after order 01 landed: the line references were off by 60 to 300
 lines, the sub-model drivers in `prescribeHour` were handed to order 03, and the two

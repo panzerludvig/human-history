@@ -1,6 +1,6 @@
 # 03 — Take the superseded models out of the game build
 
-**Status:** done (2026-09-15)
+**Status:** implemented (2026-09-26)
 
 ## Problem
 
@@ -142,3 +142,5 @@ stays in the sweep's build; DYN2, QG2 and WATER2 are recorded in the branch map 
 Threads.md` entry of 2026-09-07 still names `qg2.h` as a dated record, which is what it
 is; it stays. That the probe scripts other than `build.bat` do not create `build\` is a
 fresh-checkout papercut, not a defect of this order.
+
+Review note for the night: [[Dev Log/Nightly/2026-09-15]].

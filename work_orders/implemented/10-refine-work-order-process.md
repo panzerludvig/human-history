@@ -1,6 +1,6 @@
 # 10 — Refine the work-order process
 
-**Status:** done (2026-09-15)
+**Status:** implemented (2026-09-15)
 
 ## Problem
 
