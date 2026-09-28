@@ -19,13 +19,15 @@ How settlements learn to do new things. The core ideas are inherited from Delega
 
 Two modes (decided 2026-08-26; this supersedes the original fixed-pace world clock for necessity techs, resolving the old open question "a harsher world does not discover sooner" the other way):
 
-**Need-driven** (farming, granaries — nobody would do these unless they had to):
+**Need-driven** (farming, husbandry, granaries — nobody would do these unless they had to):
+
+- **Husbandry is need-driven like farming** (designed 2026-09-28, replacing the serendipity clock; implemented by work order 19). Its state is the same sustained hunger as farming's, and its weight uses the settlement's pasture where farming's uses farm suitability. History puts herding beside farming, not millennia after it: sheep and goats in Southwest Asia around 10,500 years ago, alongside the first cereals and perhaps before them; pigs in China with millet and rice; cattle herding in the Sahara thousands of years before local crops. It is the same response to the same pressure, the prey getting scarce, and which comes first follows the land. Pasture shares run far higher than farm suitability, so husbandry's weight is scaled to put the world's first herders on about the same schedule as its first farmers, a few centuries into a world; the scale is measured, not assumed.
 
 - Each unaware settlement contributes a need weight = sustained-state ramp × suitability s × min(P/300, 3). The **sustained ramp** is the core rule: the state must have held for a full year to count at all and saturates at four years — one tough winter changes nobody's lifestyle, but hunger year after year drives desperation. Farming's state is sustained hunger — a genuine shortfall, φ < 0.92 (the overshoot trough reaches ~0.85), not the ~0.98 comfort glide the split rule watches, tracked by its own `hungrySince` which unlike the split timer is *not* reset by sending out a band (emigration doesn't cure desperation); granaries' is the storage fill signal (filled in the fat season, nearly drained in the lean one) holding in consecutive years — the same signal that triggers building for those who already know how.
 - The world invention rate = **√(Σ need) / 2,000 years**, and when the clock fires the inventor is drawn proportional to need (mathematically this is per-settlement chances with sublinear crowding). The square root is the tuning lever: more potential inventors do invent sooner, but a crowded hungry world does not invent everything instantly. A fully comfortable world never invents these at all — no farming in Eden.
 - The clock re-checks every 5 years even at zero rate, since need can arise between draws.
 
-**Serendipity** (husbandry; the default for future opportunity techs): the original world clock. Rate = (share of world population that does not yet know it) / 10,000 years — population-invariant pacing; inventor picked by weight P · s · (1 + 9·scarcity). As a technology spreads, independent invention fades toward zero in both modes; early on, several independent cradles can appear.
+**Serendipity** (the default for future opportunity techs; husbandry was on it until 2026-09-28): the original world clock. Rate = (share of world population that does not yet know it) / 10,000 years — population-invariant pacing; inventor picked by weight P · s · (1 + 9·scarcity). As a technology spreads, independent invention fades toward zero in both modes; early on, several independent cradles can appear.
 
 This is a client of [[Design/Event-Driven]]: one scheduled event per technology, weights evaluated lazily at fire time, rescheduled when adoption changes the pool (exact — each adoption is a discrete event) or on the 5-year need horizon (piecewise-constant approximation of a yearly-drifting rate).
 
@@ -40,7 +42,8 @@ Pinned so future technologies can be tested against drift — when adding or tun
 | Farming: 100 settlements each at weight 0.1 | 10 | 630 yr |
 | Granaries: one farming settlement, P = 300, fill signal ≥ 4 yr (s = 1) | 1 | 2,000 yr |
 | Granaries: same but non-farming forager (s = 0.15) | 0.15 | 5,200 yr |
-| Husbandry (serendipity): pristine world, any population | — | 10,000 yr |
+| Husbandry (serendipity, until order 19): pristine world, any population | — | 10,000 yr |
+| Husbandry (need, from order 19): as farming, pasture in place of farm suitability, scaled | — | about farming's |
 | Adoption: aware settlement, one fully-expert neighbour, s = 1, fully hungry | — | 100 yr |
 | Adoption: same but comfortable (φ ≥ 1.11) | — | never (re-checked 5-yearly) |
 
@@ -50,7 +53,7 @@ Pinned so future technologies can be tested against drift — when adding or tun
 
 Knowing about a technology and practising it are different states — ideas travel where practice can't. Each settlement is **unaware → aware → practising**:
 
-- **Awareness** spreads by contact, ungated by terrain: hearing about farming needs neighbours who know of it, not soil to plant. Rate = Σ(knowing neighbours) / 25 years within 160 km (twice the minimum settlement spacing); aware-but-not-practising settlements count as sources, so knowledge relays across tundra and desert belts. A modern tundra settlement knows exactly what farming is — it just has nowhere to do it.
+- **Awareness** spreads by contact, ungated by terrain: hearing about farming needs neighbours who know of it, not soil to plant. Rate = Σ(knowing neighbours) / 25 years within contact, and contact is awareness: two settlements are in contact when one lies within the other's awareness range ([[Design/Migration]], the same range that finds sites to move to), so an old, established settlement knows far more people than a new colony (designed 2026-09-28, replacing a fixed 160 km; implemented by work order 17); aware-but-not-practising settlements count as sources, so knowledge relays across tundra and desert belts. A modern tundra settlement knows exactly what farming is — it just has nowhere to do it.
 - **Practice** is learning the craft: requires awareness, s > 0, practising neighbours to learn from — and a reason. Rate = s · **adoption need** · Σ(neighbour expertise) / 100 years within the same radius. Adoption need (decided 2026-08-26): nobody changes a working lifestyle, but you needn't be desperate either — getting utility is enough. A settlement expanding at its maximum rate (φ ≥ 1.11, where growth saturates) adopts at rate zero; the rate ramps up as food starts to bind, reaching full speed at the invention-hunger threshold (φ ≤ 0.92) — the hungrier, the faster. Granaries use their own utility signal (the fill cycle binding) instead of φ. So the ~100-year mean with one expert neighbour holds for a genuinely hungry settlement; a comfortable one waits until it isn't. Expertise accrues only here. Invention puts a settlement straight into practising.
 
 Both draws are exponential and per-settlement, separate from the world clock; the clock's "non-knowing share" means *unaware*.
@@ -224,8 +227,8 @@ in people-fed units: seeded small at practice start (bred from wild capture),
 growing logistically (~25%/yr) toward pasture x expertise, providing a food
 flow that barely dips in winter -- **animals are walking stores**, which is
 why pastoralism owns seasonal grassland. A small pasture-free farmyard bonus
-covers scavenger animals (chickens, pigs). Discovery is weighted by pasture
-and scarcity. Deferred: band-owned herds (pastoral nomadism proper),
+covers scavenger animals (chickens, pigs). Discovery is need-driven like
+farming's, weighted by pasture (see Discovery above). Deferred: band-owned herds (pastoral nomadism proper),
 overgrazing feedback on R.
 
 ## Granaries (the third technology; the first building)

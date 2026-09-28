@@ -21,7 +21,7 @@ One look around is not enough: a raid only follows a *second* consecutive failed
 A raid is not an event resolved between neighbours in the abstract. It is the second purpose of the project's first agent (the band, from [[Design/Migration]]), and it has to be carried out:
 
 1. **The party leaves.** ~30% of the settlement's people, with their share of its bows and provisions. They are not producing food at home while they are away.
-2. **It travels.** Distance is a real cost, so only settlements within contact range (160 km) are worth robbing — you rob the people you know about. A raiding party never rests and never founds a settlement on good ground it passes.
+2. **It travels.** Distance is a real cost, so only settlements within contact range (awareness, see [[Design/Technology]]; a fixed 160 km until work order 17) are worth robbing — you rob the people you know about. A raiding party never rests and never founds a settlement on good ground it passes.
 3. **It fights on arrival**, and only on arrival.
 4. **It carries the loot home**, which is the part that makes raiding fail interestingly: winning is not the same as profiting.
 

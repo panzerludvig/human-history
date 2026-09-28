@@ -49,6 +49,11 @@ project-agnostic can move to a shared standards repo unchanged; only the import 
 - A threshold derives from the table it gates. Write it as an expression over the table's
   constants, or assert at build time that the table can reach it. The settlement threshold
   above the maximum reachable K (Dev Log, 2026-08-23) is the recorded bug behind this rule.
+- A constant exists only to stand in for something the model deliberately does not model,
+  and its comment says what. A value that follows from the model (a threshold, a spacing,
+  an area) is computed from what it follows from, not written as a number beside it; a
+  constant that could be derived is a bug waiting for the thing it follows from to change.
+  (2026-09-28)
 - The clock never depends on there being something to clock. Time advances whether or not
   any settlement, band or event exists.
 
