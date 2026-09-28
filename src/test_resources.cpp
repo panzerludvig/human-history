@@ -67,6 +67,25 @@ static Report survey(const population::Field& pf, double now) {
     return r;
 }
 
+// The year each technology was first invented anywhere in the world, from the
+// event log: the first EV_INVENTED of a kind is always kept. Archery and
+// fishing are known at the start and are never invented.
+static void printFirstInventions(const population::Field& pf, const char* pass) {
+    for (int t = 0; t < population::NTECH; t++) {
+        if (t == population::TECH_ARCHERY || t == population::TECH_FISHING) continue;
+        double first = -1;
+        for (const population::Event& e : pf.events)
+            if (e.kind == population::EV_INVENTED && (int)e.amount == t &&
+                (first < 0 || e.t < first))
+                first = e.t;
+        if (first < 0)
+            fprintf(stderr, "first invented (%s): %-10s never\n", pass, technology::techName(t));
+        else
+            fprintf(stderr, "first invented (%s): %-10s year %.0f\n", pass, technology::techName(t),
+                    first / 365.0);
+    }
+}
+
 int main(int argc, char** argv) {
     world::World globe;
     globe.seed = argc >= 2 ? (uint32_t)strtoul(argv[1], nullptr, 10) : 7;
@@ -110,6 +129,7 @@ int main(int argc, char** argv) {
         Report m = survey(pf, years * 365.0);
         m.coldSampled = r.coldSampled;
         out[pass] = m;
+        printFirstInventions(pf, pass ? "heat" : "baseline");
     }
 
     const Report& c0 = out[0]; // hearths cold (baseline)
