@@ -9,6 +9,7 @@
 #pragma once
 #include "terrain.h"
 #include "hydrology.h"
+#include "progress.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -2673,7 +2674,7 @@ struct Model {
 
 inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, const float rot[9],
                          terrain::V3 offset, const plates::Field& pf, const hydrology::Result& hy,
-                         bool verbose = false, void (*progress)(int day, int totalDays) = nullptr) {
+                         bool verbose = false, const progress::Context& ctx = {}) {
     Model m;
     m.init(cp, seaLevel, rot, offset, pf, hy);
     // PROBE: the painted climate's ingredients at named places, when asked
@@ -2702,6 +2703,8 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
     std::vector<double> cnt(SEASONS, 0.0);
     int totalDays = SPINUP_DAYS + STAT_YEARS * 365;
     for (int day = 0; day < totalDays; day++) {
+        // Cancelled: the caller throws the partial climatology away.
+        if (ctx.cancelled()) return c;
         int doy = day % 365;
         int season = Climatology::seasonOfDay(doy);
         bool stat = day >= SPINUP_DAYS;
@@ -2766,7 +2769,12 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
             for (int i = 0; i < W * H; i++) c.diurnal[season * W * H + i] += (float)(dayMax[i] - dayMin[i]);
             cnt[season] += 1.0;
         }
-        if (progress && day % 15 == 0) progress(day, totalDays);
+        if (ctx.report && day % 15 == 0) {
+            char b[80];
+            snprintf(b, sizeof b, "Simulating climate... year %d of %d", day / 365 + 1,
+                     (totalDays + 364) / 365);
+            ctx.say(b);
+        }
         if (verbose && day % 30 == 0) {
             fprintf(stderr,
                     "  probe T %.1f  W %.2f rain/h %.4f  day-sums: sw %+.2f olr %+.2f dif %+.2f (K/day)%c",

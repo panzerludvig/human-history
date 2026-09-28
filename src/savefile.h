@@ -99,10 +99,12 @@ inline bool save(const world::World& w, const camera::Camera& c) {
 }
 
 // Read worlds\<name>.ibw into w and c: the world is rebuilt from its seed
-// (reporting through progress) and the saved population is restored on top
-// of the regenerated field. False if there is no such file.
+// (reporting through ctx, and stopping when it is cancelled) and the saved
+// population is restored on top of the regenerated field. Only the camera's
+// position (lat, lon, altitude) is read into c. False if there is no such
+// file or the rebuild was cancelled.
 inline bool load(const std::string& name, world::World& w, camera::Camera& c,
-                 world::ProgressFn progress) {
+                 const progress::Context& ctx) {
     std::ifstream f(worldsDir() + "\\" + name + ".ibw");
     if (!f) return false;
     w = world::World{};
@@ -274,7 +276,7 @@ inline bool load(const std::string& name, world::World& w, camera::Camera& c,
             f >> skip;
         }
     }
-    w.build(progress);
+    if (!w.build(ctx)) return false;
     // Restore the saved population on top of the regenerated field; local
     // properties come from the per-cell maps, so founded settlements restore
     // the same way as original ones.

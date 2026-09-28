@@ -23,7 +23,7 @@
 static int compared = 0;
 static int failures = 0;
 
-static void progress(const char* stage) {
+static void logStage(const char* stage) {
     if (stage[0]) fprintf(stderr, "build: %s\n", stage);
 }
 
@@ -178,7 +178,7 @@ int main(int argc, char** argv) {
     world::World w;
     w.seed = seed;
     w.name = "roundtrip-probe";
-    w.build(progress);
+    w.build(logStage);
     w.simTime += years * 365.0;
     sim::simulate(w.pop, w.tech, w.hydro, w.clim, w.simTime);
     camera::Camera c;
@@ -198,7 +198,7 @@ int main(int argc, char** argv) {
 
     world::World l;
     camera::Camera lc;
-    if (!savefile::load(w.name, l, lc, progress)) {
+    if (!savefile::load(w.name, l, lc, logStage)) {
         fprintf(stderr, "FAIL: load returned false\n");
         return 1;
     }
