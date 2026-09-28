@@ -25,7 +25,7 @@ constexpr float HERD_SEED = 1.0f;             // bred from wild capture at pract
 // Clocks whose rates drift are redrawn at this horizon; the exponential is
 // memoryless, so redrawing is exact for piecewise-constant rates.
 constexpr double RESAMPLE = 50.0 * YEAR;
-// Need-driven discovery (farming, granaries): desperation invents. One tough
+// Need-driven discovery (farming, husbandry, granaries): desperation invents. One tough
 // winter changes nobody's lifestyle, so need ramps in only after the state
 // has held a year and saturates at four. Each unaware settlement contributes
 // ramp x suitability x capped population; the world rate is sqrt(sum) /
@@ -36,6 +36,22 @@ constexpr double NEED_MEAN_YEARS = 2000.0;   // mean at total need weight 1
 constexpr double NEED_RESAMPLE = 5.0 * YEAR; // need drifts yearly: short horizon
 constexpr float NEED_YEARS_ON = 1.0f;        // below this, no desperation
 constexpr float NEED_YEARS_SAT = 4.0f;       // full desperation
+// Husbandry is need-driven on the same hunger as farming, weighted by pasture
+// in place of farm suitability, times this scale. It stands in for what the
+// model does not say: how readily a hungry people turns to taming rather than
+// sowing. Chosen by measurement so the world's first herders come on about
+// farming's schedule (Design/Technology.md, calibration table). Measured
+// 2026-09-28, seeds 1-10, 700 years, hearths burning:
+// - Among the hungry, pasture and farm suitability sum to nearly the same
+//   (pasture/sFarm 0.78-0.97 over years 25-175, seeds 1-3): the hungry live
+//   on grassland, where both are the grass share. Unscaled, the two need
+//   weights are within 10%.
+// - At 1.0, husbandry's first invention trails farming's: mean 245 yr
+//   against 192 (x1.27); likely farming, where it spreads first, feeds the
+//   hungry who would have turned to herds, while a seed herd feeds nobody.
+// - At 1.5: husbandry 201 yr, farming 221 (x0.91), invented in 10/10 seeds
+//   each (test_resources, heat pass). Ten seeds cannot resolve much finer.
+constexpr float HUSB_NEED_SCALE = 1.5f;
 
 inline const char* techName(int t) {
     static const char* names[population::NTECH] = {"farming", "husbandry", "granaries",
@@ -184,16 +200,17 @@ inline bool meansPresent(const population::Settlement& s, int tech) {
 }
 
 // Which technologies are invented from need rather than serendipity: nobody
-// farms or builds granaries unless they have to. Husbandry (taming what is
-// already around you) stays on the serendipity clock.
+// farms, herds or builds granaries unless they have to.
 inline bool needDriven(int tech) {
-    return tech == population::TECH_FARMING || tech == population::TECH_GRANARY;
+    return tech == population::TECH_FARMING || tech == population::TECH_HUSBANDRY ||
+           tech == population::TECH_GRANARY;
 }
 
 // One settlement's contribution to a need-driven invention rate, and its
-// pick weight when the clock fires. Farming's sustained state is hunger
-// (hungrySince, independent of split resets); granaries' is the storage
-// fill signal holding in consecutive years (granNeedYrs).
+// pick weight when the clock fires. Farming's and husbandry's sustained
+// state is hunger (hungrySince, independent of split resets); granaries' is
+// the storage fill signal holding in consecutive years (granNeedYrs).
+// Husbandry's weight is scaled by HUSB_NEED_SCALE.
 inline float needWeight(const population::Settlement& s, int tech, double now) {
     if (s.leaving || s.tech[tech].aware || s.P <= 1) return 0.0f;
     // A people who lost this recently are readier to find it again.
@@ -202,12 +219,13 @@ inline float needWeight(const population::Settlement& s, int tech, double now) {
         again += population::REDISCOVER_GAIN *
                  (float)std::exp(-(now - s.tech[tech].lostT) /
                                  (population::REDISCOVER_TAU_YEARS * YEAR));
-    float years = tech == population::TECH_FARMING
-                      ? (s.hungrySince >= 0 ? (float)((now - s.hungrySince) / YEAR) : 0.0f)
-                      : s.granNeedYrs;
+    float years = tech == population::TECH_GRANARY
+                      ? s.granNeedYrs
+                      : (s.hungrySince >= 0 ? (float)((now - s.hungrySince) / YEAR) : 0.0f);
     float acute =
         std::clamp((years - NEED_YEARS_ON) / (NEED_YEARS_SAT - NEED_YEARS_ON), 0.0f, 1.0f);
-    return acute * again * suitability(s, tech) * std::min(s.P / 300.0f, 3.0f);
+    float scale = tech == population::TECH_HUSBANDRY ? HUSB_NEED_SCALE : 1.0f;
+    return acute * again * scale * suitability(s, tech) * std::min(s.P / 300.0f, 3.0f);
 }
 
 // Adoption need: nobody changes a working lifestyle. A settlement expanding
