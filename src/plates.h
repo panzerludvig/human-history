@@ -13,6 +13,7 @@
 
 namespace plates {
 
+// W and H reach the shader from here as PW and PH (main.cpp).
 constexpr int W = 1024, H = 512;   // ~40 km cells; boundaries are smooth
 constexpr float PI_F = 3.14159265f;
 constexpr float EARTH_RADIUS_KM = 6371.0f;
@@ -49,7 +50,7 @@ struct Field {
     std::vector<Plate> plates;
 
     // Bicubic B-spline sample at a unit vector (C2, no overshoot, rounded
-    // iso-lines). Matches the GPU's plateAt(); S repeats, T clamps.
+    // iso-lines); S repeats, T clamps. Mirrored in globe.frag plateAtTexel.
     Cell sample(V3 n) const {
         float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
         float lon = std::atan2(n.y, n.x);
@@ -75,6 +76,7 @@ struct Field {
         return out;
     }
 
+    // Mirrored in globe.frag bsplineWeights.
     static void bsplineWeights(float t, float w[4]) {
         float t2 = t * t, t3 = t2 * t;
         w[0] = (1 - 3 * t + 3 * t2 - t3) / 6;

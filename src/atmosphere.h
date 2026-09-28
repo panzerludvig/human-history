@@ -774,6 +774,15 @@ constexpr double PRE_SUBTROP_HIGH_K = 8.0;  // K-equivalent: about 8 hPa at PRE_
 constexpr double PRE_SUBTROP_LAT = 30.0, PRE_SUBTROP_WIDTH = 9.0;
 constexpr double PRE_DIURNAL_LAND = 5.0;   // K half-swing, deep interior; coasts less
 constexpr double PRE_DIURNAL_SEA = 0.5;
+// The day's warmest hour, local solar time: the ground keeps gaining heat
+// for a few hours after noon.
+constexpr double DIURNAL_PEAK_HOUR = 15.0;
+// The daily swing at a local solar hour, as a fraction of its half-swing:
+// 1 at DIURNAL_PEAK_HOUR, -1 twelve hours later. The one definition of the
+// daily cycle; the tooltip's current temperature asks it too.
+inline double diurnalPhase(double localHour) {
+    return std::cos(2 * 3.14159265 * (localHour - DIURNAL_PEAK_HOUR) / 24.0);
+}
 struct Prescribed {
     std::vector<float> cont;    // continentality: 0 at sea, 1 deep in a continent
     std::vector<float> wide;    // the same on the continent scale (see PRE_MONSOON_KM)
@@ -922,7 +931,7 @@ struct Prescribed {
         if (!water) T -= PRE_LAPSE * std::max(elevM, 0.0) / 1000.0;
         double lh = hour + lonDeg[i] / 15.0;
         double di = water ? PRE_DIURNAL_SEA : PRE_DIURNAL_LAND * (0.5 + 0.5 * cont[i]);
-        T += di * std::cos(2 * 3.14159265 * (lh - 15.0) / 24.0);
+        T += di * diurnalPhase(lh);
         return T;
     }
     // The belt wind of a latitude at a time of year.
@@ -2946,7 +2955,7 @@ inline terrain::V3 unitAt(float latRad, float lonRad) {
 // The coarse climate grid shows through as straight bilinear creases if
 // sampled directly, so every climate lookup goes through a small noise warp
 // (~60 km) that turns grid lines into organic wiggles, plus bilinear
-// interpolation. Mirrored in the shader.
+// interpolation. Mirrored in globe.frag climFuzz.
 inline terrain::V3 climFuzz(terrain::V3 n) {
     terrain::V3 o = {terrain::fbm(n * 23.0f + 5.0f, 2, 0.5f),
                      terrain::fbm(n * 23.0f + 11.0f, 2, 0.5f),
@@ -2974,7 +2983,8 @@ inline BilinearCell bilinearCellAt(terrain::V3 n) {
 }
 
 // Bilinear sample of one season band of a climatology field at a (fuzzed)
-// unit-sphere position.
+// unit-sphere position. Mirrored in globe.frag climSample and climAnnual,
+// where the texture unit's own bilinear filter does it.
 inline float bilinearAt(const std::vector<float>& v, int season, terrain::V3 n) {
     const BilinearCell b = bilinearCellAt(n);
     auto at = [&](int xx, int yy) {
@@ -2986,18 +2996,33 @@ inline float bilinearAt(const std::vector<float>& v, int season, terrain::V3 n) 
            (at(b.x0, b.y0 + 1) * (1 - b.fx) + at(b.x0 + 1, b.y0 + 1) * b.fx) * b.fy;
 }
 
+// Annual mean over the four season bands. Mirrored in globe.frag climAnnual.
 inline float annualAt(const std::vector<float>& v, terrain::V3 n) {
     float t = 0;
     for (int se = 0; se < SEASONS; se++) t += bilinearAt(v, se, n) / SEASONS;
     return t;
 }
 
-// Season-interpolated field at a fuzzed position.
-inline float seasonalAt(const std::vector<float>& v, terrain::V3 n, double now) {
+// Where a moment falls between the four season bands: each band is the
+// middle of its quarter of the 365-day year, so the moment is blended from
+// the band before it (s0) and the one after (s1), weight f on s1. The one CPU
+// definition of the season interpolation; the shader's climSample mirrors it.
+struct SeasonBlend {
+    int s0, s1;
+    double f;
+};
+inline SeasonBlend seasonBlendAt(double now) {
     double sf = std::fmod(now, 365.0) / 365.0 * 4.0 - 0.5;
-    int s0 = ((int)std::floor(sf) % 4 + 4) % 4, s1 = (s0 + 1) % 4;
-    float f = (float)(sf - std::floor(sf));
-    return bilinearAt(v, s0, n) * (1 - f) + bilinearAt(v, s1, n) * f;
+    int s0 = ((int)std::floor(sf) % 4 + 4) % 4;
+    return {s0, (s0 + 1) % 4, sf - std::floor(sf)};
+}
+
+// Season-interpolated field at a fuzzed position. Mirrored in globe.frag
+// climSample.
+inline float seasonalAt(const std::vector<float>& v, terrain::V3 n, double now) {
+    const SeasonBlend sb = seasonBlendAt(now);
+    float f = (float)sb.f;
+    return bilinearAt(v, sb.s0, n) * (1 - f) + bilinearAt(v, sb.s1, n) * f;
 }
 
 // Annual water balance (rain - PET, mm/day) at a lat/lon, nearest cell.
@@ -3013,6 +3038,7 @@ inline float annualBalanceAt(const Climatology& c, float latRad, float lonRad) {
 // moistureAt (Design/Weather.md, the unification): annual mean temperature
 // lapse-corrected to local height, and moisture as an aridity index
 // (rain / potential evapotranspiration) with mirrored detail noise.
+// Mirrored in globe.frag derivedTempC and derivedMoist.
 inline float derivedTempC(const Climatology& c, float latRad, float lonRad, float hLocal) {
     if (c.meanT.empty()) return terrain::temperatureC(latRad, hLocal);
     terrain::V3 n = climFuzz(unitAt(latRad, lonRad));
@@ -3042,6 +3068,7 @@ inline float derivedMoisture(const Climatology& c, float latRad, float lonRad, t
 }
 
 // Season-interpolated surface temperature (fuzzed, bilinear, lapse-corrected).
+// Mirrored in globe.frag by the temperature iceAt and snowCoverAt compute.
 inline float seasonalTempC(const Climatology& c, terrain::V3 nRaw, float hLocal, double now) {
     if (c.meanT.empty()) return 10.0f;
     terrain::V3 nf = climFuzz(nRaw);
@@ -3081,7 +3108,8 @@ inline void seasonProfile(const Climatology& c, terrain::V3 nRaw, float hLocal, 
 
 // All derived climate values at a point with a single fuzz + sample pass:
 // the per-cell consumers (population yields, tooltip) were paying for the
-// fuzz noise four times over.
+// fuzz noise four times over. Mirrored in globe.frag derivedTempC,
+// derivedTCold, derivedTWarm and derivedMoist.
 struct DerivedClimate {
     float temp, moist, tCold, tWarm, swamp;
 };

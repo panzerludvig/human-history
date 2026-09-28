@@ -17,7 +17,14 @@ namespace sim {
 // water is crossed at half speed (rafts); frozen water is walked at full
 // speed (winter is the crossing season -- ice-bridge migrations); a major
 // unfrozen river slows a band to fording pace for the cell it crosses.
-constexpr float FROZEN_T = -2.0f; // degC, seasonal local temperature
+// Ice forms between two seasonal local temperatures (degC): below
+// ICE_FORMING_T it starts, and below FROZEN_T it is fully formed. Bands walk
+// on water, and melt frozen sea to drink, only below FROZEN_T; between the two
+// the ice is still forming and is crossed as open water. The globe draws the
+// same ramp from these two constants (globe.frag iceAt, which receives them
+// from main.cpp), so the sim walks only on ice the map shows as solid.
+constexpr float ICE_FORMING_T = -1.0f;
+constexpr float FROZEN_T = -4.0f;
 constexpr float RAFT_FACTOR = 0.5f;
 constexpr float RIVER_CROSS_FACTOR = 0.4f;
 constexpr float RIVER_MAJOR_KM2 = 40000.0f; // runoff-equivalent area
