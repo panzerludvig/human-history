@@ -395,6 +395,11 @@ inline std::string envText(const world::World& wd, const population::Settlement&
                  (int)std::lround(st.labFuel * 100));
         out += b;
     }
+    if (st.labProj > 0.005f) {
+        snprintf(b, sizeof b, "Builders and crafts: %d%% of the day's labour\n",
+                 (int)std::lround(st.labProj * 100));
+        out += b;
+    }
     snprintf(b, sizeof b, "Awareness: %d km\n", (int)awareKm);
     out += b;
     if (st.scarceSince >= 0) {

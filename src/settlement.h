@@ -200,7 +200,7 @@ constexpr float BOW_BIG_GAIN = 0.25f;      // bows vs the herd animals
 constexpr float BOW_PER_HUNTER = 0.2f;     // one bow per hunter; a fifth hunt
 // A bow is craft work, not construction: one person per bow, so a crowd
 // makes more bows at once but never a single bow faster.
-constexpr float BOW_LABOUR_SHARE = 0.05f; // people who can be spared to carve
+constexpr float BOW_LABOUR_SHARE = 0.05f; // ceiling on the surplus: people at most carving
 constexpr float BOW_WORK_DAYS = 90.0f;    // one bowyer, at full skill
 constexpr float BOW_LIFE_DAYS = 3650.0f;  // bows wear out and are replaced
 constexpr double GAME_TICK_DAYS = 90.0;   // pool update cadence (a slow layer)
@@ -294,7 +294,7 @@ constexpr float HERD_PASTURE_K = 2.0f;      // people/km2 on pure pasture at ful
 // pace, local wood and stone set the gathering, and only fed people build.
 constexpr float GRANARY_STORE = 10000.0f;     // rations one granary banks
 constexpr float GRANARY_WORK = 1000.0f;       // man-days per granary, constant
-constexpr float GRANARY_LABOUR_SHARE = 0.02f; // share of people on the build
+constexpr float GRANARY_LABOUR_SHARE = 0.02f; // ceiling on the surplus, as a share of people
 constexpr float GRANARY_HI = 0.95f;           // "we filled what we have"
 constexpr float GRANARY_LO = 0.35f;           // "...and winter nearly drained it"
 
@@ -326,7 +326,7 @@ inline float farmCommute(float km) {
 // claim runs into hills gets farmsteads only where the grass is.
 constexpr float FSTEAD_KM2 = 12.0f;   // worked claim-km2 one farmstead re-enables
 constexpr float FSTEAD_WORK = 500.0f; // man-days: houses, byres, clearing
-constexpr float FSTEAD_LABOUR_SHARE = 0.02f;
+constexpr float FSTEAD_LABOUR_SHARE = 0.02f; // ceiling on the surplus, as a share of people
 constexpr int FSTEAD_MAX = 20;               // slots on the spiral; claims cap sooner
 constexpr float RELOC_ANCHOR_FSTEAD = 0.15f; // sunk investment, like granaries
 // Where slot k stands: a golden-angle spiral walking outward from the
@@ -360,7 +360,7 @@ constexpr float FARM_KM2_PER_PERSON = 0.08f;
 // generation's work.
 constexpr float PLOT_KM2 = 0.5f;
 constexpr float TILL_WORK_PER_KM2 = 2000.0f;
-constexpr float TILL_LABOUR_SHARE = 0.02f;
+constexpr float TILL_LABOUR_SHARE = 0.02f; // ceiling on the surplus, as a share of people
 
 // Heat (Design/Resources.md): the second need, the first that is not
 // calories. The demand is warmth -- cooking fires always, hearths against
@@ -652,6 +652,7 @@ struct Settlement {
     float fuelS = 0;   // the woodpile, kg of wood-equivalent (dung dries into it too)
     float coldYr = 0;  // people the cold took in the trailing year (subset of starvedYr)
     float labFuel = 0; // share of the labour budget on fuel, last integrated day (readout)
+    float labProj = 0; // share on the projects (builds and bows), the same day (readout)
     // Farming's reach, and the farmsteads that extend it:
     float farmsteads = 0;     // standing farmsteads (drawn on the map, slot order)
     float fsteadWork = 0;     // man-days left on the farmstead going up, 0 = none
