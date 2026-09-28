@@ -55,7 +55,7 @@ A run chooses the night's orders from `planned/`. The number is the priority the
 
 Branches:
 
-- `nightly/YYYY-MM-DD` is forked from `main` when the run starts. It is the integration branch for that night.
+- `nightly/YYYY-MM-DD` is forked from `main` when the run starts, into its own worktree. It is the integration branch for that night.
 - Each order gets `wo/NN-slug`, forked from `main`, so an order branch shows exactly one order's diff against `main` and can be judged, merged or reverted alone. Orders are never stacked on each other.
 - When an order's "Done when" passes on its own branch, the branch is merged into `nightly`, and the probe runs again there, against everything merged before it. Passing alone and failing after the merge is the interaction case: an addition that changes the world for every other addition. That result is recorded, not hidden.
 - If the run misjudged and two orders conflict when the second is merged into `nightly`, the conflict is not resolved by editing: the merge is aborted and the later order is deferred, to be taken again from `main` on another night. A workaround written at night to make two changes fit would be a design decision nobody made (2026-09-28). The one exception is a conflict that is only textual: both sides add lines next to each other -- two paragraphs appended to the same Technical note, two entries in the same list -- and keeping both, unedited, is the whole resolution. The standards make that case common, since every order updates its Technical note in the same commit. The run resolves it, runs both orders' probes, and names the files in both Run sections.
@@ -65,6 +65,8 @@ Fail loud, per order. A build that breaks or a probe that misses marks the order
 Each order is implemented in its own subagent, launched with the description `Implement work order NN`. That keeps one order's work out of the next one's context, and it is what lets the night's token use be counted per order: Claude Code keeps a transcript per subagent, and `tools/night_tokens.py` sums each one.
 
 The launch is the standing instruction to commit, which `standards/agent-use.md` otherwise forbids. The run commits on order branches and merges into `nightly`, and nothing else. The deviation is written in `work_orders/README.md` next to the rule.
+
+**The night works in worktrees** (2026-09-28). The nightly branch gets its own git worktree under `.claude/worktrees/`, and each order's subagent works in a worktree of its own; the main working copy is never switched to another branch, written to or built in. Planning goes on in the main copy while a night runs, and nothing the night does can land on what the day is editing, or the other way round. The game built in the main copy's `build\` keeps running, since each worktree builds into its own. The dot folder keeps the worktrees' copies of every note out of the Obsidian vault. From the launch to the morning the orders in `planned/` are frozen, since the run implements them as they read at launch; everything else is edited and committed on `main` as usual, and the morning merge brings the two together.
 
 Each order ends the night with a **Run** section appended to its file, and the night ends with its **review note**.
 
@@ -91,7 +93,7 @@ The developer reads the review note and the nightly branch, and decides per orde
 - **Revert.** The merge commit is reverted on `nightly`, or the order branch is dropped before it reaches `main`. The order goes back to planned or ideas, with its Status line saying why, or is dropped.
 - **Rework.** The order goes back to ideas with what was wrong, and is shaped again.
 
-Then `nightly` is merged into `main`, or not. That merge is the developer's deliberate act, as [[Meta/Git]] already says for every merge; the run never does it. Once merged, the night's order branches are deleted and the kept orders move to `implemented/`.
+Then `nightly` is merged into `main`, or not. That merge is the developer's deliberate act, as [[Meta/Git]] already says for every merge; the run never does it. Once merged, the night's worktrees are removed, its branches deleted, and the kept orders move to `implemented/`.
 
 This morning pass is also the recurring check of `planned/`: the line references there are checked against the tree, since the night's merge has just moved them.
 

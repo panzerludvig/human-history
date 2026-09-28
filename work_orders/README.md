@@ -92,8 +92,16 @@ run's decision, and it only puts independent orders together.
 
 ## What the run does
 
-1. Fork `nightly/YYYY-MM-DD` from `main`. Note the time: it is where the token count
-   starts.
+The run works only in worktrees. The main working copy stays on `main` and is never
+checked out to another branch, written to or built in, so planning can go on there while a
+night is in flight, and the game in its `build\` keeps running. Worktrees live under
+`.claude/worktrees/` (a dot folder, which Obsidian does not index), each with its own
+`build\`.
+
+1. Fork `nightly/YYYY-MM-DD` from `main` into its own worktree,
+   `.claude/worktrees/nightly-YYYY-MM-DD`; every step below that touches `nightly` (moving
+   orders, merging, the second probes, the review note) is done there. Note the time: it
+   is where the token count starts.
 2. Choose the night's orders from `planned/`. The numbers are the developer's priority
    and the run follows them. An order is eligible only when everything in its Depends on
    is implemented, that is, already on `main`. Orders are never stacked: of two orders that
@@ -103,7 +111,8 @@ run's decision, and it only puts independent orders together.
 3. For each chosen order: `git mv` it to `nightly/`; fork `wo/NN-slug` from `main` (the
    base `nightly` was forked from), so every branch is its own order's change and nothing
    else; implement it in a subagent described exactly `Implement work order NN` (the token
-   count finds orders by that description); build; run the probe named in Done when.
+   count finds orders by that description), working in its own worktree for that branch;
+   build; run the probe named in Done when.
 4. If it passes, merge the order branch into `nightly` and run the probe again there. If
    that passes too, the order `passed`. If the merge conflicts with an order merged
    earlier, the run may resolve it only when both sides are additions that can simply
@@ -125,6 +134,12 @@ run's decision, and it only puts independent orders together.
 
 `main` is never touched. Nothing is stacked, and no conflict is resolved by editing: an
 order that is not independent of the rest of the night waits for another night.
+
+**Planning during a night.** From the launch until the morning, the orders in `planned/`
+are frozen: the run implements them as they read at launch, and moves them on its own
+branch. Changes to one wait for the morning, or go into a new idea. Everything else (ideas,
+design notes, new orders) is edited and committed on `main` as usual; the morning merge
+brings the two together.
 
 **Deviation from `standards/agent-use.md`** ("an agent never commits without being
 asked"): the launch of a run is the instruction to commit. It covers commits on `wo/*`
@@ -150,8 +165,9 @@ verdicts:
 
 Read the review note and the nightly branch. Per order, write the Verdict (keep, revert,
 rework, drop) and why, and move the file as Stages says. Merge `nightly` into `main` only
-by deliberate decision. Then fill the Morning section (the merge hash or why not, the
-branches deleted), add the line to `Dev Log/Log.md`, and check the Evidence line
+by deliberate decision. Then remove the night's worktrees and delete its branches, fill the
+Morning section (the merge hash or why not, what was removed), add the line to
+`Dev Log/Log.md`, and check the Evidence line
 references of the orders in `planned/` against the tree, since they rot with every merge.
 
 ## Provisional
