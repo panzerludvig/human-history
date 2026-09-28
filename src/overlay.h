@@ -82,6 +82,7 @@ struct State {
 // map as on the panels.
 constexpr double NAME_KMPP = 1.5;    // wider views than this drop the names
 constexpr int THIN_PX = 22;          // markers stand at least this far apart
+// HUT_KMPP and WALK_KMPP reach the shader from here (main.cpp).
 constexpr double HUT_KMPP = 0.004;   // closer than this the shader draws houses
 constexpr double WALK_KMPP = 0.0006; // and closer than this, the people in a band
 

@@ -870,10 +870,9 @@ inline float smallGameEff(float coverage, float archExp) {
 
 // The season-interpolated site temperature from the cached profile.
 inline float cachedSeasonT(const Settlement& s, double t) {
-    double sf = std::fmod(t, 365.0) / 365.0 * 4.0 - 0.5;
-    int s0 = ((int)std::floor(sf) % 4 + 4) % 4, s1 = (s0 + 1) % 4;
-    float f = (float)(sf - std::floor(sf));
-    return s.tSeason[s0] * (1 - f) + s.tSeason[s1] * f;
+    const atmosphere::SeasonBlend sb = atmosphere::seasonBlendAt(t);
+    float f = (float)sb.f;
+    return s.tSeason[sb.s0] * (1 - f) + s.tSeason[sb.s1] * f;
 }
 
 // A settlement at the moment it comes to be: its site, its people, the

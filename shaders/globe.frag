@@ -50,15 +50,14 @@ uniform float uClock;      // sim days (mod 4096) for cloud drift
 uniform vec4 uAware[8];    // selected entities: xyz unit position, w = radius km
 uniform int uAwareCount;
 uniform int uDebugMode;    // 0 normal, 1 plates, 2 substrate, 3 vegetation
-const float CRUST_WEIGHT = 0.2;
 uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 < 0 hides it
 
-const float HEIGHT_SCALE_M = 8000.0;
-// Land relief as a fraction of the mountain scale; see terrain.h.
-const float LAND_RELIEF = 0.40;
-const float RANGE_GAIN = 1.25;
-const int HW = 2048, HH = 1024;     // hydrology grid size, must match hydrology.h
-const float NO_LAKE = -1.0e6;
+// Constants the C++ defines, put in front of this file by main.cpp when the
+// program is built (globeConstants), so no value is written on both sides:
+// HEIGHT_SCALE_M, CRUST_WEIGHT, LAND_RELIEF, RANGE_GAIN, NSUB, NCOV
+// (terrain.h); HW, HH, NO_LAKE, LAKE_SHORE_RISE_M (hydrology.h); PW, PH
+// (plates.h); SITE_STRIDE (textures.h); HUT_KMPP, WALK_KMPP (overlay.h);
+// ICE_FORMING_T, FROZEN_T (bands.h).
 
 const float PI = 3.14159265;
 
@@ -112,7 +111,7 @@ void latticeCell(P3 p, float shift, out ivec3 cell, out vec3 frac) {
     frac = q - fq + shift;
 }
 
-// 3D gradient noise, roughly in [-1, 1].
+// 3D gradient noise, roughly in [-1, 1]. Mirrors terrain::noise.
 float noise(P3 p) {
     ivec3 i;
     vec3 f;
@@ -144,7 +143,7 @@ vec3 hash01(ivec3 c) {
 // from a random centre, tilted so one side is steep — and the terrain is the
 // highest heap at each point. Where heaps meet, the crease is sharp and
 // irregular: rock shoved against rock, with no uniform edge band.
-// Mirrored in src/terrain.h — keep in sync.
+// Mirrors terrain::blocks.
 // Feature points sit in the middle half of their cell, so the 2x2x2 cells
 // around the point (found by rounding) hold every heap that can reach it.
 float blocks(P3 p) {
@@ -174,6 +173,7 @@ float blocks(P3 p) {
     return best;
 }
 
+// Fractal sum of noise octaves. Mirrors terrain::fbm.
 float fbm(P3 p, int octaves, float gain) {
     float sum = 0.0, amp = 1.0, norm = 0.0;
     for (int i = 0; i < octaves; i++) {
@@ -187,6 +187,7 @@ float fbm(P3 p, int octaves, float gain) {
 float fbm(vec3 p, int octaves, float gain) { return fbm(p3(p), octaves, gain); }
 
 // Blocks at a given frequency with a domain warp so edges are crooked.
+// Mirrors terrain::warpedBlocks.
 float warpedBlocks(P3 p, float freq, float seedOff) {
     P3 q = affine(p, freq, 0.0);
     vec3 w = vec3(fbm(affine(q, 0.7, seedOff), 2, 0.55), fbm(affine(q, 0.7, seedOff + 7.0), 2, 0.55),
@@ -194,7 +195,7 @@ float warpedBlocks(P3 p, float freq, float seedOff) {
     return blocks(shifted(affine(q, 1.0, seedOff), w * 0.4));
 }
 
-// Ridged multifractal for mountain ranges.
+// Ridged multifractal for mountain ranges. Mirrors terrain::ridged.
 float ridged(P3 p, int octaves) {
     float sum = 0.0, amp = 0.5, norm = 0.0;
     for (int i = 0; i < octaves; i++) {
@@ -209,7 +210,7 @@ float ridged(P3 p, int octaves) {
 
 // ------------------------------------------------------------ terrain
 
-// The raw continent field. Mirrored exactly in src/terrain.h — keep in sync.
+// The raw continent field. Mirrors terrain::continentField exactly.
 float continentField(P3 p) {
     vec3 warp = vec3(fbm(affine(p, 1.3, 11.0), 3, 0.5),
                      fbm(affine(p, 1.3, 23.0), 3, 0.5),
@@ -221,10 +222,8 @@ float continentField(P3 p) {
     return mix(base, web, uWebness);
 }
 
-const int PW = 1024, PH = 512; // plate grid size, must match plates.h
-
 // Bicubic B-spline: C2 and free of overshoot, so neither relief shading nor
-// colour ramps show the texel grid. Mirrored in plates.h Field::sample.
+// colour ramps show the texel grid. Mirrors plates::Field::bsplineWeights.
 vec4 bsplineWeights(float t) {
     float t2 = t * t, t3 = t2 * t;
     return vec4(1.0 - 3.0 * t + 3.0 * t2 - t3, 4.0 - 6.0 * t2 + 3.0 * t3,
@@ -232,6 +231,7 @@ vec4 bsplineWeights(float t) {
 }
 
 // The plate layer at plate-texel position hi + lo (texel centres at +0.5).
+// Mirrors plates::Field::sample.
 vec4 plateAtTexel(vec2 hi, vec2 lo) {
     vec2 fl = floor(hi);
     vec2 q = (hi - fl) + lo;
@@ -281,7 +281,7 @@ struct Ground {
 };
 
 // The Earth template's height: its metres with the same detail, hills and
-// peaks laid on top. Mirrored in src/terrain.h -- keep in sync.
+// peaks laid on top. Mirrors terrain::templateHeight.
 float templateHeight(Ground g, int octaves) {
     vec2 perRad = vec2(textureSize(uEarth, 0)) / vec2(2.0 * PI, PI);
     float e = earthAtTexel(uAnchorEarthHi, uAnchorEarthLo + g.dLonLat * perRad);
@@ -295,8 +295,8 @@ float templateHeight(Ground g, int octaves) {
            (1.0 - landness) * detail * 120.0;
 }
 
-// Height in metres above sea level at a ground point. Mirrored in
-// src/terrain.h (heightMeters) — keep in sync; the CPU takes the plain
+// Height in metres above sea level at a ground point. Mirrors
+// terrain::heightMeters; the CPU takes the plain
 // noise-space point and the unit normal where this takes the Ground.
 float terrainHeight(Ground g, int octaves) {
     if (uUseEarth == 1) return templateHeight(g, octaves);
@@ -357,10 +357,10 @@ vec4 hydroFetch(ivec2 c) {
     return texelFetch(uHydro, c, 0);
 }
 
-// Lake level around n: a smooth-weighted average over the 2x2 cells that
-// are lakes. Where lake cells carry less than a third of the weight there is
-// no lake, so the shoreline follows a rounded contour, not the cell grid.
-// Returns NO_LAKE if none.
+// Lake level around n: a smooth-weighted average over those of the 2x2 cells
+// around n that are lakes, so the shoreline follows a rounded contour, not
+// the cell grid. Returns NO_LAKE if none. Mirrors hydrology::lakeLevelAt,
+// the one lake shore rule, which the tooltip asks.
 float lakeLevelAt(vec3 n) {
     float lat = asin(clamp(n.z, -1.0, 1.0));
     float lon = atan(n.y, n.x);
@@ -378,6 +378,7 @@ float lakeLevelAt(vec3 n) {
     return wsum > 0.001 ? sum / wsum : NO_LAKE;
 }
 
+// The centre of a grid cell. Mirrors sim::cellCentre.
 vec3 cellCentre(ivec2 c) {
     float lat = (float(c.y) + 0.5) / float(HH) * PI - PI / 2.0;
     float lon = (float(c.x) + 0.5) / float(HW) * 2.0 * PI - PI;
@@ -388,8 +389,7 @@ const ivec2 DIRS[8] = ivec2[8](ivec2(1, 0), ivec2(1, 1), ivec2(0, 1), ivec2(-1, 
                                ivec2(-1, 0), ivec2(-1, -1), ivec2(0, -1), ivec2(1, -1));
 
 // What a cell's green channel names: the settlement standing there, or -1
-// for its texel when nobody does.
-const int SITE_STRIDE = 10;
+// for its texel when nobody does. A settlement is SITE_STRIDE texels.
 
 vec4 siteTexel(int idx, int k) {
     int t = idx * SITE_STRIDE + k;
@@ -460,9 +460,8 @@ float borderNear(vec3 n) {
 //
 // Everything here is drawn at its real size, so each thing appears only
 // once the view could actually resolve it: a hut is 8 m across and shows
-// under 4 m to the pixel, a person is under a metre and shows under 60 cm.
-const float HUT_KMPP = 0.004;  // houses: 8 m across, two pixels of them
-const float WALK_KMPP = 0.0006; // people: only where a person is a pixel
+// under 4 m to the pixel, a person is under a metre and shows under 60 cm:
+// HUT_KMPP for houses, WALK_KMPP for people (overlay.h).
 
 float villageRadiusKm(float P) { // mirrors sim::villageRadiusKm
     int n = clamp(int(P / 12.0 + 0.5), 3, 60);
@@ -472,7 +471,9 @@ float villageRadiusKm(float P) { // mirrors sim::villageRadiusKm
 // Returns 1 and 4 for the two pitches of a roof, 2 for a granary, 3 for the
 // trodden ground they stand on, 0 for country that is none of those. A hut
 // is a rectangle 9 m by 6 m with a ridge down its length -- from above that
-// is all a house is, and it reads as one where a disc does not.
+// is all a house is, and it reads as one where a disc does not. The hut
+// count mirrors sim::hutCount; the granary and farmstead blocks mirror
+// sim::granaryPos and sim::farmsteadPos.
 int hutsNear(vec3 n) {
     if (uKmPerPixel > HUT_KMPP) return 0;
     float hutKm = 0.006;  // a house: 9 m by 6 m, so 6 m from the middle at most
@@ -676,6 +677,8 @@ vec4 plotsAt(vec2 f, float builtKm2, float innerKm, float seed) {
     return vec4(mix(col, avg * (0.92 + 0.16 * h), lod), mix(a, 0.85, lod));
 }
 
+// The tilled plots under n: the village's, starting where sim::fieldInnerKm
+// says, and each farmstead's, about the house sim::farmsteadPos places.
 vec4 fieldsNear(vec3 n) {
     if (uKmPerPixel > 4.0) return vec4(0.0);
     ivec2 c0 = hydroCell(n);
@@ -749,7 +752,9 @@ vec3 climFuzz(vec3 n) {
     return normalize(n + o * 0.010);
 }
 
-// Season-interpolated climatology sample at a surface point.
+// Season-interpolated climatology sample at a surface point. Mirrors
+// atmosphere::seasonalAt and its seasonBlendAt, with the texture's bilinear
+// filter for atmosphere::bilinearAt.
 vec4 climSample(sampler2D tex, vec3 nf) {
     float lat = asin(clamp(nf.z, -1.0, 1.0));
     float lon = atan(nf.y, nf.x);
@@ -764,7 +769,7 @@ vec4 climSample(sampler2D tex, vec3 nf) {
 }
 vec4 climAt(vec3 nf) { return climSample(uClim, nf); }
 
-// Annual mean over the four season bands.
+// Annual mean over the four season bands. Mirrors atmosphere::annualAt.
 vec4 climAnnual(sampler2D tex, vec3 nf) {
     float lat = asin(clamp(nf.z, -1.0, 1.0));
     float lon = atan(nf.y, nf.x);
@@ -776,8 +781,9 @@ vec4 climAnnual(sampler2D tex, vec3 nf) {
     return sum * 0.25;
 }
 
-// Derived climate (mirrors atmosphere::derivedTempC / derivedMoisture): the
-// painted temperatureC / moistureAt retire in favour of these.
+// Derived climate: derivedTempC, derivedTCold, derivedTWarm and derivedMoist
+// mirror atmosphere::deriveAt (and atmosphere::derivedTempC,
+// derivedMoisture).
 float derivedTempC(vec3 nf, float h) {
     vec4 c2 = climAnnual(uClim2, nf);
     return c2.r - 6.5 * (max(h, 0.0) - c2.b) / 1000.0;
@@ -824,17 +830,21 @@ float derivedMoist(vec3 nf, vec3 w, float h) {
     return clamp(m + 0.12 * fbm(w * 5.0 + 31.0, 3, 0.5), 0.0, 1.0);
 }
 
-// Seasonal snow cover 0..1 on land: the season's coarse temperature, lapse-
-// corrected to the local height, must be freezing, and some precipitation
-// must fall to supply the snow.
-// Ice factor 0..1 for water surfaces: seasonal local temperature below
-// freezing (soft edge). hLocal 0 for the sea.
+// Ice factor 0..1 for water surfaces, from the seasonal local temperature
+// (mirrors atmosphere::seasonalTempC): a ramp from ICE_FORMING_T, where ice
+// starts, to FROZEN_T, where it is solid -- the two constants of the sim's
+// ice rule (sim::FROZEN_T), so bands walk only on ice drawn solid. hLocal 0
+// for the sea.
 float iceAt(vec3 nf, float hLocal) {
     vec4 c2 = climSample(uClim2, nf);
     float tLoc = c2.r - 6.5 * (max(hLocal, 0.0) - c2.b) / 1000.0;
-    return smoothstep(-1.0, -4.0, tLoc);
+    return smoothstep(ICE_FORMING_T, FROZEN_T, tLoc);
 }
 
+// Seasonal snow cover 0..1 on land: the season's coarse temperature, lapse-
+// corrected to the local height, must be freezing, and some precipitation
+// must fall to supply the snow. The temperature mirrors
+// atmosphere::seasonalTempC.
 float snowCoverAt(vec3 nf, float h) {
     vec4 c2 = climSample(uClim2, nf);
     float tLoc = c2.r - 6.5 * (max(h, 0.0) - c2.b) / 1000.0;
@@ -899,27 +909,13 @@ float riverAt(vec3 n, vec3 w) {
 
 // ------------------------------------------------------------ shading
 
-// ------------------------------------------------------------ climate
-
-// Mean temperature in degrees C: latitude, then a 6.5 C/km lapse rate.
-float temperatureC(float lat, float h) {
-    return 28.0 - 45.0 * pow(abs(lat) / (PI / 2.0), 1.3) - 6.5 * max(h, 0.0) / 1000.0;
-}
-
-// Moisture 0..1: a noise field with subtropical dry bands around +-25 deg.
-float moistureAt(vec3 w, float lat) {
-    float m = fbm(w * 3.0 + 77.0, 3, 0.5) * 0.5 + 0.5;
-    float dryBand = exp(-pow((abs(lat) - 0.42) / 0.16, 2.0));
-    return clamp(m - dryBand * 0.45 + 0.08, 0.0, 1.0);
-}
-
 // ------------------------------------------------------------ substrate and cover mixtures
 // Every point is a mixture: substrate fractions and cover fractions, each
 // summing to 1, from soft memberships of the climate variables. "Bare" cover
-// is exposed substrate. Mirrored in src/terrain.h — keep in sync.
-
-const int NSUB = 7;   // soil, sand, rock, scree, silt, mud, ice
-const int NCOV = 11;  // bare, tundra, taiga, forest, rainforest, grass, steppe, savanna, shrub, marsh, desert
+// is exposed substrate. substrateMix and coverMix mirror terrain::mixtureAt.
+// NSUB substrates: soil, sand, rock, scree, silt, mud, ice. NCOV covers:
+// bare, tundra, taiga, forest, rainforest, grass, steppe, savanna, shrub,
+// marsh, desert.
 
 vec3 substrateColor(int s) {
     if (s == 1) return vec3(0.80, 0.72, 0.50); // sand
@@ -1133,7 +1129,7 @@ void main() {
     if (uHasHydro == 1) {
         // Drawn a little above the spill so flat shores flood irregularly
         // instead of stopping at the grid cell.
-        float lakeLevel = lakeLevelAt(n) + 12.0;
+        float lakeLevel = lakeLevelAt(n) + LAKE_SHORE_RISE_M;
         if (lakeLevel > NO_LAKE + 1.0 && h < lakeLevel) { isWater = true; waterLevel = lakeLevel; }
         if (!isWater && h > 0.0 && hydroFetch(hydroCell(n)).a > 0.5 && riverAt(n, w) > 0.0) { isWater = true; isRiver = true; waterLevel = h; }
     }

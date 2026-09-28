@@ -13,7 +13,8 @@ namespace sim {
 // Granary marker positions: a ring of small structures around the
 // settlement's cell centre, spaced by the golden angle with a per-cell
 // integer phase. Defined ONCE here and mirrored exactly in
-// shaders/globe.frag (granaryNear) so drawing and the tooltip cannot drift.
+// shaders/globe.frag (the granary block in hutsNear) so drawing and the
+// tooltip cannot drift.
 // Granaries stand among the houses, on the same golden-angle scatter, each
 // one a little further out than the last.
 constexpr float GRANARY_R0_KM = 0.03f, GRANARY_DR_KM = 0.008f;
@@ -21,13 +22,15 @@ constexpr float GRANARY_R0_KM = 0.03f, GRANARY_DR_KM = 0.008f;
 // How wide the houses stand: a hut to a household, and enough ground under
 // them to walk between. Real distances -- a longhouse is 8 m across and its
 // neighbour stands 15 m off, so a village of sixty households is a couple of
-// hundred metres end to end, not a kilometre. Mirrored in the shader.
+// hundred metres end to end, not a kilometre. Mirrored in globe.frag
+// villageRadiusKm, and hutCount in the hut count of hutsNear.
 inline int hutCount(float P) {
     int n = (int)(P / 12.0f + 0.5f);
     return n < 3 ? 3 : (n > 60 ? 60 : n);
 }
 inline float villageRadiusKm(float P) { return 0.02f + 0.011f * std::sqrt((float)hutCount(P)); }
 // Where the fields begin: outside the houses, with room to walk between.
+// Mirrored in globe.frag fieldsNear (the village's plots).
 inline float fieldInnerKm(float P) { return villageRadiusKm(P) * 1.2f; }
 inline terrain::V3 granaryPos(int cell, int k) {
     terrain::V3 c = cellCentre(cell);
@@ -42,7 +45,8 @@ inline terrain::V3 granaryPos(int cell, int k) {
 // Where farmstead slot k stands: the same golden-angle scatter as the
 // granaries, at field scale -- kilometres out, each further than the last,
 // the outermost just inside where the commute value reaches zero. Defined
-// once here and mirrored exactly in shaders/globe.frag.
+// once here and mirrored exactly in shaders/globe.frag, in the farmstead
+// blocks of hutsNear and fieldsNear.
 inline terrain::V3 farmsteadPos(int cell, int k) {
     terrain::V3 c = cellCentre(cell);
     terrain::V3 east = norm3({-c.y, c.x, 0.0f});

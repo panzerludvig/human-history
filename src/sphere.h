@@ -9,6 +9,7 @@
 
 namespace sim {
 
+// The centre of a grid cell. Mirrored in globe.frag cellCentre.
 inline terrain::V3 cellCentre(int cell) {
     hydrology::V3orig d = hydrology::cellDir(cell % population::W, cell / population::W);
     return {d.x, d.y, d.z};

@@ -519,6 +519,43 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
 
+// The constants globe.frag uses whose values the C++ defines, as GLSL
+// declarations to put in front of it: the CPU is the source of truth and the
+// shader the copy (standards/general.md §Mirrored code), so none of these is
+// written by hand in the shader. A float is printed with nine significant
+// digits, which gives back the same float.
+static std::string globeConstants() {
+    std::string s;
+    auto addInt = [&](const char* name, int v) {
+        s += std::string("const int ") + name + " = " + std::to_string(v) + ";\n";
+    };
+    auto addFloat = [&](const char* name, float v) {
+        char num[32];
+        snprintf(num, sizeof num, "%.9g", v);
+        std::string lit = num;
+        if (lit.find_first_of(".e") == std::string::npos) lit += ".0";
+        s += std::string("const float ") + name + " = " + lit + ";\n";
+    };
+    addFloat("HEIGHT_SCALE_M", terrain::HEIGHT_SCALE_M);
+    addFloat("CRUST_WEIGHT", terrain::CRUST_WEIGHT);
+    addFloat("LAND_RELIEF", terrain::LAND_RELIEF);
+    addFloat("RANGE_GAIN", terrain::RANGE_GAIN);
+    addInt("NSUB", terrain::NSUB);
+    addInt("NCOV", terrain::NCOV);
+    addInt("HW", hydrology::W);
+    addInt("HH", hydrology::H);
+    addFloat("NO_LAKE", hydrology::NO_LAKE);
+    addFloat("LAKE_SHORE_RISE_M", hydrology::LAKE_SHORE_RISE_M);
+    addInt("PW", plates::W);
+    addInt("PH", plates::H);
+    addInt("SITE_STRIDE", textures::SITE_STRIDE);
+    addFloat("HUT_KMPP", (float)overlay::HUT_KMPP);
+    addFloat("WALK_KMPP", (float)overlay::WALK_KMPP);
+    addFloat("ICE_FORMING_T", sim::ICE_FORMING_T);
+    addFloat("FROZEN_T", sim::FROZEN_T);
+    return s;
+}
+
 // ---------------------------------------------------------------- main
 
 int main(int argc, char** argv) {
@@ -568,7 +605,7 @@ int main(int argc, char** argv) {
     if (!gl::loadGL()) return 1;
     if (wglSwapIntervalEXT) wglSwapIntervalEXT(1);
 
-    app.program = gl::buildProgram(world::exeDir() + "\\shaders\\");
+    app.program = gl::buildProgram(world::exeDir() + "\\shaders\\", globeConstants());
     if (!app.program) return 1;
     GLuint vao;
     glGenVertexArrays(1, &vao);
