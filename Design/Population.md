@@ -54,7 +54,7 @@ Deferred: children eating less than adults (the yield table is calibrated in who
 
 ## Time
 
-No ticks. Each settlement integrates its own P and R forward at scheduled re-evaluations, choosing the next moment as "when will my state have drifted ~5%" (clamped 1 month–5 years). A settlement at equilibrium wakes rarely; one in collapse wakes often. This is the first real client of [[Design/Event-Driven]].
+No ticks. Each settlement integrates its own P and R forward at scheduled re-evaluations, choosing the next moment as "when will my state have drifted ~5%" (clamped 1 month–5 years). A settlement at equilibrium wakes rarely; one in collapse wakes often. Between wakes the state is integrated in steps of at most five days (two for a band on the move); a long span takes more steps, never longer ones. This is the first real client of [[Design/Event-Driven]].
 
 ## Wild game: a shared, slow, mortal pool
 

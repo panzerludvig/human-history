@@ -213,7 +213,9 @@ inline void integrateBand(population::Band& b, float flowBase, double span, bool
                           double startT, float drinkable, float thirst) {
     float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
     float lon = std::atan2(n.y, n.x);
-    int steps = std::clamp((int)(span / 2.0) + 1, 1, 60);
+    // At most two days a step, however long the span: more steps, never
+    // longer ones.
+    int steps = (int)(span / 2.0) + 1;
     float dt = (float)(span / steps);
     float gather = resting ? population::GATHER_SETTLED : population::GATHER_MOVING;
     for (int k = 0; k < steps && dt > 0; k++) {

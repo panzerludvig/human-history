@@ -680,7 +680,9 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     float lat = std::asin(std::clamp(ctx.n.z, -1.0f, 1.0f));
     float lon = std::atan2(ctx.n.y, ctx.n.x);
     double span = now - s.t;
-    int steps = std::clamp((int)(span / 5.0) + 1, 1, 800);
+    // However long the span, the step stays at most five days: a long span
+    // takes more steps, never longer ones.
+    int steps = (int)(span / 5.0) + 1;
     st.hstep = (float)(span / steps);
     for (int k = 0; k < steps && st.hstep > 0; k++) {
         st.tk = s.t + (k + 0.5) * st.hstep;
