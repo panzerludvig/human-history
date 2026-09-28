@@ -2,7 +2,8 @@
 // Builds one world's terrain, hydrology and climate, then runs the
 // population twice from the same start -- hearths cold, hearths burning --
 // and reports what the second need changed: who spends labour on wood,
-// where the cold kills, and whether the map itself moved.
+// where the cold kills, and whether the map itself moved. Every sub-step of
+// both runs is audited against the day's labour budget (LedgerAudit).
 //
 //   build_testresources.bat, then build\test_resources.exe [seed] [years]
 #include <cmath>
@@ -31,6 +32,8 @@ struct Report {
     double tilledKm2 = 0;     // world total under the rotation
     double farmFed = 0;       // people the fields feed at current expertise
     double farmerPop = 0;
+    double granaries = 0;           // standing granaries, world total
+    population::LedgerAudit ledger; // the day's labour, audited every sub-step
 };
 
 static Report survey(const population::Field& pf, double now) {
@@ -39,6 +42,7 @@ static Report survey(const population::Field& pf, double now) {
         if (s.leaving || s.P <= 0) continue;
         r.settlements++;
         r.people += s.P;
+        r.granaries += s.granaries;
         r.coldYr += s.coldYr;
         r.starvedYr += s.starvedYr;
         if (s.coldYr >= 0.5f) r.coldTouched++;
@@ -93,6 +97,7 @@ int main(int argc, char** argv) {
         technology::WorldState ws;
         technology::init(pf, ws, seed, 0.0);
         Report r;
+        population::LEDGER_AUDIT = &r.ledger;
         for (int y = 1; y <= years; y++) {
             sim::simulate(pf, ws, hy, clim, y * 365.0);
             if (population::HEAT_ENABLED) {
@@ -109,6 +114,8 @@ int main(int argc, char** argv) {
         }
         Report m = survey(pf, years * 365.0);
         m.coldSampled = r.coldSampled;
+        m.ledger = r.ledger;
+        population::LEDGER_AUDIT = nullptr;
         out[pass] = m;
     }
 
@@ -138,5 +145,20 @@ int main(int argc, char** argv) {
                 p ? "heat    " : "baseline", out[p].farmers, out[p].farmerPop,
                 out[p].tilledKm2, out[p].clearing, out[p].farmFed, out[p].farmsteads,
                 out[p].building);
+    for (int p = 0; p < 2; p++)
+        fprintf(stderr, "%s: %.0f granaries stand\n", p ? "heat    " : "baseline",
+                out[p].granaries);
+    // Every draw comes out of the one budget: the worst sub-step's
+    // (food + heat + projects) / budget, the settlement-days (sub-steps)
+    // spent over it, and those in which a project drew labour with the
+    // stores at or below the hoarding threshold. Both counts must be zero.
+    for (int p = 0; p < 2; p++) {
+        const population::LedgerAudit& a = out[p].ledger;
+        fprintf(stderr,
+                "%s ledger: max labour/budget %.4f; over budget %.0f settlement-days "
+                "(%lld sub-steps); projects in famine %.0f settlement-days (%lld sub-steps)\n",
+                p ? "heat    " : "baseline", a.maxRatio, a.overDays, a.overSteps, a.famineDays,
+                a.famineSteps);
+    }
     return 0;
 }
