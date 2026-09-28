@@ -19,7 +19,7 @@ Before farming, food binds almost everywhere and water is slack — historically
 
 ## Settlements
 
-Sparse actors at local maxima of K (at least 80 km apart, K ≥ 800). Each has:
+Sparse actors. The world opens with them at local maxima of K, at least 80 km apart and able to hold 150 people -- a starting condition, not a rule of the model; after that a place is settled when it can hold the people who would settle it, whatever their number ([[Design/Migration]]). Each has:
 
 - **P** — people. Not individuals; a count.
 - **R** — condition of the surrounding land, 0–1. Effective food supply = K·R.

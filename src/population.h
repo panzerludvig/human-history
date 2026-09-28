@@ -206,7 +206,7 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
     for (int y = 2; y < H - 2; y++)
         for (int x = 0; x < W; x++) {
             int i = y * W + x;
-            if (f.K[i] < MIN_SETTLEMENT_K) continue;
+            if (f.K[i] < START_SITE_MIN_K) continue;
             bool best = true;
             for (int dy = -2; dy <= 2 && best; dy++)
                 for (int dx = -2; dx <= 2 && best; dx++)
@@ -262,12 +262,13 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
             s.kFish *= sc;
             s.kWater *= sc;
         }
+        if (clim) s.promM = prominenceM(hy, *clim, c.cell);
         if (clim) atmosphere::seasonProfile(*clim, cellN(c.cell),
                                             std::max(hy.heightM[c.cell], 0.0f), s.tSeason,
                                             s.meanF, s.meanG2);
         f.settlements.push_back(s);
     }
-    computeNeighbours(f);
+    computeNeighbours(f, 0.0);
     // Startup listing for testing: where the first settlements are.
     for (int i = 0; i < (int)f.settlements.size() && i < 5; i++) {
         int cx = f.settlements[i].cell % W, cy = f.settlements[i].cell / W;

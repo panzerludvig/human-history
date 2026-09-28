@@ -768,15 +768,15 @@ int main(int argc, char** argv) {
                         e = sim::cellCentre(st.cell);
                         radius = population::settlementAwareKm(
                             app.world.simTime - st.founded,
-                            sim::prominenceM(app.world.hydro, app.world.clim, st.cell));
+                            population::prominenceM(app.world.hydro, app.world.clim, st.cell));
                     } else {
                         for (const population::Band& bd : app.world.pop.bands)
                             if (bd.id == pn.bandId) {
                                 e = {bd.px, bd.py, bd.pz};
                                 double rest = bd.resting ? app.world.simTime - bd.restStart : 0.0;
                                 radius = population::bandAwareKm(
-                                    rest, sim::prominenceM(app.world.hydro, app.world.clim,
-                                                           sim::cellOf(e)));
+                                    rest, population::prominenceM(app.world.hydro, app.world.clim,
+                                                                  sim::cellOf(e)));
                                 break;
                             }
                     }

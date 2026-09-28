@@ -93,11 +93,15 @@ The radius is dynamic (capped at 600 km):
 
 (The earlier idea that scarcity grows the range is superseded by settled age; hungry settlements act by splitting, not by seeing farther.)
 
+The same range is **contact** (2026-09-28): two settlements are in contact when either lies within the other's awareness range, so the people a settlement learns from and can raid are the people it knows of, and an old town knows a region where a new colony knows its neighbours ([[Design/Technology]], [[Design/Conflict]]).
+
+**What a place must offer** (2026-09-28). A place is worth going to if it can hold the people who would settle it: a band, itself; a settlement surveying the horizon, the colonists a split would send -- or everyone, when they are too few to divide. There is no capacity floor beside that: a fixed 150 once stood there, and could disagree with the group in either direction. The shortest move is the movers' own reach: ground they already hold -- a settlement's own claim, the cell a band stands in -- is not a move, and anything past it is. A band has arrived when it stands in its target's cell.
+
 ---
 
 ## Splitting and the band's journey
 
-When a settlement's food per head φ stays below 0.99 (just under the equilibrium point — the overshoot decline never dips much deeper) for two years and P ≥ ~50, about a third of the people leave as a band, inheriting the settlement's current knowledge and technology (aware/practising state and expertise travel — demic diffusion, historically the dominant way farming spread, and the mechanism that carries technology across gaps wider than the contact radius in [[Design/Technology]]).
+When a settlement's food per head φ stays below 0.99 (just under the equilibrium point — the overshoot decline never dips much deeper) for two years and P ≥ ~50, about a third of the people leave as a band, inheriting the settlement's current knowledge and technology (aware/practising state and expertise travel — demic diffusion, historically the dominant way farming spread, and the mechanism that carries technology across gaps wider than contact reaches in [[Design/Technology]]).
 
 The band:
 
@@ -106,7 +110,7 @@ The band:
 - re-evaluates as it travels — nearby ground resolves accurately, so finding a better spot en route and discovering the rumoured valley is worse than hoped both come from the same mechanism;
 - stops to replenish its store when the terrain allows and moves on while pressure remains — punctuated, staged migration;
 - **settles** where unclaimed ground's known value beats continuing (respecting the ~80 km spacing), founding a new settlement — this closes the open question of static placement at world creation;
-- **merges** into any settlement it reaches if it falls below ~20 people.
+- **merges** into the nearest settlement it knows of -- within its own awareness range -- if it falls below ~20 people.
 
 **Range is emergent**: a band can cross barren ground only as far as its stores carry it — ~10 days × 15 km/day ≈ 150–200 km, arriving full. Deserts are barriers with a measurable width until technology changes the numbers (camels, boats).
 

@@ -8,6 +8,7 @@
 #include "claims.h"
 #include "farmland.h"
 #include "raids.h"
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 
@@ -21,17 +22,6 @@ constexpr float FROZEN_T = -2.0f; // degC, seasonal local temperature
 constexpr float RAFT_FACTOR = 0.5f;
 constexpr float RIVER_CROSS_FACTOR = 0.4f;
 constexpr float RIVER_MAJOR_KM2 = 40000.0f; // runoff-equivalent area
-
-// Prominence: how far the site rises above its regional (climate-grid) mean
-// elevation. The vantage input to awareness.
-inline float prominenceM(const hydrology::Result& hy, const atmosphere::Climatology& clim,
-                         int cell) {
-    if (clim.elev.empty()) return 0.0f;
-    float h = std::max(hy.heightM[cell], 0.0f);
-    int x = cell % population::W, y = cell / population::W;
-    int ax = x * atmosphere::W / population::W, ay = y * atmosphere::H / population::H;
-    return h - clim.elev[ay * atmosphere::W + ax];
-}
 
 // Season-interpolated local temperature: coarse climate mean, lapse-corrected
 // from the model's smoothed elevation to the local height.
@@ -88,9 +78,26 @@ inline float moverCapRoom(const population::Field& pf, int cell, float farmExp, 
 // noise that grows with distance: near things resolve exactly, far things are
 // rumours; each candidate is valued at what THIS mover could make of it.
 // Returns a cell index, or -1 if nothing known is worth going to.
-inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t& rng,
-                        float radiusKm, double now, float farmExp = 0, float husbExp = 0,
-                        float* estOut = nullptr, float movers = 0, float fishExp = 0) {
+//
+// A place is worth going to only if it can hold the people who would settle
+// it (Seeker::settlers), the same yardstick founding applies on arrival. And
+// a move has to go somewhere: ground the movers already hold -- a
+// settlement's own claim, the cell a band stands in -- is not a prospect.
+struct Seeker {
+    terrain::V3 from;   // where they stand
+    float radiusKm = 0; // how far they know
+    float farmExp = 0, husbExp = 0, fishExp = 0;
+    float movers = 0;   // the group a place is valued for
+    float settlers = 0; // the fewest who would settle there: it must hold them
+    const population::Settlement* home = nullptr; // the ground they hold, if any
+};
+inline int bestProspect(const population::Field& pf, const Seeker& sk, uint64_t& rng, double now,
+                        float* estOut = nullptr) {
+    const terrain::V3 from = sk.from;
+    const float radiusKm = sk.radiusKm, farmExp = sk.farmExp, husbExp = sk.husbExp,
+                fishExp = sk.fishExp, movers = sk.movers, settlers = sk.settlers;
+    assert(settlers > 0 && "a place is judged by whether it holds someone");
+    const int standCell = cellOf(from);
     bool skilled = farmExp > 0 || husbExp > 0 || fishExp > 0;
     float lat0 = std::asin(std::clamp(from.z, -1.0f, 1.0f));
     float dLat = radiusKm / 6371.0f;
@@ -112,16 +119,17 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
             // of cells per search and every search is a settlement deciding
             // its future. Water caps any mover's capacity, and a mover with
             // no skills is worth exactly K.
-            if (pf.kWaterMap[cell] < population::MIN_SETTLEMENT_K) continue;
-            if (!skilled && pf.K[cell] < population::MIN_SETTLEMENT_K) continue;
+            if (pf.kWaterMap[cell] < settlers) continue;
+            if (!skilled && pf.K[cell] < settlers) continue;
             float cap = skilled ? moverCap(pf, cell, farmExp, husbExp, now, fishExp,
                                            movers > 0 ? movers : 300.0f)
                                 : pf.K[cell];
-            if (cap < population::MIN_SETTLEMENT_K) continue;
+            if (cap < settlers) continue;
             terrain::V3 n = cellCentre(cell);
             float dot = terrain::dot(from, n);
             float d = 6371.0f * std::sqrt(std::max(2.0f - 2.0f * dot, 0.0f)); // chord ~ arc
-            if (d > radiusKm || d < 80.0f) continue;
+            if (d > radiusKm || cell == standCell) continue;
+            if (sk.home && distKm(n, cellCentre(sk.home->cell)) < claimReach(*sk.home, n)) continue;
             float noise = ((float)technology::urand(rng) * 2.0f - 1.0f) * 0.6f * (d / radiusKm);
             float est = cap * (1.0f + noise);
             if (nTop < 24) {
@@ -158,7 +166,7 @@ inline int bestProspect(const population::Field& pf, terrain::V3 from, uint64_t&
             if (top[k].est > top[bi].est) bi = k;
         int cell = top[bi].cell;
         float scar = population::cellCondition(pf, cell, now);
-        if (scar * top[bi].est >= population::MIN_SETTLEMENT_K) {
+        if (scar * top[bi].est >= settlers) {
             if (estOut) *estOut = top[bi].est * scar; // the rumour, not the truth
             return cell;
         }
@@ -267,6 +275,7 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     else
         for (int i = 0; i < 16; i++) s.name[i] = b.name[i];
     s.founded = now;
+    s.promM = population::prominenceM(hy, clim, cell);
     pf.scars.erase(cell); // the land's condition is live state again
     for (int i = (int)pf.ruins.size() - 1; i >= 0; i--)
         if (pf.ruins[i].cell == cell) pf.ruins.erase(pf.ruins.begin() + i); // rebuilt over
@@ -306,13 +315,8 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     int idx = (int)pf.settlements.size();
     pf.settlementAt[cell] = idx;
     pf.settlements.push_back(s);
-    pf.neighbours.push_back({});
     terrain::V3 n = cellCentre(cell);
-    for (int j = 0; j < idx; j++)
-        if (distKm(n, cellCentre(pf.settlements[j].cell)) <= population::CONTACT_KM) {
-            pf.neighbours[idx].push_back(j);
-            pf.neighbours[j].push_back(idx);
-        }
+    technology::joinContact(pf, idx, ws, now);
     for (int t = 0; t < population::NTECH; t++) {
         technology::redraw(pf, idx, ws, t, now);
         for (int j : pf.neighbours[idx]) technology::redraw(pf, j, ws, t, now);
@@ -332,13 +336,14 @@ inline void foundSettlement(population::Field& pf, technology::WorldState& ws,
     logAt("founded settlement", idx, n, b.P, now);
 }
 
-// Merge a failing band into the nearest settlement in reach; what it knows
-// travels with it.
+// Merge a failing band into the nearest settlement it knows of -- within its
+// own awareness range (population::bandAwareKm); what it knows travels with
+// it.
 inline bool mergeBand(population::Field& pf, technology::WorldState& ws, const population::Band& b,
-                      double now) {
+                      float awareKm, double now) {
     terrain::V3 n = {b.px, b.py, b.pz};
     int ti = -1;
-    float td = population::CONTACT_KM;
+    float td = awareKm;
     for (int i = 0; i < (int)pf.settlements.size(); i++) {
         if (pf.settlements[i].leaving) continue; // that place is being abandoned
         float d = distKm(n, cellCentre(pf.settlements[i].cell));
@@ -406,8 +411,13 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws, const hy
     float thirst = population::thirstFactor(seasonalT(clim, pos, hHere0, now - span * 0.5));
     integrateBand(b, flowBase, span, b.resting, clim, pos, hHere0, startT,
                   drinkableAt(pf, hy, clim, pos, hereCell, now - span * 0.5, b.P * thirst), thirst);
+    // How far they know from a cell: resting bands scout, and height shows more.
+    auto awareFrom = [&](int c) {
+        return population::bandAwareKm(b.resting ? now - b.restStart : 0.0,
+                                       population::prominenceM(hy, clim, c));
+    };
     if (b.P < population::BAND_MIN_P) {
-        if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
+        if (!mergeBand(pf, ws, b, awareFrom(hereCell), now)) logAt("perished", bi, pos, b.P, now);
         pf.bands.erase(pf.bands.begin() + bi);
         return false;
     }
@@ -421,17 +431,18 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws, const hy
                 b.returning = true; // they moved on; nothing to rob
             else {
                 b.targetCell = pf.settlements[ti].cell;
-                if (distKm(pos, cellCentre(b.targetCell)) < 20.0f) resolveRaid(pf, ws, b, ti, now);
+                if (hereCell == b.targetCell) resolveRaid(pf, ws, b, ti, now); // arrived
             }
         }
         if (b.returning) {
             if (hi < 0) { // home is gone: join whoever will have them
-                if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
+                if (!mergeBand(pf, ws, b, awareFrom(hereCell), now))
+                    logAt("perished", bi, pos, b.P, now);
                 pf.bands.erase(pf.bands.begin() + bi);
                 return false;
             }
             b.targetCell = pf.settlements[hi].cell;
-            if (distKm(pos, cellCentre(b.targetCell)) < 20.0f) {
+            if (hereCell == b.targetCell) { // home: they are in its cell
                 population::Settlement& h = pf.settlements[hi];
                 h.pop.add(b.pop); // the survivors, back among their people
                 h.aff.fight = std::max(h.aff.fight, b.aff.fight);
@@ -503,28 +514,24 @@ inline bool stepBand(population::Field& pf, technology::WorldState& ws, const hy
     float hExp = technology::expertise(b.tech[population::TECH_HUSBANDRY], now);
     float qExp = technology::expertise(b.tech[population::TECH_FISHING], now);
     auto canHold = [&](int c) { return moverCapRoom(pf, c, fExp, hExp, now, b.P, qExp) >= b.P; };
-    if (distKm(pos, tgt) < 20.0f) {
+    // Arrival is being in the target's cell: the grid's own resolution.
+    if (cell == b.targetCell) {
         // Arrived: the rumour meets reality.
-        if (pf.settlementAt[cell] < 0 &&
-            moverCap(pf, cell, fExp, hExp, now, qExp, b.P) >= population::MIN_SETTLEMENT_K &&
-            canHold(cell) && claimFits(pf, pos)) {
+        if (pf.settlementAt[cell] < 0 && canHold(cell) && claimFits(pf, pos)) {
             foundSettlement(pf, ws, hy, clim, b, cell, now);
             done = true;
         } else {
-            double rest = b.resting ? now - b.restStart : 0.0;
-            int nt = bestProspect(pf, pos, ws.rng,
-                                  population::bandAwareKm(rest, prominenceM(hy, clim, cell)), now,
-                                  fExp, hExp, nullptr, b.P, qExp);
+            Seeker sk{pos, awareFrom(cell), fExp, hExp, qExp, b.P, b.P, nullptr};
+            int nt = bestProspect(pf, sk, ws.rng, now);
             if (nt >= 0)
                 b.targetCell = nt;
             else {
-                if (!mergeBand(pf, ws, b, now)) logAt("perished", bi, pos, b.P, now);
+                if (!mergeBand(pf, ws, b, awareFrom(cell), now))
+                    logAt("perished", bi, pos, b.P, now);
                 done = true;
             }
         }
-    } else if (!b.resting && pf.settlementAt[cell] < 0 &&
-               moverCap(pf, cell, fExp, hExp, now, qExp, b.P) >= population::MIN_SETTLEMENT_K &&
-               claimFits(pf, pos) && canHold(cell) &&
+    } else if (!b.resting && pf.settlementAt[cell] < 0 && claimFits(pf, pos) && canHold(cell) &&
                moverCapRoom(pf, cell, fExp, hExp, now, b.P, qExp) >=
                    population::hopeRatio(now - b.setOut) *
                        moverCapRoom(pf, b.targetCell, fExp, hExp, now, b.P, qExp)) {
@@ -620,10 +627,12 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
     float qExp = technology::expertise(s.tech[population::TECH_FISHING], now);
     terrain::V3 home = cellCentre(s.cell);
     float est = 0;
-    int tgt =
-        bestProspect(pf, home, ws.rng,
-                     population::settlementAwareKm(now - s.founded, prominenceM(hy, clim, s.cell)),
-                     now, fExp, hExp, &est, s.P, qExp);
+    // Valued for everyone, but worth going to if it holds the fewest who
+    // would go: the colonists a split sends, or everybody when they are too
+    // few to divide (the choice between the two is made below).
+    float fewest = s.P >= population::SPLIT_MIN_P ? s.P * population::SPLIT_SHARE : s.P;
+    Seeker sk{home, population::awareKmOf(s, now), fExp, hExp, qExp, s.P, fewest, &s};
+    int tgt = bestProspect(pf, sk, ws.rng, now, &est);
     bool wasStuck = s.noProspect; // the last survey came up empty too
     s.noProspect = tgt < 0;
     if (tgt < 0) {
@@ -706,6 +715,7 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
         s.herd = 0;
         s.nextUpdate = 1e18;
         for (int t = 0; t < population::NTECH; t++) s.nextTech[t] = 1e18;
+        s.nextContact = 1e18; // nobody is at home to meet
         {
             char txt[96];
             snprintf(txt, sizeof txt, "%s abandoned their home and set out", s.name);
