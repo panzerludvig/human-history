@@ -1,6 +1,6 @@
 # 06 — Close the CPU/GPU drifts and mark every mirror
 
-**Status:** taken by the night of 2026-09-28; passed, merged into `nightly/2026-09-28` as `a0d7ceb`
+**Status:** implemented (2026-09-29): kept and merged into `main` as `5ca4701`
 
 Line references checked against 5087977 on 2026-09-28.
 
@@ -193,5 +193,9 @@ written by hand on both sides, not in this order's list: `FSTEAD_R0_KM`/`FSTEAD_
 `2.5 + 1.1*k`, `FSTEAD_MAX`, the granary radii, the lapse rate and the Earth's radius
 (the last two are order 09's). The "Thrust blocks" comments above `blocks` on both sides
 describe the old model.
+
+## Review
+
+**Keep**, 2026-09-29. Merged into `main` (`5ca4701`), with the whole night, on the developer's acceptance. The tooltip against the globe (lake shore, thin ice, the 15:00 peak) is still to be seen in the game.
 
 Review note for the night: [[Dev Log/Nightly/2026-09-28]].

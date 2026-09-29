@@ -1,6 +1,6 @@
 # 19 — Husbandry is invented from need, like farming
 
-**Status:** taken by the night of 2026-09-28; passed, merged into `nightly/2026-09-28` as `63b6e54`
+**Status:** implemented (2026-09-29): kept and merged into `main` as `5ca4701`
 
 Line references checked against 827c828 on 2026-09-28.
 
@@ -102,5 +102,9 @@ Unsure of: ten seeds cannot tell 1.0 from 1.5 (the spread of a 10-seed ratio is 
 suitability", was the developer's prose. No technology uses the serendipity clock now.
 `WorldState::nextEvent` and `fires` have 4 initializers for 5 technologies, harmless. For
 the game: herders on the steppe a few centuries in.
+
+## Review
+
+**Keep**, 2026-09-29. Merged into `main` (`5ca4701`), with the whole night, on the developer's acceptance. The scale of 1.5 and the corrected sentence in `Design/Technology.md` are accepted with the order. Herders on the steppe are still to be seen in the game.
 
 Review note for the night: [[Dev Log/Nightly/2026-09-28]].

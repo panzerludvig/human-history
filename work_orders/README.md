@@ -138,9 +138,8 @@ idle core and the developer's work still comes first. No step raises a process's
    independent, then runs both orders' probes on `nightly`. If the changes are not
    independent, or fitting them together would need a line neither order wrote, the
    merge is aborted and the order is `deferred`, to be taken again from `main` on a later
-   night. If a probe fails on
-   `nightly`, the order `failed`. Either way its branch is left as is and `nightly` is
-   restored to its state before the merge.
+   night. If a probe fails on `nightly`, the order `failed`. Either way its branch is
+   left as is and `nightly` is restored to its state before the merge.
 5. If the build breaks or the first probe fails, the order `failed`; the branch is left as
    is.
 6. An order that could not be started (its dependency turned out not to be on `main`, or

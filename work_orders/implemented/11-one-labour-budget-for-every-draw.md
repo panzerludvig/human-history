@@ -1,6 +1,6 @@
 # 11 — Every labour draw comes out of the one budget
 
-**Status:** taken by the night of 2026-09-28; passed, merged into `nightly/2026-09-28` as `44c98f6`
+**Status:** implemented (2026-09-29): kept and merged into `main` as `5ca4701`
 
 Line references checked against 5087977 on 2026-09-28.
 
@@ -127,5 +127,9 @@ Unsure of: farming 2-5x larger in all four branch runs; a diagnostic with bows c
 famine as before brought the first invention back to the baseline's, so part is the famine
 rule and the rest likely divergence. The overdraw abort is live in the game.
 `stepBuilding` keeps its own famine check, now redundant. For the game: the panel line.
+
+## Review
+
+**Keep**, 2026-09-29. Merged into `main` (`5ca4701`), with the whole night, on the developer's acceptance. The panel line is still to be seen in the game.
 
 Review note for the night: [[Dev Log/Nightly/2026-09-28]].

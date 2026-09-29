@@ -1,6 +1,6 @@
 # 07 — Make the world-generation thread safe
 
-**Status:** taken by the night of 2026-09-28; passed, merged into `nightly/2026-09-28` as `a7c6968`
+**Status:** implemented (2026-09-29): kept and merged into `main` as `5ca4701`
 
 Line references checked against 5087977 on 2026-09-28.
 
@@ -150,5 +150,9 @@ through the worker took 53 and 101 s against 846 and 1078 s on the main thread, 
 together, images identical: unexplained, possibly OpenMP on the main thread. For the
 game: the status line during New World and Load, closing from the menus, a loaded world's
 camera.
+
+## Review
+
+**Keep**, 2026-09-29. Merged into `main` (`5ca4701`), with the whole night, on the developer's acceptance. Still to see in the game: the status line, closing during generation from the menus, a loaded world's camera. The tenfold faster build through the worker thread is unexplained.
 
 Review note for the night: [[Dev Log/Nightly/2026-09-28]].

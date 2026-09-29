@@ -1,7 +1,7 @@
 # 20 — Buildings: houses, granaries and farmsteads, stored where they are built
 
 **Status:** idea (2026-09-28) — waits for 27 (the terrain deviation layer); takes over
-farmsteads from order 13, which is to be dropped in the morning review of 2026-09-29
+farmsteads from order 13, dropped in the morning review of 2026-09-29
 
 ## Problem
 
@@ -24,7 +24,7 @@ computed position cannot.
 - `shaders/globe.frag` `hutsNear` — the houses' spiral and count, computed per pixel; the
   granaries' spiral beside it; the village's bare ground as a disc round the cell centre.
 - `src/farmland.h:25-40` — `hutCount`, `villageRadiusKm`, `granaryPos`.
-- `work_orders/planned/13-farmsteads-placed-by-the-ground.md` — the farmstead chain, its
+- Order 13, `work_orders/planned/13-farmsteads-placed-by-the-ground.md` (dropped 2026-09-29; last at `5ca4701`) — the farmstead chain, its
   placement by the ground, and its rules for abandonment, reoccupation and ruins.
 - [[Design/Technology]] "Where farmsteads stand, and how they end" (designed 2026-09-28):
   the placement and the lifecycle this idea generalises; its positions-computed part is
@@ -45,6 +45,7 @@ open until then:
   its fields are gone (spared until its first field, abandoned after 10 years without
   one), the farthest farm loses its fields first, ruins are reoccupied before new ground
   is built on, ruins weather over `RUIN_LIFE_DAYS`.
+- **Open**: arrival, founding and raids at a point (added 2026-09-29). Everything that moves toward a settlement knows it only by its cell: a band has arrived when it stands in the target's cell (`src/bands.h`, `stepBand`, since order 17; a literal 20 km radius before), a settlement is founded at a cell, and raiders reach their target's cell. A cell is about 20 km north to south and 10-20 km east to west, more than a day's walk at a band's 15 km, so a band stops well short and the village appears where the cell puts it. With settlements and buildings stored at points, should arrival be reaching the point, and founding happen where the band stands or at the best ground near it? How finely movement samples the ground is idea 24's question too. If this part grows too big it is broken out into its own order.
 - **Open**: whether a village prefers riverbanks and shores and strings out along them;
   whether the village centre moves to the best ground near its cell centre; whether
   granaries stand with the houses or apart; how a shrinking village's houses become empty

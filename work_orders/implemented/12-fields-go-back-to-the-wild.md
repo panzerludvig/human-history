@@ -1,6 +1,6 @@
 # 12 — Fields go back to the wild when nobody works them
 
-**Status:** taken by the night of 2026-09-28; merged into `nightly/2026-09-28` as `44fed83`; Done when 6 missed on its branch and 3 missed on `nightly`, kept on the developer's instruction for the morning
+**Status:** implemented (2026-09-29): kept and merged into `main` as `5ca4701`
 
 Line references checked against 5087977 on 2026-09-28.
 
@@ -154,5 +154,9 @@ hand left, not one after another. The Evidence's "522 lapses" came from `lostT`,
 also moves while neighbours practise; the probe now counts real lapses, which are rare.
 A settlement that relocates starts with `hadFields` false. For the game: a lapsed
 village's plots thinning over about 50 years; loading an old save.
+
+## Review
+
+**Keep**, 2026-09-29. Merged into `main` (`5ca4701`), with the whole night, on the developer's acceptance. Done when 3 stays open: lapses for want of means by settlements that never had a field are not zero on `nightly` (6 and 5, then 12/8 and 1/1 after 17), because a farming people on unfarmable ground still lapses; whether the check or the design changes is undecided.
 
 Review note for the night: [[Dev Log/Nightly/2026-09-28]].

@@ -2,7 +2,7 @@
 
 ## 2026-09-29 — The second night
 
-Orders 06, 07, 11, 12, 17 and 19 on `nightly/2026-09-28`, waiting for the morning review; the conflict rule and the planning checklist changed during the run: [[Dev Log/Nightly/2026-09-28]].
+Orders 06, 07, 11, 12, 17 and 19, all kept and merged into `main` as `5ca4701`; order 13 dropped; the conflict rule and the planning checklist changed during the run: [[Dev Log/Nightly/2026-09-28]].
 
 ---
 

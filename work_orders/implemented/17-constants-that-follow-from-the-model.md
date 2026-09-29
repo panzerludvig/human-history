@@ -1,6 +1,6 @@
 # 17 — Constants that follow from the model
 
-**Status:** taken by the night of 2026-09-28; passed, merged into `nightly/2026-09-28` as `419ece8`
+**Status:** implemented (2026-09-29): kept and merged into `main` as `5ca4701`
 
 Line references checked against 827c828 on 2026-09-28.
 
@@ -152,5 +152,9 @@ on `nightly` before 19, husbandry was invented on seed 7 in year 341 on the 10,0
 serendipity clock, which never happened on `main`: whether redrawing changes the odds
 is worth a look. Neighbour lists reach about 450 km for old settlements. For the game:
 the awareness and teachers lines, arrivals in the target cell.
+
+## Review
+
+**Keep**, 2026-09-29. Merged into `main` (`5ca4701`), with the whole night, on the developer's acceptance. Open: whether each new contact redrawing every technology clock changes the odds of invention (husbandry appeared on seed 7 before 19). Still to see in the game: the awareness and teachers lines, arrivals.
 
 Review note for the night: [[Dev Log/Nightly/2026-09-28]].
