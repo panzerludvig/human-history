@@ -1,6 +1,6 @@
 # 07 — Make the world-generation thread safe
 
-**Status:** planned (2026-09-28)
+**Status:** taken by the night of 2026-09-28; passed, merged into `nightly/2026-09-28` as `a7c6968`
 
 Line references checked against 5087977 on 2026-09-28.
 
@@ -111,3 +111,44 @@ A guide, not a limit:
 ## Depends on
 
 Nothing.
+
+## Run
+
+**Outcome:** passed. Branch `wo/07-generation-thread-safety`, one commit `63b8cc9`.
+Merged into `nightly` as `a7c6968`, after 06. `src/main.cpp` conflicted only because 06
+added `globeConstants` and 07 the argv test-path functions at the same place after
+`wndProc`; both kept as written.
+
+What it did: `src/progress.h` (new), `progress::Context`, a report function and a cancel
+flag. `World::build`, `atmosphere::build` and `savefile::load` take it and return false
+when cancelled; `atmosphere::build` checks once per simulated day, `World::build` before
+each stage. `world::activeProgress` is gone. `App::gen` is the handover slot: the worker
+touches only it, the main loop shows its label, `finishGeneration` moves the world and
+the loaded camera into `app` on the main thread. `WM_CLOSE` sets cancel. `HH_GENTEST=1`
+builds the argv world through the worker; `HH_GENTEST_CLOSE_MS` posts `WM_CLOSE`.
+
+Done when:
+
+1. All ten `build*.bat` exit 0, C4996 only.
+2. Screenshots identical pre-order, direct and through the worker: `46.318 -174.111 4 7
+   30 60 0 0` EFF96727..., `20 30 12000 7 30 60 0 0` 95E99F28...; on `nightly`, through the
+   worker, identical to 06's (c9d5b918, 54b19e8c).
+3. Quit mid-build, three runs each, machine at 100% CPU: seed 7 4.81, 4.55, 4.45 s; earth
+   4.52, 4.37, 4.55 s. On `nightly`: 3.65, 3.64, 3.65 s and 3.64, 3.67, 3.66 s, exit 0.
+4. `sweep.exe 7 0 rules 1` and `test_resources.exe 7 40` byte-identical to the pre-order
+   run; `test_savefile.exe 7 3` 61352 fields, 0 mismatches.
+5. The worker lambdas hold only `app.gen.*` (`app.gen.ok = app.gen.world.build(ctx);`,
+   `app.gen.ok = savefile::load(name, app.gen.world, app.gen.cam, ctx);`); `grep -rn
+   activeProgress src` finds nothing.
+
+Files beyond the list: `src/progress.h`, `Technical/Architecture.md` (its module list).
+
+Unsure of: `progress::Context` has its own header rather than living in `world.h`.
+Plates, sea level, hydrology and settlements cannot be cancelled mid-stage. On a load
+only latitude, longitude and altitude are handed to `app.cam`. The screenshot runs
+through the worker took 53 and 101 s against 846 and 1078 s on the main thread, launched
+together, images identical: unexplained, possibly OpenMP on the main thread. For the
+game: the status line during New World and Load, closing from the menus, a loaded world's
+camera.
+
+Review note for the night: [[Dev Log/Nightly/2026-09-28]].

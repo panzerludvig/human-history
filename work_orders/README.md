@@ -83,7 +83,11 @@ to `planned/` when all of these hold:
 2. The Outcome leaves no design decision open: anything a player would notice, anything
    that changes what the simulation does, and any choice between rules is decided in the
    order or its design note. What remains open is only how to write the code.
-3. Done when names a probe and its expected output, not a judgement.
+3. Done when names a probe and its expected output, not a judgement. The checks test the
+   order's own mechanism. World totals after centuries (settlements, people, farming)
+   are quoted for the morning, never gated: whether the world the new model makes is
+   good is the developer's judgement, and a single 700-year run moves by more than 10%
+   from any change to an early random draw (orders 11 and 12, 2026-09-28).
 4. Every order in Depends on is implemented or planned.
 5. The Evidence line references were checked against the tree on the day it moved.
 
@@ -106,12 +110,17 @@ run's decision, and it only puts independent orders together.
    count finds orders by that description); build; run the probe named in Done when.
 4. If it passes, merge the order branch into `nightly` and run the probe again there. If
    that passes too, the order `passed`. If the merge conflicts with an order merged
-   earlier, the run may resolve it only when both sides are additions that can simply
-   both be kept: every line of each side taken as written, nothing edited, as when two
-   orders each add a paragraph to the same note or an entry to the same list. It then
-   runs both orders' probes on `nightly` and names the files in both Run sections. Any
-   conflict that would need a line edited is not resolved: the merge is aborted and the
-   order is `deferred`, to be taken again from `main` on a later night. If a probe fails on
+   earlier, the run judges whether the two changes are independent: each still does what
+   its order says with the other's lines beside it, and neither needs to know the other
+   exists. If it judges them independent it may resolve the conflict, but only with lines
+   as written by one order or the other; a resolution never contains a line neither order
+   wrote. Two orders adding a paragraph to the same note is the common case; one order
+   inserting lines next to a line the other rewrote is another. For each conflicted hunk
+   the run writes in both Run sections what each side did and why the two are
+   independent, then runs both orders' probes on `nightly`. If the changes are not
+   independent, or fitting them together would need a line neither order wrote, the
+   merge is aborted and the order is `deferred`, to be taken again from `main` on a later
+   night. If a probe fails on
    `nightly`, the order `failed`. Either way its branch is left as is and `nightly` is
    restored to its state before the merge.
 5. If the build breaks or the first probe fails, the order `failed`; the branch is left as
@@ -123,8 +132,8 @@ run's decision, and it only puts independent orders together.
 8. Write the night's review note (below), run the token count into it, and commit the
    order files and the note on `nightly`.
 
-`main` is never touched. Nothing is stacked, and no conflict is resolved by editing: an
-order that is not independent of the rest of the night waits for another night.
+`main` is never touched. Nothing is stacked, and no conflict is resolved by writing new
+code: an order that is not independent of the rest of the night waits for another night.
 
 **Deviation from `standards/agent-use.md`** ("an agent never commits without being
 asked"): the launch of a run is the instruction to commit. It covers commits on `wo/*`

@@ -1,8 +1,6 @@
 # 17 — Constants that follow from the model
 
-**Status:** planned (2026-09-28) — shaped 2026-09-28 from "thresholds derived from their
-tables" (split out of order 09); going through the constants one by one showed most of
-them are not thresholds over a table, and replacing them changes behaviour
+**Status:** taken by the night of 2026-09-28; passed, merged into `nightly/2026-09-28` as `419ece8`
 
 Line references checked against 827c828 on 2026-09-28.
 
@@ -102,3 +100,57 @@ A guide, not a limit: `src/settlement.h`, `src/bands.h`, `src/population.h`,
 ## Depends on
 
 Nothing.
+
+## Run
+
+**Outcome:** passed. Branch `wo/17-constants-that-follow-from-the-model`, commits
+`52b3162` (probe reporting), `5062b6d` (fixed-length steps), `6ad9412` (settling and
+contact). The subagent first handed back unfinished and uncommitted, saying it had been
+told to; it was resumed and finished. Merged into `nightly` as `419ece8`, after 12.
+Conflicts, judged independent and resolved with lines as written: `src/inspect.h`, 11's
+builders line inserted above the awareness line 17 rewrote; `src/test_resources.cpp`,
+11 and 12's report lines beside 17's, and the header's paragraphs, 12's run line and
+17's `#include <chrono>`. Deferred at first under the old rule; merged under the rule as
+changed that night.
+
+What it did: `bestProspect` takes the seeker and qualifies a place only if it can hold
+the settlers (a band itself; a settlement's survey the colonists a split would send, a
+third when 50 or more). The world-start floor is `START_SITE_MIN_K`, left for order 21.
+Contact is awareness: two settlements are in contact when either lies within the other's
+range; the network grows by a `Due::ContactGrows` event on the day a range reaches the
+nearest unmet settlement, and is rebuilt, not saved, on load. A failing band merges into
+the nearest settlement within its own range. A prospect inside the movers' own claim, or
+the band's own cell, is not a move. Arrival is the target's cell. Settlements step at
+most 5 days and bands 2, with no cap on the count.
+
+Done when:
+
+1. All builds exit 0, C4996 only.
+2. `grep -rn "MIN_SETTLEMENT_K\|CONTACT_KM" src` finds nothing; of the literals, only
+   `src/population.h:230`, the world-start 80 km spacing, left for order 21.
+3. Neither cap ever bound, pre-order, 700 years: settlements 0 of 11,002,345 and 0 of
+   10,398,542 (seed 7), 0 of 12,509,453 and 0 of 12,466,335 (seed 3); bands 0 of
+   2,008,148, 2,059,590, 2,359,493, 2,486,477.
+4. Year 700 on the branch, cold / heat, before -> after: seed 7 settlements 8123/8207 ->
+   8770/8206, people 1,985,115/1,999,743 -> 2,531,832/2,011,739, farming 163/207 ->
+   2725/65, raids 442,100/451,298 -> 398,447/412,307; seed 3 settlements 8913/9178 ->
+   9900/10232, people 2,071,535/2,169,828 -> 3,099,370/3,726,975, farming 81/334 ->
+   4469/5741. People at least 70% of before everywhere (101-172%). On `nightly`, against
+   `nightly` before the merge: seed 7 people 1,892,664/1,959,246 -> 3,814,365/3,755,098,
+   settlements 9883/9451; seed 3 people 1,960,357/2,104,721 -> 2,412,134/3,096,460,
+   settlements 9433/9976.
+5. Wall clock, branch, pre and post side by side under load: seed 7 1074.8 -> 1687.3 s
+   and 1110.4 -> 1473.2 s, seed 3 717.7 -> 863.5 s and 738.2 -> 982.0 s (at most 1.57x).
+   On `nightly`, whole runs: seed 7 577 -> 725 s, seed 3 687 -> 865 s (1.26x).
+
+Files beyond the list: `src/savefile.h`, `src/main.cpp`, `Technical/Globe Viewer.md`,
+`Design/Conflict.md`, `Design/Technology.md`.
+
+Unsure of: the survey's settler count (a third of a settlement of 50 or more). A band's
+own ground is its cell. Each new contact redraws every technology clock on both sides;
+on `nightly` before 19, husbandry was invented on seed 7 in year 341 on the 10,000-year
+serendipity clock, which never happened on `main`: whether redrawing changes the odds
+is worth a look. Neighbour lists reach about 450 km for old settlements. For the game:
+the awareness and teachers lines, arrivals in the target cell.
+
+Review note for the night: [[Dev Log/Nightly/2026-09-28]].

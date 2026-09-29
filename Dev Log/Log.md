@@ -1,5 +1,11 @@
 # Dev Log
 
+## 2026-09-29 — The second night
+
+Orders 06, 07, 11, 12, 17 and 19 on `nightly/2026-09-28`, waiting for the morning review; the conflict rule and the planning checklist changed during the run: [[Dev Log/Nightly/2026-09-28]].
+
+---
+
 ## 2026-09-26 — The first night, reviewed
 
 Orders 03, 04, 05 and 08, all kept and merged into `main` as `4548c63`: [[Dev Log/Nightly/2026-09-15]].
