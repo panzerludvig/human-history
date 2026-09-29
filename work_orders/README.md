@@ -61,8 +61,12 @@ Every order has these, in this order:
 - **Done when**: the build and the probe run, and the numbers or image the probe must
   produce. This is what the run checks, so it has to be checkable without a person.
 - **Depends on**: orders whose result this one needs (it builds on their code or their
-  behaviour), or none. It runs only once they are on `main`. Sharing files is not a
-  dependency; the run keeps orders that collide on different nights.
+  behaviour), or none. It is planned, and runs, only once they are on `main`. Sharing files is not a
+  dependency; the run keeps orders that collide on different nights. Ideas carry it too,
+  and it is how an idea says it must wait: while anything it depends on is not
+  implemented, its Status line says "waits for NN", and it is not shaped past its Problem
+  and its open questions (no Outcome, no Done when). Plans change and built things turn
+  out differently, so an order is shaped against what was built, not what was planned.
 
 Two sections are appended later, never written up front:
 
@@ -84,7 +88,8 @@ to `planned/` when all of these hold:
    that changes what the simulation does, and any choice between rules is decided in the
    order or its design note. What remains open is only how to write the code.
 3. Done when names a probe and its expected output, not a judgement.
-4. Every order in Depends on is implemented or planned.
+4. Every order in Depends on is implemented. (Until 2026-09-28 a planned dependency was
+   enough; 09, 13 and 15 were planned that way and stand.)
 5. The Evidence line references were checked against the tree on the day it moved.
 
 Overlap with other planned orders is not a criterion. Which orders share a night is the

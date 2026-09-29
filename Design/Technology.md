@@ -152,6 +152,12 @@ ruins, and are drawn as lone farmhouses on a golden-angle spiral walking
 outward to ~23 km (`sim::farmsteadPos`, mirrored in the shader), each
 among its own fields. The spiral is replaced by the design below.
 
+(Revised the same day, 2026-09-28: buildings of every kind are to be stored deviations
+([[Design/Terrain]]), placed once when built and kept where they stand, rather than
+positions computed from a chain. The placement rules and the lifecycle below stand; the
+chain and "positions are not stored" do not. Work order 20, waiting on the deviation
+layer, order 27, carries it; order 13 is withdrawn.)
+
 **Where farmsteads stand, and how they end** (designed 2026-09-28;
 implemented by work order 13). The same spiral around every village made
 every village look alike, and only the newest farmstead could ever be
