@@ -18,6 +18,7 @@
 #include <random>
 #include <thread>
 #include <atomic>
+#include <mutex>
 #include "terrain.h"
 #include "hydrology.h"
 #include "population.h"
@@ -38,11 +39,27 @@
 #include "panels.h"
 #include "news.h"
 
-// Generation-stage feedback on the menu status line. The build runs on the
-// UI thread, so the label is repainted synchronously.
-static void buildProgress(const char* stage);
-
 // ---------------------------------------------------------------- app state
+
+// World generation (a new world or a load) runs on a worker thread so the
+// window stays live. This is the handover slot between the two threads, and
+// the only state the worker touches: while state is 1 the worker owns world,
+// cam and ok; the main thread reads the progress label under stageMutex, and
+// takes the finished world in finishGeneration once state is 2. Nothing the
+// worker runs touches App outside this slot, or any window.
+struct Generation {
+    std::thread thread;
+    std::atomic<int> state{0};       // 0 idle, 1 running, 2 finished
+    std::atomic<bool> cancel{false}; // set by the main thread when the window closes
+    int kind = 0;                    // 0 new world, 1 load; set before the worker starts
+    std::string name;                // the save being loaded
+    world::World world;              // built by the worker, moved into App at the handover
+    camera::Camera cam;              // a load's saved position (lat, lon, altitude)
+    bool ok = false;
+    std::mutex stageMutex;
+    std::string stage;       // latest progress label, under stageMutex
+    bool stageFresh = false; // stage not yet shown, under stageMutex
+};
 
 struct App {
     camera::Camera cam;
@@ -53,13 +70,8 @@ struct App {
     int downX = 0, downY = 0;   // mouse-down spot, to tell a click from a drag
     bool clickMoved = false;
     panels::State panels;
-    // World generation runs on a worker thread so the window stays live; the
-    // menus never render the globe, so the worker owns app.world meanwhile.
-    std::thread genThread;
-    std::atomic<int> genState{0}; // 0 idle, 1 running, 2 finished
-    bool genOk = false;
-    int genKind = 0;            // 0 new world, 1 load
-    std::string genName;
+    Generation gen;
+    LARGE_INTEGER genStartedAt{}; // main thread only: for HH_GENTEST_CLOSE_MS
     GLuint program = 0;
     textures::State tex;
     overlay::State overlay;
@@ -77,13 +89,29 @@ static App app;
 static void advanceDays(double days);
 static void updateDateLabel();
 
-static void buildProgress(const char* stage) {
-    fprintf(stderr, "build: %s%c", stage, 10);
-    // Skip when the status line is not on screen (e.g. the argv test path).
-    HWND st = menus::control(app.menu, menus::ID_STATUS);
-    if (!st || !IsWindowVisible(st)) return;
-    SetWindowTextA(st, stage);
-    UpdateWindow(st);
+// Generation-stage feedback, logged to stderr for tests. Runs on whichever
+// thread builds.
+static void logStage(const char* stage) { fprintf(stderr, "build: %s%c", stage, 10); }
+
+// The worker's progress: logged, and left in the handover slot for the main
+// thread to put on the menu status line (showStage). Runs on the worker.
+static void reportStage(const char* stage) {
+    logStage(stage);
+    std::lock_guard<std::mutex> lock(app.gen.stageMutex);
+    app.gen.stage = stage;
+    app.gen.stageFresh = true;
+}
+
+// Main thread: the worker's latest label onto the status line.
+static void showStage() {
+    std::string label;
+    {
+        std::lock_guard<std::mutex> lock(app.gen.stageMutex);
+        if (!app.gen.stageFresh) return;
+        label = app.gen.stage;
+        app.gen.stageFresh = false;
+    }
+    menus::setStatus(app.menu, label);
 }
 
 static void setScreen(menus::Screen s) {
@@ -117,7 +145,39 @@ static void openNewWorldMenu() {
     setScreen(menus::Screen::NewWorldMenu);
 }
 
-static void generateWorld() {
+// Hand a world's parameters (a new world) or a save's name (a load) to the
+// worker. The main thread does not touch app.gen again until state is 2.
+static void startGeneration(int kind) {
+    app.gen.kind = kind;
+    app.gen.ok = false;
+    app.gen.cancel = false;
+    app.gen.state = 1;
+    QueryPerformanceCounter(&app.genStartedAt);
+}
+
+static void generateWorld(const world::World& params) {
+    app.gen.world = params;
+    startGeneration(0);
+    app.gen.thread = std::thread([] {
+        progress::Context ctx(reportStage, &app.gen.cancel);
+        app.gen.ok = app.gen.world.build(ctx);
+        app.gen.state = 2;
+    });
+}
+
+static void loadWorld(const std::string& name) {
+    app.gen.name = name;
+    app.gen.cam = app.cam; // a save without a camera line keeps the current view
+    startGeneration(1);
+    app.gen.thread = std::thread([name] {
+        progress::Context ctx(reportStage, &app.gen.cancel);
+        app.gen.ok = savefile::load(name, app.gen.world, app.gen.cam, ctx);
+        app.gen.state = 2;
+    });
+}
+
+// The New World menu's fields as a world to build.
+static world::World newWorldFromMenu() {
     world::World w;
     {
         // A seed reading "earth", in any case, is the template globe.
@@ -132,43 +192,58 @@ static void generateWorld() {
         (float)std::clamp(menus::getEditNumber(app.menu, menus::ID_GEN_LAND), 0.0, 100.0);
     w.concentration =
         (float)std::clamp(menus::getEditNumber(app.menu, menus::ID_GEN_CONC), 0.0, 100.0);
-    app.world = w;
-    app.genKind = 0;
-    app.genState = 1;
-    app.genThread = std::thread([] {
-        app.world.build(buildProgress);
-        app.genOk = true;
-        app.genState = 2;
-    });
+    return w;
 }
 
-// Runs on the main (GL) thread once the worker finishes: textures and the
-// screen switch happen here.
+static bool argvViewPending = false; // HH_GENTEST: the argv test path waits for the worker
+static void argvView();              // defined with main
+
+// Runs on the main (GL) thread once the worker finishes: the handover. The
+// finished world (and a load's camera position) moves into App here, then
+// textures and the screen switch.
 static void finishGeneration() {
-    app.genThread.join();
-    app.genState = 0;
-    if (!app.genOk) {
-        menus::setStatus(app.menu, "Could not load " + app.genName);
+    app.gen.thread.join();
+    app.gen.state = 0;
+    showStage();
+    if (!app.gen.ok) {
+        // Only a load can fail (no such file); a cancelled build never gets
+        // here, since cancelling ends the main loop.
+        menus::setStatus(app.menu, "Could not load " + app.gen.name);
+        app.gen.world = world::World{};
+        if (argvViewPending) {
+            fprintf(stderr, "gentest: could not load %s\n", app.gen.name.c_str());
+            app.running = false;
+        }
         return;
     }
+    app.world = std::move(app.gen.world);
+    app.gen.world = world::World{};
     textures::uploadAll(app.tex, app.world);
-    if (app.genKind == 0) {
+    if (app.gen.kind == 0) {
         app.cam.lat = 0.35;
         app.cam.lon = 0.0;
         app.cam.altitude = app.cam.maxAltitude();
+    } else {
+        app.cam.lat = app.gen.cam.lat;
+        app.cam.lon = app.gen.cam.lon;
+        app.cam.altitude = app.gen.cam.altitude;
     }
     menus::setStatus(app.menu, "");
     setScreen(menus::Screen::InGame);
+    if (argvViewPending) {
+        argvViewPending = false;
+        argvView();
+    }
 }
 
 static void onCommand(int id) {
-    if (app.genState != 0) return; // generation in progress: only the OS window moves
+    if (app.gen.state != 0) return; // generation in progress: only the OS window moves
     switch (id) {
     case menus::ID_NEW_WORLD:
         openNewWorldMenu();
         break;
     case menus::ID_GEN_CREATE:
-        generateWorld();
+        generateWorld(newWorldFromMenu());
         break;
     case menus::ID_GEN_BACK:
         setScreen(menus::Screen::MainMenu);
@@ -193,13 +268,7 @@ static void onCommand(int id) {
             menus::setStatus(app.menu, "No saved worlds");
             break;
         }
-        app.genKind = 1;
-        app.genName = name;
-        app.genState = 1;
-        app.genThread = std::thread([name] {
-            app.genOk = savefile::load(name, app.world, app.cam, buildProgress);
-            app.genState = 2;
-        });
+        loadWorld(name);
         break;
     }
     case menus::ID_LOAD_DELETE: {
@@ -505,7 +574,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_KEYDOWN:
-        if (app.genState != 0) return 0;
+        if (app.gen.state != 0) return 0;
         if (wp == VK_F2) { app.shotPath = "dbg_shot.bmp"; return 0; } // back-buffer screenshot
         if (app.screen == menus::Screen::InGame) {
             int mode = wp == 'P' ? 1 : wp == 'B' ? 2 : wp == 'V' ? 3 : wp == 'K' ? 4 : 0;
@@ -513,10 +582,157 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_CLOSE:
+        // Closing during generation cancels the build: the worker stops at
+        // its next check and the join after the main loop returns promptly.
+        app.gen.cancel = true;
         app.running = false;
         return 0;
     }
     return DefWindowProcA(hwnd, msg, wp, lp);
+}
+
+// The constants globe.frag uses whose values the C++ defines, as GLSL
+// declarations to put in front of it: the CPU is the source of truth and the
+// shader the copy (standards/general.md §Mirrored code), so none of these is
+// written by hand in the shader. A float is printed with nine significant
+// digits, which gives back the same float.
+static std::string globeConstants() {
+    std::string s;
+    auto addInt = [&](const char* name, int v) {
+        s += std::string("const int ") + name + " = " + std::to_string(v) + ";\n";
+    };
+    auto addFloat = [&](const char* name, float v) {
+        char num[32];
+        snprintf(num, sizeof num, "%.9g", v);
+        std::string lit = num;
+        if (lit.find_first_of(".e") == std::string::npos) lit += ".0";
+        s += std::string("const float ") + name + " = " + lit + ";\n";
+    };
+    addFloat("HEIGHT_SCALE_M", terrain::HEIGHT_SCALE_M);
+    addFloat("CRUST_WEIGHT", terrain::CRUST_WEIGHT);
+    addFloat("LAND_RELIEF", terrain::LAND_RELIEF);
+    addFloat("RANGE_GAIN", terrain::RANGE_GAIN);
+    addInt("NSUB", terrain::NSUB);
+    addInt("NCOV", terrain::NCOV);
+    addInt("HW", hydrology::W);
+    addInt("HH", hydrology::H);
+    addFloat("NO_LAKE", hydrology::NO_LAKE);
+    addFloat("LAKE_SHORE_RISE_M", hydrology::LAKE_SHORE_RISE_M);
+    addInt("PW", plates::W);
+    addInt("PH", plates::H);
+    addInt("SITE_STRIDE", textures::SITE_STRIDE);
+    addFloat("HUT_KMPP", (float)overlay::HUT_KMPP);
+    addFloat("WALK_KMPP", (float)overlay::WALK_KMPP);
+    addFloat("ICE_FORMING_T", sim::ICE_FORMING_T);
+    addFloat("FROZEN_T", sim::FROZEN_T);
+    return s;
+}
+
+// ---------------------------------------------------------------- argv test path
+
+// Testing shortcut:
+//   humanhistory <latDeg> <lonDeg> [altitudeKm] [seed] [land%] [conc%]
+//                [debugmode] [fastForwardYears] [shot.bmp]
+// A seed of "@name" loads worlds\name.ibw instead of generating.
+// HH_GENTEST=1 builds or loads through the worker and finishGeneration, as the
+// menus do, instead of on the main thread; HH_GENTEST_CLOSE_MS=<ms> posts
+// WM_CLOSE that long after generation starts, to test quitting mid-build.
+static int argvCount = 0;
+static char** argvValues = nullptr;
+
+static int envInt(const char* name) {
+    char v[16];
+    return GetEnvironmentVariableA(name, v, sizeof v) > 0 ? atoi(v) : 0;
+}
+
+// The world the argv seed, land % and concentration % ask for.
+static world::World argvWorld() {
+    int argc = argvCount;
+    char** argv = argvValues;
+    world::World w;
+    w.earth = argc >= 5 && _stricmp(argv[4], "earth") == 0;
+    w.seed = w.earth ? 1u : (argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0);
+    if (argc >= 6) w.landPercent = (float)atof(argv[5]);
+    if (argc >= 7) w.concentration = (float)atof(argv[6]);
+    return w;
+}
+
+// Once the world exists and its textures are up: debug mode, camera,
+// fast-forward with its stderr summary, and the screenshot.
+static void argvView() {
+    int argc = argvCount;
+    char** argv = argvValues;
+    if (argc >= 8) {
+        std::string d = argv[7];
+        app.debugMode = d == "plates"       ? 1
+                        : d == "substrate"  ? 2
+                        : d == "vegetation" ? 3
+                        : d == "population" ? 4
+                        : d == "climate"    ? 5
+                                            : 0;
+    }
+    app.cam.lat = atof(argv[1]) * camera::PI / 180;
+    app.cam.lon = atof(argv[2]) * camera::PI / 180;
+    if (argc >= 4) app.cam.altitude = atof(argv[3]) / camera::EARTH_RADIUS_KM;
+    app.cam.clampAltitude();
+    setScreen(menus::Screen::InGame);
+    if (argc >= 9) {
+        advanceDays(atof(argv[8]) * 365.0); // fast-forward years
+        int gran = 0, building = 0, fstead = 0;
+        for (const population::Settlement& s : app.world.pop.settlements) {
+            gran += (int)(s.granaries + 0.5f);
+            building += s.buildWork > 0 ? 1 : 0;
+            fstead += (int)(s.farmsteads + 0.5f);
+        }
+        double totalP = 0;
+        population::Cohorts all{};
+        for (const population::Settlement& s : app.world.pop.settlements) {
+            totalP += s.P;
+            all.add(s.pop);
+        }
+        for (int i = 0; i < 6 && i < (int)app.world.pop.settlements.size(); i++) {
+            const population::Settlement& sx =
+                app.world.pop.settlements[i * app.world.pop.settlements.size() / 6];
+            fprintf(stderr, "  %s of the %s\n", sx.name,
+                    sx.culture < app.world.pop.cultures.size()
+                        ? app.world.pop.cultures[sx.culture].name
+                        : "?");
+        }
+        double tp = std::max(totalP, 1.0);
+        fprintf(stderr, "people: %.0f%% children, %.0f%% men, %.0f%% women, %.0f%% elderly\n",
+                all.C / tp * 100, all.M / tp * 100, all.W / tp * 100, all.E / tp * 100);
+        fprintf(stderr,
+                "granaries built: %d, under construction: %d, farmsteads: %d\n"
+                "settlements: %d, people: %.0f, bands: %d (peak %d), ruins: %d, "
+                "worked sites: %d\n",
+                gran, building, fstead, (int)app.world.pop.settlements.size(), totalP,
+                (int)app.world.pop.bands.size(), (int)app.world.pop.peakBands,
+                (int)app.world.pop.ruins.size(), (int)app.world.pop.scars.size());
+    }
+    if (argc >= 10) app.shotPath = argv[9]; // save a frame, then keep running
+}
+
+// Start the argv test path: build or load, on this thread or (HH_GENTEST)
+// through the worker, in which case finishGeneration calls argvView.
+static void argvStart(int argc, char** argv) {
+    argvCount = argc;
+    argvValues = argv;
+    bool load = argc >= 5 && argv[4][0] == '@';
+    if (envInt("HH_GENTEST") == 1) {
+        argvViewPending = true;
+        if (load)
+            loadWorld(argv[4] + 1);
+        else
+            generateWorld(argvWorld());
+        return;
+    }
+    bool loaded = load && savefile::load(argv[4] + 1, app.world, app.cam, logStage);
+    if (!loaded) {
+        app.world = argvWorld();
+        app.world.build(logStage);
+    }
+    textures::uploadAll(app.tex, app.world);
+    argvView();
 }
 
 // ---------------------------------------------------------------- main
@@ -568,7 +784,7 @@ int main(int argc, char** argv) {
     if (!gl::loadGL()) return 1;
     if (wglSwapIntervalEXT) wglSwapIntervalEXT(1);
 
-    app.program = gl::buildProgram(world::exeDir() + "\\shaders\\");
+    app.program = gl::buildProgram(world::exeDir() + "\\shaders\\", globeConstants());
     if (!app.program) return 1;
     GLuint vao;
     glGenVertexArrays(1, &vao);
@@ -628,68 +844,13 @@ int main(int argc, char** argv) {
                                  app.cam.height - 76, app.hwnd, nullptr, inst, nullptr);
     app.cam.clampAltitude();
 
-    // Testing shortcut:
-    // humanhistory <latDeg> <lonDeg> [altitudeKm] [seed] [land%] [conc%] [debugmode] [fastForwardYears]
-    // A seed of "@name" loads worlds\name.ibw instead of generating (testing).
-    if (argc >= 3) {
-        bool loaded = argc >= 5 && argv[4][0] == '@' &&
-                      savefile::load(argv[4] + 1, app.world, app.cam, buildProgress);
-        if (!loaded) {
-            app.world.earth = argc >= 5 && _stricmp(argv[4], "earth") == 0;
-            app.world.seed = app.world.earth ? 1u : (argc >= 5 ? (uint32_t)strtoul(argv[4], nullptr, 10) : 0);
-            if (argc >= 6) app.world.landPercent = (float)atof(argv[5]);
-            if (argc >= 7) app.world.concentration = (float)atof(argv[6]);
-            app.world.build(buildProgress);
-        }
-        if (argc >= 8) {
-            std::string d = argv[7];
-            app.debugMode = d == "plates" ? 1 : d == "substrate" ? 2 : d == "vegetation" ? 3
-                          : d == "population" ? 4 : d == "climate" ? 5 : 0;
-        }
-        textures::uploadAll(app.tex, app.world);
-        app.cam.lat = atof(argv[1]) * camera::PI / 180;
-        app.cam.lon = atof(argv[2]) * camera::PI / 180;
-        if (argc >= 4) app.cam.altitude = atof(argv[3]) / camera::EARTH_RADIUS_KM;
-        app.cam.clampAltitude();
-        setScreen(menus::Screen::InGame);
-        if (argc >= 9) {
-            advanceDays(atof(argv[8]) * 365.0); // fast-forward years
-            int gran = 0, building = 0, fstead = 0;
-            for (const population::Settlement& s : app.world.pop.settlements) {
-                gran += (int)(s.granaries + 0.5f);
-                building += s.buildWork > 0 ? 1 : 0;
-                fstead += (int)(s.farmsteads + 0.5f);
-            }
-            double totalP = 0;
-            population::Cohorts all{};
-            for (const population::Settlement& s : app.world.pop.settlements) {
-                totalP += s.P;
-                all.add(s.pop);
-            }
-            for (int i = 0; i < 6 && i < (int)app.world.pop.settlements.size(); i++) {
-                const population::Settlement& sx =
-                    app.world.pop.settlements[i * app.world.pop.settlements.size() / 6];
-                fprintf(stderr, "  %s of the %s\n", sx.name,
-                        sx.culture < app.world.pop.cultures.size()
-                            ? app.world.pop.cultures[sx.culture].name
-                            : "?");
-            }
-            double tp = std::max(totalP, 1.0);
-            fprintf(stderr,
-                    "people: %.0f%% children, %.0f%% men, %.0f%% women, %.0f%% elderly\n",
-                    all.C / tp * 100, all.M / tp * 100, all.W / tp * 100, all.E / tp * 100);
-            fprintf(stderr,
-                    "granaries built: %d, under construction: %d, farmsteads: %d\n"
-                    "settlements: %d, people: %.0f, bands: %d (peak %d), ruins: %d, "
-                    "worked sites: %d\n",
-                    gran, building, fstead, (int)app.world.pop.settlements.size(), totalP,
-                    (int)app.world.pop.bands.size(), (int)app.world.pop.peakBands,
-                    (int)app.world.pop.ruins.size(), (int)app.world.pop.scars.size());
-        }
-        if (argc >= 10) app.shotPath = argv[9];            // save a frame, then keep running
-    } else {
+    // The argv test path (argvStart), or the main menu.
+    if (argc >= 3)
+        argvStart(argc, argv);
+    else
         setScreen(menus::Screen::MainMenu);
-    }
+    const int closeMs = envInt("HH_GENTEST_CLOSE_MS"); // testing: quit mid-build
+    bool closePosted = false;
 
     // Frame-time measurement, testing tooling: HH_BENCH=<frames> turns vsync
     // off, times that many globe draws on the GPU after a warm-up, prints
@@ -717,7 +878,18 @@ int main(int argc, char** argv) {
     QueryPerformanceCounter(&fpsT0);
     int fpsFrames = 0;
     while (app.running) {
-        if (app.genState == 2) finishGeneration();
+        if (closeMs > 0 && !closePosted && app.genStartedAt.QuadPart != 0) {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            if ((now.QuadPart - app.genStartedAt.QuadPart) * 1000 / qpf.QuadPart >= closeMs) {
+                PostMessageA(hwnd, WM_CLOSE, 0, 0);
+                closePosted = true;
+            }
+        }
+        if (app.gen.state == 2)
+            finishGeneration();
+        else if (app.gen.state == 1)
+            showStage();
         MSG m;
         while (PeekMessageA(&m, nullptr, 0, 0, PM_REMOVE)) {
             // Buttons take keyboard focus, so catch Escape before it reaches them.
@@ -768,15 +940,15 @@ int main(int argc, char** argv) {
                         e = sim::cellCentre(st.cell);
                         radius = population::settlementAwareKm(
                             app.world.simTime - st.founded,
-                            sim::prominenceM(app.world.hydro, app.world.clim, st.cell));
+                            population::prominenceM(app.world.hydro, app.world.clim, st.cell));
                     } else {
                         for (const population::Band& bd : app.world.pop.bands)
                             if (bd.id == pn.bandId) {
                                 e = {bd.px, bd.py, bd.pz};
                                 double rest = bd.resting ? app.world.simTime - bd.restStart : 0.0;
                                 radius = population::bandAwareKm(
-                                    rest, sim::prominenceM(app.world.hydro, app.world.clim,
-                                                           sim::cellOf(e)));
+                                    rest, population::prominenceM(app.world.hydro, app.world.clim,
+                                                                  sim::cellOf(e)));
                                 break;
                             }
                     }
@@ -903,7 +1075,10 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (app.genThread.joinable()) app.genThread.join();
+    // A build still running is cancelled (WM_CLOSE already asked), so this
+    // join waits at most for the stage in hand to reach its next check.
+    app.gen.cancel = true;
+    if (app.gen.thread.joinable()) app.gen.thread.join();
     wglMakeCurrent(nullptr, nullptr);
     wglDeleteContext(rc);
     ReleaseDC(hwnd, dc);

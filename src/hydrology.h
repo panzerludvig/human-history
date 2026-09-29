@@ -15,6 +15,7 @@ namespace hydrology {
 
 using V3orig = terrain::V3;
 
+// W, H and NO_LAKE reach the shader from here as HW, HH and NO_LAKE (main.cpp).
 constexpr int W = 2048, H = 1024;        // cells: ~20 km at the equator
 constexpr float NO_LAKE = -1.0e6f;        // lakeLevel value meaning "no lake here"
 constexpr float EARTH_RADIUS_KM = 6371.0f;
@@ -42,6 +43,40 @@ struct Result {
 };
 
 inline int wrapX(int x) { return (x + W) % W; }
+
+// A lake is drawn this far above its level (the spill), so flat shores flood
+// irregularly instead of stopping at the cell edge. A stand-in for the
+// sub-cell shape of a basin, which the 20 km grid does not model.
+constexpr float LAKE_SHORE_RISE_M = 12.0f;
+
+// The lake level around n: a smooth-weighted average over those of the 2x2
+// cells whose centres surround n that are lakes, or NO_LAKE if none is. The
+// shore is where the ground rises above this level plus LAKE_SHORE_RISE_M,
+// so it follows a rounded contour rather than the cell grid. The one lake
+// shore rule: the tooltip asks it, and globe.frag lakeLevelAt mirrors it.
+inline float lakeLevelAt(const Result& r, terrain::V3 n) {
+    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
+    float lon = std::atan2(n.y, n.x);
+    float u = (lon + PI_F) / (2.0f * PI_F) * (float)W - 0.5f;
+    float v = (lat + PI_F / 2.0f) / PI_F * (float)H - 0.5f;
+    int x0 = (int)std::floor(u), y0 = (int)std::floor(v);
+    float fx = u - (float)x0, fy = v - (float)y0;
+    fx = fx * fx * (3.0f - 2.0f * fx);
+    fy = fy * fy * (3.0f - 2.0f * fy);
+    auto level = [&](int x, int y) {
+        return y < 0 || y >= H ? NO_LAKE : r.cells[y * W + wrapX(x)].lakeLevel;
+    };
+    const float lv[4] = {level(x0, y0), level(x0 + 1, y0), level(x0, y0 + 1),
+                         level(x0 + 1, y0 + 1)};
+    const float wt[4] = {(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy};
+    float sum = 0, wsum = 0;
+    for (int k = 0; k < 4; k++)
+        if (lv[k] > NO_LAKE + 1.0f) {
+            sum += lv[k] * wt[k];
+            wsum += wt[k];
+        }
+    return wsum > 0.001f ? sum / wsum : NO_LAKE;
+}
 
 inline terrain::V3 cellDir(int x, int y) {
     float lat = ((y + 0.5f) / H) * PI_F - PI_F / 2;

@@ -168,10 +168,20 @@ inline GLuint compile(GLenum type, const std::string& src, const char* label) {
 }
 
 // The globe program from globe.vert and globe.frag in shaderDir (with its
-// trailing separator). 0 on any compile or link error, which is printed.
-inline GLuint buildProgram(const std::string& shaderDir) {
+// trailing separator). fragConstants -- GLSL declarations of values the C++
+// owns -- goes in after globe.frag's #version line, followed by a #line that
+// keeps compile errors pointing at the file's own line numbers. 0 on any
+// compile or link error, which is printed.
+inline GLuint buildProgram(const std::string& shaderDir, const std::string& fragConstants) {
+    std::string frag = readFile(shaderDir + "globe.frag");
+    size_t eol = frag.find('\n');
+    if (frag.compare(0, 8, "#version") != 0 || eol == std::string::npos) {
+        fprintf(stderr, "globe.frag does not open with a #version line\n");
+        return 0;
+    }
+    frag.insert(eol + 1, fragConstants + "#line 2\n");
     GLuint vs = compile(GL_VERTEX_SHADER, readFile(shaderDir + "globe.vert"), "vertex");
-    GLuint fs = compile(GL_FRAGMENT_SHADER, readFile(shaderDir + "globe.frag"), "fragment");
+    GLuint fs = compile(GL_FRAGMENT_SHADER, frag, "fragment");
     if (!vs || !fs) return 0;
     GLuint prog = glCreateProgram();
     glAttachShader(prog, vs);

@@ -47,6 +47,15 @@ inline void describeMixture(const terrain::Mixture& m, char* out, size_t outSize
     }
 }
 
+// What the ice on water is at a seasonal local temperature, as the globe
+// draws it: solid below sim::FROZEN_T (bands walk on it), still forming
+// between that and sim::ICE_FORMING_T, open water above.
+inline const char* iceWord(float tC) {
+    if (tC < sim::FROZEN_T) return " (frozen)";
+    if (tC < sim::ICE_FORMING_T) return " (thin ice)";
+    return "";
+}
+
 // "1234 m", for depths and heights.
 inline void fmtM(float m, char* b, size_t n) { snprintf(b, n, "%d m", (int)std::lround(m)); }
 
@@ -67,7 +76,8 @@ inline void describePoint(const world::World& wd, const camera::Camera& cam, int
     terrain::V3 wDerive = terrain::rotate(wd.rot, nf) + off;
     // Annual mean drives the mixture (biomes don't change by the hour);
     // the displayed temperature is the current one: seasonal mean plus the
-    // diurnal swing phased to local solar time (peak ~14:00).
+    // diurnal swing phased to local solar time, peaking when the atmosphere
+    // model's day does (atmosphere::diurnalPhase).
     atmosphere::DerivedClimate dcTip = atmosphere::deriveAt(wd.clim, lat, lon, wDerive, h);
     float temp = dcTip.temp;
     float tempNow = temp;
@@ -76,7 +86,7 @@ inline void describePoint(const world::World& wd, const camera::Camera& cam, int
         float amp = atmosphere::seasonalAt(wd.clim.diurnal, atmosphere::climFuzz(nf), wd.simTime);
         double tod = fmod(wd.simTime, 1.0);
         double hLoc = fmod(lon * (12.0 / camera::PI) + 24.0 * tod + 48.0, 24.0);
-        tempNow = tSeason + 0.5f * amp * (float)cos(2 * camera::PI * (hLoc - 14.0) / 24.0);
+        tempNow = tSeason + 0.5f * amp * (float)atmosphere::diurnalPhase(hLoc);
     }
     char hm[32]; // a depth or height, formatted
     // Climatology at the cursor, season-interpolated: shown for sea, lake, and land.
@@ -85,11 +95,10 @@ inline void describePoint(const world::World& wd, const camera::Camera& cam, int
         int ax = (int)(((lon + camera::PI) / (2 * camera::PI)) * atmosphere::W) % atmosphere::W;
         int ay = std::clamp((int)(((lat + camera::PI / 2) / camera::PI) * atmosphere::H), 0,
                             atmosphere::H - 1);
-        double sf = fmod(wd.simTime, 365.0) / 365.0 * 4.0 - 0.5;
-        int s0 = ((int)std::floor(sf) % 4 + 4) % 4, s1 = (s0 + 1) % 4;
-        double f = sf - std::floor(sf);
-        int i0 = s0 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
-        int i1 = s1 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
+        const atmosphere::SeasonBlend sb = atmosphere::seasonBlendAt(wd.simTime);
+        double f = sb.f;
+        int i0 = sb.s0 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
+        int i1 = sb.s1 * atmosphere::W * atmosphere::H + ay * atmosphere::W + ax;
         double rain = wd.clim.rainMmDay[i0] * (1 - f) + wd.clim.rainMmDay[i1] * f;
         double snow = wd.clim.snowMmDay[i0] * (1 - f) + wd.clim.snowMmDay[i1] * f;
         if (snow > 0.5 * rain && rain > 0.05)
@@ -99,13 +108,11 @@ inline void describePoint(const world::World& wd, const camera::Camera& cam, int
     }
 
     if (h < 0) {
-        bool frozen = sim::seasonalT(wd.clim, nf, 0.0f, wd.simTime) < sim::FROZEN_T;
         fmtM(-h, hm, sizeof hm);
-        snprintf(out, outSize, "Sea%s, %s deep  |  %.0f C%s", frozen ? " (frozen)" : "", hm,
-                 tempNow, climTxt);
+        snprintf(out, outSize, "Sea%s, %s deep  |  %.0f C%s",
+                 iceWord(sim::seasonalT(wd.clim, nf, 0.0f, wd.simTime)), hm, tempNow, climTxt);
         return;
     }
-    // Lake: below the level of any adjacent lake cell (same rule as the shader).
     int cx = (int)std::floor((lon + camera::PI) / (2 * camera::PI) * hydrology::W),
         cy = (int)std::floor((lat + camera::PI / 2) / camera::PI * hydrology::H);
     cx = hydrology::wrapX(cx);
@@ -195,18 +202,13 @@ inline void describePoint(const world::World& wd, const camera::Camera& cam, int
     if (!wd.hydro.cells.empty()) {
         const hydrology::Cell& c = wd.hydro.cells[cy * hydrology::W + cx];
         nearRiver = c.nearRiver > 0.5f;
-        float lake = hydrology::NO_LAKE;
-        for (int dy = -1; dy <= 1; dy++)
-            for (int dx = -1; dx <= 1; dx++) {
-                int yy = std::clamp(cy + dy, 0, hydrology::H - 1);
-                lake = std::max(
-                    lake, wd.hydro.cells[yy * hydrology::W + hydrology::wrapX(cx + dx)].lakeLevel);
-            }
-        if (lake > hydrology::NO_LAKE + 1 && h < lake + 12.0f) {
-            bool frozen = sim::seasonalT(wd.clim, nf, h, wd.simTime) < sim::FROZEN_T;
-            fmtM(lake + 12.0f - h, hm, sizeof hm);
-            snprintf(out, outSize, "Lake%s, %s deep  |  %.0f C%s", frozen ? " (frozen)" : "", hm,
-                     tempNow, climTxt);
+        // Lake: the shore rule the globe draws by (hydrology::lakeLevelAt).
+        float lake = hydrology::lakeLevelAt(wd.hydro, nf);
+        float surface = lake + hydrology::LAKE_SHORE_RISE_M;
+        if (lake > hydrology::NO_LAKE + 1 && h < surface) {
+            fmtM(surface - h, hm, sizeof hm);
+            snprintf(out, outSize, "Lake%s, %s deep  |  %.0f C%s",
+                     iceWord(sim::seasonalT(wd.clim, nf, h, wd.simTime)), hm, tempNow, climTxt);
             return;
         }
     }
@@ -340,8 +342,8 @@ inline std::string envText(const world::World& wd, const population::Settlement&
     terrain::V3 n = sim::cellCentre(st.cell);
     float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
     float lon = std::atan2(n.y, n.x) * 180.0f / 3.14159265f;
-    float awareKm = population::settlementAwareKm(now - st.founded,
-                                                  sim::prominenceM(wd.hydro, wd.clim, st.cell));
+    float awareKm = population::settlementAwareKm(
+        now - st.founded, population::prominenceM(wd.hydro, wd.clim, st.cell));
     char b[128];
     std::string out;
     snprintf(b, sizeof b, "%.1f%c  %.1f%c\n", std::fabs(lat), lat >= 0 ? 'N' : 'S', std::fabs(lon),
@@ -395,7 +397,16 @@ inline std::string envText(const world::World& wd, const population::Settlement&
                  (int)std::lround(st.labFuel * 100));
         out += b;
     }
-    snprintf(b, sizeof b, "Awareness: %d km\n", (int)awareKm);
+    if (st.labProj > 0.005f) {
+        snprintf(b, sizeof b, "Builders and crafts: %d%% of the day's labour\n",
+                 (int)std::lround(st.labProj * 100));
+        out += b;
+    }
+    // Contact is awareness: the places known, either way round.
+    int self = settlementIndexById(wd.pop, st.id);
+    int known = self >= 0 ? (int)wd.pop.neighbours[self].size() : 0;
+    snprintf(b, sizeof b, "Awareness: %d km, %d place%s known\n", (int)awareKm, known,
+             known == 1 ? "" : "s");
     out += b;
     if (st.scarceSince >= 0) {
         snprintf(b, sizeof b, "Scarce since year %d%s\n", (int)(st.scarceSince / 365.0) + 1,
@@ -501,8 +512,8 @@ inline std::string techDetailText(const world::World& wd, const population::Sett
                      knowing == 1 ? " knows it" : "s know it",
                      technology::AWARE_MEAN_YEARS / knowing);
         else
-            snprintf(b, sizeof b, "Hearing of it: nobody within %d km knows\n",
-                     (int)population::CONTACT_KM);
+            snprintf(b, sizeof b, "Hearing of it: none of the %d places known knows\n",
+                     (int)wd.pop.neighbours[idx].size());
         out += b;
         return out;
     }
@@ -529,8 +540,8 @@ inline std::string techDetailText(const world::World& wd, const population::Sett
         snprintf(b, sizeof b, " need: %d%% (phi %.2f, content at 1.11)%s\n",
                  (int)std::lround(need * 100), phi, need <= 0 ? "  <- BLOCKED" : "");
     out += b;
-    snprintf(b, sizeof b, " teachers in %d km: %d, expertise sum %.2f%s\n",
-             (int)population::CONTACT_KM, teachers, esum, esum <= 0 ? "  <- BLOCKED" : "");
+    snprintf(b, sizeof b, " teachers: %d of %d places known, expertise sum %.2f%s\n", teachers,
+             (int)wd.pop.neighbours[idx].size(), esum, esum <= 0 ? "  <- BLOCKED" : "");
     out += b;
     double rate = (double)suit * need * esum;
     if (rate > 0)
@@ -612,7 +623,8 @@ inline std::string bandText(const world::World& wd, uint32_t bandId) {
             float away = sim::distKm({bd.px, bd.py, bd.pz}, sim::cellCentre(bd.targetCell));
             double rest = bd.resting ? now - bd.restStart : 0.0;
             float awareKm = population::bandAwareKm(
-                rest, sim::prominenceM(wd.hydro, wd.clim, sim::cellOf({bd.px, bd.py, bd.pz})));
+                rest,
+                population::prominenceM(wd.hydro, wd.clim, sim::cellOf({bd.px, bd.py, bd.pz})));
             if (bd.purpose == population::BAND_RAID)
                 snprintf(b, sizeof b,
                          "Raiding party\nPeople: %d\nState: %s\n%s: %d km away\n"

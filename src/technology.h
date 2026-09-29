@@ -4,8 +4,11 @@
 #pragma once
 #include "population.h"
 #include "events.h"
+#include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 namespace technology {
 
@@ -25,7 +28,7 @@ constexpr float HERD_SEED = 1.0f;             // bred from wild capture at pract
 // Clocks whose rates drift are redrawn at this horizon; the exponential is
 // memoryless, so redrawing is exact for piecewise-constant rates.
 constexpr double RESAMPLE = 50.0 * YEAR;
-// Need-driven discovery (farming, granaries): desperation invents. One tough
+// Need-driven discovery (farming, husbandry, granaries): desperation invents. One tough
 // winter changes nobody's lifestyle, so need ramps in only after the state
 // has held a year and saturates at four. Each unaware settlement contributes
 // ramp x suitability x capped population; the world rate is sqrt(sum) /
@@ -36,6 +39,22 @@ constexpr double NEED_MEAN_YEARS = 2000.0;   // mean at total need weight 1
 constexpr double NEED_RESAMPLE = 5.0 * YEAR; // need drifts yearly: short horizon
 constexpr float NEED_YEARS_ON = 1.0f;        // below this, no desperation
 constexpr float NEED_YEARS_SAT = 4.0f;       // full desperation
+// Husbandry is need-driven on the same hunger as farming, weighted by pasture
+// in place of farm suitability, times this scale. It stands in for what the
+// model does not say: how readily a hungry people turns to taming rather than
+// sowing. Chosen by measurement so the world's first herders come on about
+// farming's schedule (Design/Technology.md, calibration table). Measured
+// 2026-09-28, seeds 1-10, 700 years, hearths burning:
+// - Among the hungry, pasture and farm suitability sum to nearly the same
+//   (pasture/sFarm 0.78-0.97 over years 25-175, seeds 1-3): the hungry live
+//   on grassland, where both are the grass share. Unscaled, the two need
+//   weights are within 10%.
+// - At 1.0, husbandry's first invention trails farming's: mean 245 yr
+//   against 192 (x1.27); likely farming, where it spreads first, feeds the
+//   hungry who would have turned to herds, while a seed herd feeds nobody.
+// - At 1.5: husbandry 201 yr, farming 221 (x0.91), invented in 10/10 seeds
+//   each (test_resources, heat pass). Ten seeds cannot resolve much finer.
+constexpr float HUSB_NEED_SCALE = 1.5f;
 
 inline const char* techName(int t) {
     static const char* names[population::NTECH] = {"farming", "husbandry", "granaries",
@@ -49,6 +68,7 @@ struct WorldState {
     struct Sink {
         virtual void techEvent(int idx, int tech, double when) = 0;
         virtual void clockEvent(int tech, double when) = 0;
+        virtual void contactEvent(int idx, double when) = 0;
     };
     uint64_t rng = 0;
     double nextEvent[population::NTECH] = {INF_T, INF_T, INF_T, INF_T}; // fire or resample
@@ -169,10 +189,18 @@ inline float effectiveK(const population::Settlement& s, double now) {
 // up is practice, and a novice farmer on farmable ground is a farmer. Judged
 // on share of the food instead, a people would lose husbandry the day they
 // took it up, when the seed herd feeds one person out of three hundred.
+// Farming's means are the fields: they stand, or a plot is being cleared.
+// A people who have never had a field are judged on the ground instead, so
+// a farming people is not lost for not yet having needed to clear anything.
 inline bool meansPresent(const population::Settlement& s, int tech) {
     switch (tech) {
-    case population::TECH_FARMING:
-        return s.sFarm >= 0.05f;
+    case population::TECH_FARMING: {
+        if (!s.hadFields) return s.sFarm >= 0.05f;
+        if (s.tillWork > 0) return true;
+        for (int k = 0; k <= population::FSTEAD_MAX; k++)
+            if (s.tilled[k] > 0) return true;
+        return false;
+    }
     case population::TECH_HUSBANDRY:
         return s.herd > 0.0f;
     case population::TECH_GRANARY:
@@ -184,16 +212,17 @@ inline bool meansPresent(const population::Settlement& s, int tech) {
 }
 
 // Which technologies are invented from need rather than serendipity: nobody
-// farms or builds granaries unless they have to. Husbandry (taming what is
-// already around you) stays on the serendipity clock.
+// farms, herds or builds granaries unless they have to.
 inline bool needDriven(int tech) {
-    return tech == population::TECH_FARMING || tech == population::TECH_GRANARY;
+    return tech == population::TECH_FARMING || tech == population::TECH_HUSBANDRY ||
+           tech == population::TECH_GRANARY;
 }
 
 // One settlement's contribution to a need-driven invention rate, and its
-// pick weight when the clock fires. Farming's sustained state is hunger
-// (hungrySince, independent of split resets); granaries' is the storage
-// fill signal holding in consecutive years (granNeedYrs).
+// pick weight when the clock fires. Farming's and husbandry's sustained
+// state is hunger (hungrySince, independent of split resets); granaries' is
+// the storage fill signal holding in consecutive years (granNeedYrs).
+// Husbandry's weight is scaled by HUSB_NEED_SCALE.
 inline float needWeight(const population::Settlement& s, int tech, double now) {
     if (s.leaving || s.tech[tech].aware || s.P <= 1) return 0.0f;
     // A people who lost this recently are readier to find it again.
@@ -202,12 +231,13 @@ inline float needWeight(const population::Settlement& s, int tech, double now) {
         again += population::REDISCOVER_GAIN *
                  (float)std::exp(-(now - s.tech[tech].lostT) /
                                  (population::REDISCOVER_TAU_YEARS * YEAR));
-    float years = tech == population::TECH_FARMING
-                      ? (s.hungrySince >= 0 ? (float)((now - s.hungrySince) / YEAR) : 0.0f)
-                      : s.granNeedYrs;
+    float years = tech == population::TECH_GRANARY
+                      ? s.granNeedYrs
+                      : (s.hungrySince >= 0 ? (float)((now - s.hungrySince) / YEAR) : 0.0f);
     float acute =
         std::clamp((years - NEED_YEARS_ON) / (NEED_YEARS_SAT - NEED_YEARS_ON), 0.0f, 1.0f);
-    return acute * again * suitability(s, tech) * std::min(s.P / 300.0f, 3.0f);
+    float scale = tech == population::TECH_HUSBANDRY ? HUSB_NEED_SCALE : 1.0f;
+    return acute * again * scale * suitability(s, tech) * std::min(s.P / 300.0f, 3.0f);
 }
 
 // Adoption need: nobody changes a working lifestyle. A settlement expanding
@@ -298,6 +328,71 @@ inline void startPractising(population::Field& pf, int i, WorldState& ws, int te
     // the new rate applies now rather than at the next resample.
     if (tech == population::TECH_FARMING) redraw(pf, i, ws, population::TECH_GRANARY, now);
     for (int j : pf.neighbours[i]) redraw(pf, j, ws, tech, now);
+}
+
+// Contact (settlement.h, "contact"): the network grows by events, and each
+// new pair changes the rates of every clock that counts neighbours, so both
+// sides are redrawn.
+inline void rescheduleContact(population::Field& pf, int i, WorldState& ws) {
+    population::scheduleContact(pf, i);
+    if (ws.sink && pf.settlements[i].nextContact < 1e17)
+        ws.sink->contactEvent(i, pf.settlements[i].nextContact);
+}
+
+inline void meet(population::Field& pf, int i, int j, WorldState& ws, double now) {
+    population::link(pf, i, j);
+    if (population::dropUnmet(pf, j, i)) rescheduleContact(pf, j, ws);
+    for (int t = 0; t < population::NTECH; t++) {
+        redraw(pf, i, ws, t, now);
+        redraw(pf, j, ws, t, now);
+    }
+}
+
+// Settlement i's awareness has grown to reach the nearest settlement it had
+// not met: everyone now within its range comes into contact.
+inline void widenContact(population::Field& pf, int i, WorldState& ws, double now) {
+    std::vector<population::Field::Unmet>& u = pf.unmet[i];
+    float reachKm = population::awareKmOf(pf.settlements[i], now);
+    // The front is due by construction (it is what scheduled this event);
+    // the rest are met if the range already covers them.
+    // Meeting j touches j's list, never this one, so the prefix stays put
+    // until it is erased.
+    size_t k = 0;
+    while (k < u.size() && (k == 0 || u[k].km <= reachKm)) k++;
+    for (size_t m = 0; m < k; m++)
+        if (!pf.settlements[u[m].idx].leaving) meet(pf, i, u[m].idx, ws, now);
+    u.erase(u.begin(), u.begin() + k);
+    rescheduleContact(pf, i, ws);
+}
+
+// A settlement just founded, the last in the list, takes its place in the
+// network: in contact with everyone either side knows of today, and on the
+// unmet lists of everyone either side will know of later.
+inline void joinContact(population::Field& pf, int idx, WorldState& ws, double now) {
+    assert(idx == (int)pf.settlements.size() - 1 && idx == (int)pf.neighbours.size() &&
+           idx == (int)pf.unmet.size());
+    pf.neighbours.push_back({});
+    pf.unmet.push_back({});
+    const population::Settlement& s = pf.settlements[idx];
+    float mineKm = population::awareKmOf(s, now);
+    float reachKm = population::awareReachKm(s.promM);
+    for (int j = 0; j < idx; j++) {
+        const population::Settlement& o = pf.settlements[j];
+        if (o.leaving) continue;
+        float d = population::cellDistKm(s.cell, o.cell);
+        if (d <= mineKm || d <= population::awareKmOf(o, now)) {
+            population::link(pf, idx, j);
+            continue;
+        }
+        if (d <= reachKm) pf.unmet[idx].push_back({d, j});
+        if (d <= population::awareReachKm(o.promM) && population::addUnmet(pf, j, idx, d))
+            rescheduleContact(pf, j, ws);
+    }
+    std::sort(pf.unmet[idx].begin(), pf.unmet[idx].end(),
+              [](const population::Field::Unmet& a, const population::Field::Unmet& b) {
+                  return a.km < b.km;
+              });
+    rescheduleContact(pf, idx, ws);
 }
 
 // Weighted pick of the inventor among the unaware. Need-driven techs draw
@@ -432,6 +527,8 @@ inline void decaySkills(population::Field& pf, technology::WorldState& ws, int s
         ts.strainT = -1;
         ts.lostT = now;
         if (tech == population::TECH_HUSBANDRY) s.herd = 0;
+        // Farming's fields are not cleared here: nobody tends them any more,
+        // so population::stepReversion lets them go back to the wild.
         {
             char txt[96];
             snprintf(txt, sizeof txt, "%s no longer practises %s", s.name,

@@ -1,7 +1,6 @@
 # 12 — Fields go back to the wild when nobody works them
 
-**Status:** planned (2026-09-28) — the design line it waited for is written in
-`Design/Technology.md`
+**Status:** taken by the night of 2026-09-28; merged into `nightly/2026-09-28` as `44fed83`; Done when 6 missed on its branch and 3 missed on `nightly`, kept on the developer's instruction for the morning
 
 Line references checked against 5087977 on 2026-09-28.
 
@@ -103,3 +102,57 @@ A guide, not a limit:
 ## Depends on
 
 Nothing.
+
+## Run
+
+**Outcome:** failed by the letter on its branch (Done when 6) and on `nightly` (Done
+when 3); kept on `nightly` on the developer's instruction, for the morning. Branch
+`wo/12-fields-go-back-to-the-wild`, one commit `6ff29a5`. Merged into `nightly` as
+`44fed83`, after 11.
+
+The merge conflicted with 11 in three files, both orders judged independent:
+`src/test_resources.cpp`, four hunks of each order's own report lines, both kept;
+`src/settlement.h`, 11's comment on `TILL_LABOUR_SHARE` then 12's lines appended after it;
+`src/population.h`, the comment above `advance`, which both rewrote. The merged comment
+names both stages and is a line neither order wrote: a deviation from the conflict rule,
+made on the developer's instruction.
+
+What it did: `population::stepReversion`, after `stepBuilding`: each person tends
+`FARM_KM2_PER_PERSON`, nobody tends once farming has lapsed, hands go to the village's
+plots first and then outward; untended land reverts at no labour cost at a pace
+(`Settlement::wildPace`) that clears it `FIELD_REVERT_YEARS` (50) after the last hand
+left. `technology::meansPresent` for farming is fields standing or a plot being cleared
+once `Settlement::hadFields` is set, the ground before that. Save format v25 adds both
+fields; an older save flags every settlement holding land.
+
+Done when, branch / `nightly`:
+
+1. The three builds exit 0, C4996 only.
+2. Tilled km2 held by settlements not farming, lapsed more than 50 years ago: 0.0 on
+   both seeds and passes, on the branch and on `nightly`.
+3. Farming lapses for want of means by settlements that never had a field: 0 on the
+   branch; on `nightly` 6 (seed 7 cold) and 5 (seed 3 cold), 0 in the heat passes; after
+   17 merged, 12/8 and 1/1. A settlement that never had a field is judged on the ground,
+   as the design says, so a farming people on unfarmable ground still lapses; the check
+   counts those too. Whether the check or the design is wrong is for the morning.
+4. `test_resources 7 360 lapse`, heat pass, branch: y300 229.6, y310 183.6, y325 114.8,
+   y350 0.0, y360 0.0. On `nightly`: cold 143.2, 114.6, 70.4, 0.0, 0.0; heat 54.0, 43.2,
+   27.0, 0.0, 0.0.
+5. `test_savefile 7 3`: 70174 fields, 0 mismatches, branch and `nightly`. A v24 save
+   (seed 3, year 700) loads on the branch with 460 flagged as having had fields; on
+   `nightly` both pre-order saves load in the game.
+6. Farming settlements / tilled km2 / lapses at year 700, pre-order -> order: seed 7
+   cold 163/3097/0 -> 87/1529/0, heat 207/3884/0 -> 250/9220/0; seed 3 cold 81/1669/0 ->
+   95/2179/0, heat 334/8679/2 -> 287/6429/0. Outside the 15% band in 3 of 4. With the old
+   code, changing only the technology random seed moves the same figure 3-12x; the
+   developer ruled the guard noise.
+
+Files beyond the list: `src/test_savefile.cpp`.
+
+Unsure of: untended blocks revert side by side, each over 50 years from when its last
+hand left, not one after another. The Evidence's "522 lapses" came from `lostT`, which
+also moves while neighbours practise; the probe now counts real lapses, which are rare.
+A settlement that relocates starts with `hadFields` false. For the game: a lapsed
+village's plots thinning over about 50 years; loading an old save.
+
+Review note for the night: [[Dev Log/Nightly/2026-09-28]].

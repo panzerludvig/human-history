@@ -2,8 +2,8 @@
 // everything derived from them in dependency order -- rotation and offset,
 // plates, sea level, hydrology, climate, the rain-fed rivers, settlements.
 // Technical/Globe Viewer.md §Menus and worlds says what a world is;
-// §Generation feedback says how the build reports its stages, which is the
-// progress callback here.
+// §Generation feedback says how the build reports its stages and is stopped,
+// which is the progress::Context (src/progress.h) passed to build here.
 //
 // The build is the same for the game and the probes (standards/general.md
 // §Verification: same seed, same world), so nothing in this header knows
@@ -28,6 +28,7 @@
 #include "population.h"
 #include "technology.h"
 #include "atmosphere.h"
+#include "progress.h"
 
 namespace world {
 
@@ -40,11 +41,6 @@ inline std::string exeDir() {
     return s.substr(0, s.find_last_of("\\/"));
 }
 
-// Generation-stage feedback: the game puts it on the menu status line, a
-// probe on stderr. Called with "" when the build is done. A probe that wants
-// no feedback passes nullptr.
-using ProgressFn = void (*)(const char* stage);
-
 // The stages of a build, in dependency order. The game builds through the
 // last; a probe stops at the stage it measures (standards/general.md
 // §Verification: the probes build the same world the game does, so the
@@ -54,11 +50,6 @@ enum class Stage { Plates, SeaLevel, Hydrology, Climate, Rivers, Settlements };
 // Drainage area above which a cell is a river, both when the rivers are
 // first traced and when the painted rain reweights them.
 constexpr float RIVER_THRESHOLD_KM2 = 12000.0f;
-
-// atmosphere::build takes a plain function pointer for its year-by-year
-// progress, so the caller's ProgressFn reaches it through this. Set for the
-// duration of World::build and nowhere else.
-inline ProgressFn activeProgress = nullptr;
 
 // A world is a seed plus where the camera was left. The seed rotates and
 // offsets the terrain noise so every seed is a different globe.
@@ -105,47 +96,45 @@ struct World {
 
     // Everything derived from the seed, in dependency order:
     // plates -> sea level (land %) -> hydrology -> climate -> settlements,
-    // or as far as upTo says.
-    void build(ProgressFn progress, Stage upTo = Stage::Settlements) {
+    // or as far as upTo says. Reports through ctx and stops between stages,
+    // and inside the climate run, once ctx is cancelled. True when the build
+    // got as far as upTo; false when it was cancelled, and the world is then
+    // half-built and only fit to be thrown away.
+    bool build(const progress::Context& ctx, Stage upTo = Stage::Settlements) {
         derive();
-        activeProgress = progress;
-        buildStages(progress, upTo);
-        if (progress) progress("");
-        activeProgress = nullptr;
+        if (!buildStages(ctx, upTo)) return false;
+        ctx.say("");
+        return true;
     }
 
     // The stages themselves; build wraps them with the progress bookkeeping.
-    void buildStages(ProgressFn progress, Stage upTo) {
-        auto say = [progress](const char* stage) {
-            if (progress) progress(stage);
-        };
+    // False when ctx was cancelled before upTo was reached.
+    bool buildStages(const progress::Context& ctx, Stage upTo) {
         terrain::V3 off = terrainOffset();
         terrain::TEMPLATE.active = earth;
         if (earth && terrain::TEMPLATE.elev.empty() &&
             !terrain::loadTemplate(exeDir() + "\\data\\earth.bin")) {
-            say("data\\earth.bin is missing: generating a random world instead");
+            ctx.say("data\\earth.bin is missing: generating a random world instead");
             earth = false;
             terrain::TEMPLATE.active = false;
         }
-        say("Shaping tectonic plates...");
+        if (ctx.cancelled()) return false;
+        ctx.say("Shaping tectonic plates...");
         plateField = plates::build(seed);
-        if (upTo == Stage::Plates) return;
-        say("Setting the sea level...");
+        if (upTo == Stage::Plates) return true;
+        if (ctx.cancelled()) return false;
+        ctx.say("Setting the sea level...");
         seaLevel = terrain::seaLevelFor(landPercent / 100.0f, cp, rot, off, plateField);
-        if (upTo == Stage::SeaLevel) return;
-        say("Tracing rivers and lakes...");
+        if (upTo == Stage::SeaLevel) return true;
+        if (ctx.cancelled()) return false;
+        ctx.say("Tracing rivers and lakes...");
         hydro = hydrology::build(cp, seaLevel, rot, off, RIVER_THRESHOLD_KM2, plateField);
-        if (upTo == Stage::Hydrology) return;
-        clim = atmosphere::build(cp, seaLevel, rot, off, plateField, hydro, false,
-                                 [](int day, int total) {
-                                     if (!activeProgress) return;
-                                     char b[80];
-                                     snprintf(b, sizeof b, "Simulating climate... year %d of %d",
-                                              day / 365 + 1, (total + 364) / 365);
-                                     activeProgress(b);
-                                 });
-        if (upTo == Stage::Climate) return;
-        say("Watering rivers from the rain...");
+        if (upTo == Stage::Hydrology) return true;
+        if (ctx.cancelled()) return false;
+        clim = atmosphere::build(cp, seaLevel, rot, off, plateField, hydro, false, ctx);
+        if (ctx.cancelled()) return false; // the climatology is partial
+        if (upTo == Stage::Climate) return true;
+        ctx.say("Watering rivers from the rain...");
         {
             std::vector<float> annual(atmosphere::W * atmosphere::H, 0.0f);
             std::vector<float> annualT(atmosphere::W * atmosphere::H, 0.0f);
@@ -159,10 +148,12 @@ struct World {
             hydrology::reweight(hydro, annual, annualT, atmosphere::W, atmosphere::H,
                                 RIVER_THRESHOLD_KM2);
         }
-        if (upTo == Stage::Rivers) return;
-        say("Placing settlements...");
+        if (upTo == Stage::Rivers) return true;
+        if (ctx.cancelled()) return false;
+        ctx.say("Placing settlements...");
         pop = population::build(cp, seaLevel, rot, off, plateField, hydro, &clim);
         technology::init(pop, tech, seed, simTime);
+        return true;
     }
 };
 

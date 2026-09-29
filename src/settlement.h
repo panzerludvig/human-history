@@ -111,7 +111,12 @@ constexpr float R_DEPLETE_YEARS = 22.0f; // land depletion at P = K
 // The yield table is measured *sustained* density, so the pristine ceiling
 // stored in K is table / R*; displayed capacity is K * R*.
 constexpr float SUSTAIN_R = 0.5486f;
-constexpr float MIN_SETTLEMENT_K = 150.0f;
+// The least capacity an opening site must have. A starting condition, like
+// the count below, and only that: once the world runs, a place is worth
+// settling if it can hold the people who would settle it, whatever their
+// number (sim::bestProspect, sim::stepBand). How the world opens is
+// work order 21's to decide.
+constexpr float START_SITE_MIN_K = 150.0f;
 // How many groups the world opens with. This is a starting condition, not
 // a ceiling: founding and migration afterwards are limited by geography
 // alone -- there is no cap on how many settlements or bands may exist, since
@@ -200,7 +205,7 @@ constexpr float BOW_BIG_GAIN = 0.25f;      // bows vs the herd animals
 constexpr float BOW_PER_HUNTER = 0.2f;     // one bow per hunter; a fifth hunt
 // A bow is craft work, not construction: one person per bow, so a crowd
 // makes more bows at once but never a single bow faster.
-constexpr float BOW_LABOUR_SHARE = 0.05f; // people who can be spared to carve
+constexpr float BOW_LABOUR_SHARE = 0.05f; // ceiling on the surplus: people at most carving
 constexpr float BOW_WORK_DAYS = 90.0f;    // one bowyer, at full skill
 constexpr float BOW_LIFE_DAYS = 3650.0f;  // bows wear out and are replaced
 constexpr double GAME_TICK_DAYS = 90.0;   // pool update cadence (a slow layer)
@@ -237,6 +242,41 @@ inline float bandAwareKm(double restDays, float promM) {
     float r =
         AWARE_BASE_KM + AWARE_REST_KM * (1.0f - (float)std::exp(-restDays / AWARE_REST_TAU_DAYS));
     return std::min(r + vantageKm(promM), AWARE_CAP_KM);
+}
+
+// Prominence: how far the site rises above its regional (climate-grid) mean
+// elevation. The vantage input to awareness.
+inline float prominenceM(const hydrology::Result& hy, const atmosphere::Climatology& clim,
+                         int cell) {
+    if (clim.elev.empty()) return 0.0f;
+    float h = std::max(hy.heightM[cell], 0.0f);
+    int x = cell % W, y = cell / W;
+    int ax = x * atmosphere::W / W, ay = y * atmosphere::H / H;
+    return h - clim.elev[ay * atmosphere::W + ax];
+}
+
+// The farthest a settlement on this site will ever know: its awareness
+// once it has stood forever.
+inline float awareReachKm(float promM) { return settlementAwareKm(1e30, promM); }
+
+// How many days after founding a settlement on this site first knows ground
+// `km` away: 0 if it does from the start, 1e18 if it never will. Found by
+// bisection on settlementAwareKm itself, so the answer follows that function
+// whatever its form, as long as awareness only grows with age.
+inline double awareAgeDaysFor(float km, float promM) {
+    if (km <= settlementAwareKm(0.0, promM)) return 0.0;
+    if (km > awareReachKm(promM)) return 1e18;
+    double hi = AWARE_TAU_DAYS;
+    for (int k = 0; settlementAwareKm(hi, promM) < km; k++) {
+        if (k == 60) return 1e18; // the asymptote: never quite reached
+        hi *= 2.0;
+    }
+    double lo = 0.0;
+    for (int k = 0; k < 60; k++) {
+        double mid = 0.5 * (lo + hi);
+        (settlementAwareKm(mid, promM) >= km ? hi : lo) = mid;
+    }
+    return hi; // awareness at hi is at least km
 }
 // Relocation (Design/Migration.md): moving as a whole is the DEFAULT answer
 // to a failing place -- people are kin and stay together -- and fission is
@@ -294,7 +334,7 @@ constexpr float HERD_PASTURE_K = 2.0f;      // people/km2 on pure pasture at ful
 // pace, local wood and stone set the gathering, and only fed people build.
 constexpr float GRANARY_STORE = 10000.0f;     // rations one granary banks
 constexpr float GRANARY_WORK = 1000.0f;       // man-days per granary, constant
-constexpr float GRANARY_LABOUR_SHARE = 0.02f; // share of people on the build
+constexpr float GRANARY_LABOUR_SHARE = 0.02f; // ceiling on the surplus, as a share of people
 constexpr float GRANARY_HI = 0.95f;           // "we filled what we have"
 constexpr float GRANARY_LO = 0.35f;           // "...and winter nearly drained it"
 
@@ -326,7 +366,7 @@ inline float farmCommute(float km) {
 // claim runs into hills gets farmsteads only where the grass is.
 constexpr float FSTEAD_KM2 = 12.0f;   // worked claim-km2 one farmstead re-enables
 constexpr float FSTEAD_WORK = 500.0f; // man-days: houses, byres, clearing
-constexpr float FSTEAD_LABOUR_SHARE = 0.02f;
+constexpr float FSTEAD_LABOUR_SHARE = 0.02f; // ceiling on the surplus, as a share of people
 constexpr int FSTEAD_MAX = 20;               // slots on the spiral; claims cap sooner
 constexpr float RELOC_ANCHOR_FSTEAD = 0.15f; // sunk investment, like granaries
 // Where slot k stands: a golden-angle spiral walking outward from the
@@ -360,7 +400,17 @@ constexpr float FARM_KM2_PER_PERSON = 0.08f;
 // generation's work.
 constexpr float PLOT_KM2 = 0.5f;
 constexpr float TILL_WORK_PER_KM2 = 2000.0f;
-constexpr float TILL_LABOUR_SHARE = 0.02f;
+constexpr float TILL_LABOUR_SHARE = 0.02f; // ceiling on the surplus, as a share of people
+// Fields go back to the wild (Design/Technology.md, decided 2026-09-28):
+// land nobody tends reverts at no labour cost, steadily, so a block is gone
+// this long after the last hand left it. Stands in for the regrowth of scrub
+// and wood over an abandoned clearing, which is not modelled (there is no
+// wood stock yet); it is the clock that stock will run on when it exists.
+constexpr double FIELD_REVERT_YEARS = 50.0;
+// Hands tend the fields nearest the village first, so what reverts is the
+// outermost land. That order is the slot order only because the spiral
+// puts each farmstead farther out than the last.
+static_assert(FSTEAD_DR_KM > 0.0f, "farmstead slots must stand in order of distance");
 
 // Heat (Design/Resources.md): the second need, the first that is not
 // calories. The demand is warmth -- cooking fires always, hearths against
@@ -609,6 +659,9 @@ struct Settlement {
     double hungrySince = -1; // sim day sustained hunger began, -1 if fed --
                              // never reset by splitting (need-driven invention)
     double founded = 0;      // sim day the settlement was founded (awareness age)
+    float promM = 0;         // the site's rise above its region (awareness vantage), m
+    double nextContact = 1e18; // sim day its awareness reaches the nearest settlement
+                               // not yet in contact (Field::unmet; derived, not saved)
     // Fixed local properties (from the terrain at the cell):
     float kFoodP = 0;                    // pristine food capacity (already / SUSTAIN_R)
     float kGame = 0;                     // the big-game part of kFoodP (regional pool)
@@ -652,6 +705,7 @@ struct Settlement {
     float fuelS = 0;   // the woodpile, kg of wood-equivalent (dung dries into it too)
     float coldYr = 0;  // people the cold took in the trailing year (subset of starvedYr)
     float labFuel = 0; // share of the labour budget on fuel, last integrated day (readout)
+    float labProj = 0; // share on the projects (builds and bows), the same day (readout)
     // Farming's reach, and the farmsteads that extend it:
     float farmsteads = 0;     // standing farmsteads (drawn on the map, slot order)
     float fsteadWork = 0;     // man-days left on the farmstead going up, 0 = none
@@ -661,6 +715,11 @@ struct Settlement {
     float farmK = 0;                   // people the standing fields feed at full expertise
                                        // (sim::updateFarmland caches it from tilled and the
                                        // suitability where each site stands)
+    // km2/day each site's untended land is reverting at, fixed when its last
+    // hand left (FIELD_REVERT_YEARS); 0 while every km2 there is worked.
+    float wildPace[1 + FSTEAD_MAX] = {};
+    bool hadFields = false;            // ever held tilled land: farming's means are
+                                       // then the fields, not the ground (meansPresent)
     float tillWork = 0;                // man-days left on the plot being cleared, 0 = none
     int8_t tillSite = -1;              // where that plot is: 0 the village, 1+k farmstead k
     int8_t tillSiteNext = -1;          // where the next order would go, -1 = no room
@@ -713,7 +772,15 @@ struct Field {
     std::vector<float> K;          // carrying capacity per cell (people), 0 on water
     std::vector<int> settlementAt; // settlement index per cell, -1 none
     std::vector<Settlement> settlements;
-    std::vector<std::vector<int>> neighbours; // settlements within contact range
+    std::vector<std::vector<int>> neighbours; // settlements in contact (see contactNow)
+    // Per settlement, the ones its awareness will reach as it ages but has
+    // not yet, nearest first. Contact only grows, so the front of the list
+    // is the next one it will meet (Settlement::nextContact).
+    struct Unmet {
+        float km;
+        int idx;
+    };
+    std::vector<std::vector<Unmet>> unmet;
     std::vector<Band> bands;
     uint32_t nextBandId = 1;
     uint32_t nextSettlementId = 1;
@@ -776,32 +843,102 @@ inline int indexById(const Field& f, uint32_t id) {
     return -1;
 }
 
-constexpr float CONTACT_KM = 160.0f; // twice the minimum settlement spacing
-
 // The regional game pool a population cell belongs to (climate-grid index).
 inline int gameRegion(int cell) {
     int x = cell % W, y = cell / W;
     return (y * atmosphere::H / H) * atmosphere::W + x * atmosphere::W / W;
 }
 
-inline void computeNeighbours(Field& f) {
-    auto cellN = [](int cell) {
-        hydrology::V3orig d = hydrology::cellDir(cell % W, cell / W);
-        return terrain::V3{d.x, d.y, d.z};
-    };
+// ------------------------------------------------------------- contact
+//
+// Contact is awareness (Design/Technology.md, Spread; Design/Conflict.md):
+// two settlements are in contact when either lies within the other's
+// awareness range. Awareness grows as a settlement ages, so contact only
+// ever grows -- a new colony knows its near neighbours, an old town knows a
+// region -- and every pair's first day of contact can be known in advance.
+// Contact carries awareness and practice (technology.h), decides who counts
+// as a fellow practitioner when a skill is at risk, and is whom a hungry
+// people can raid. The network changes here and in technology::widenContact
+// and technology::joinContact, which redraw the clocks it drives.
+
+// Great-circle distance between two cells' centres, km. The chord form, as
+// sim::distKm uses: exact down to zero, where acos is not.
+inline float cellDistKm(int a, int b) {
+    hydrology::V3orig p = hydrology::cellDir(a % W, a / W), q = hydrology::cellDir(b % W, b / W);
+    float dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z;
+    float half = std::sqrt(dx * dx + dy * dy + dz * dz) * 0.5f;
+    return 2.0f * std::asin(std::clamp(half, 0.0f, 1.0f)) * 6371.0f;
+}
+
+inline float awareKmOf(const Settlement& s, double now) {
+    return settlementAwareKm(now - s.founded, s.promM);
+}
+
+// The sim day settlement `s` first knows ground `km` away; 1e18 if never.
+inline double contactDayFor(const Settlement& s, float km) {
+    double age = awareAgeDaysFor(km, s.promM);
+    return age >= 1e17 ? 1e18 : s.founded + age;
+}
+
+inline void link(Field& f, int i, int j) {
+    f.neighbours[i].push_back(j);
+    f.neighbours[j].push_back(i);
+}
+
+// Take j off i's unmet list. True if j was the nearest, so that i's next
+// contact day has moved.
+inline bool dropUnmet(Field& f, int i, int j) {
+    std::vector<Field::Unmet>& u = f.unmet[i];
+    for (size_t k = 0; k < u.size(); k++)
+        if (u[k].idx == j) {
+            u.erase(u.begin() + k);
+            return k == 0;
+        }
+    return false;
+}
+
+// Put j on i's unmet list, nearest first. True if it is now the nearest.
+inline bool addUnmet(Field& f, int i, int j, float km) {
+    std::vector<Field::Unmet>& u = f.unmet[i];
+    auto at = std::upper_bound(u.begin(), u.end(), km,
+                               [](float d, const Field::Unmet& e) { return d < e.km; });
+    bool front = at == u.begin();
+    u.insert(at, {km, j});
+    return front;
+}
+
+inline void scheduleContact(Field& f, int i) {
+    Settlement& s = f.settlements[i];
+    s.nextContact =
+        s.leaving || f.unmet[i].empty() ? 1e18 : contactDayFor(s, f.unmet[i].front().km);
+}
+
+// The whole network as it stands at `now`, and every pair still to meet:
+// at world creation and on load. In play it changes one event at a time.
+inline void computeNeighbours(Field& f, double now) {
     int n = (int)f.settlements.size();
     f.neighbours.assign(n, {});
+    f.unmet.assign(n, {});
+    std::vector<float> aware(n), reach(n);
+    for (int i = 0; i < n; i++) {
+        aware[i] = awareKmOf(f.settlements[i], now);
+        reach[i] = awareReachKm(f.settlements[i].promM);
+    }
     for (int i = 0; i < n; i++)
         for (int j = i + 1; j < n; j++) {
-            float d = std::acos(std::clamp(
-                          terrain::dot(cellN(f.settlements[i].cell), cellN(f.settlements[j].cell)),
-                          -1.0f, 1.0f)) *
-                      6371.0f;
-            if (d <= CONTACT_KM) {
-                f.neighbours[i].push_back(j);
-                f.neighbours[j].push_back(i);
+            float d = cellDistKm(f.settlements[i].cell, f.settlements[j].cell);
+            if (d <= aware[i] || d <= aware[j]) {
+                link(f, i, j);
+                continue;
             }
+            if (d <= reach[i]) f.unmet[i].push_back({d, j});
+            if (d <= reach[j]) f.unmet[j].push_back({d, i});
         }
+    for (int i = 0; i < n; i++) {
+        std::sort(f.unmet[i].begin(), f.unmet[i].end(),
+                  [](const Field::Unmet& a, const Field::Unmet& b) { return a.km < b.km; });
+        scheduleContact(f, i);
+    }
 }
 
 // ------------------------------------------------------------- fishing
@@ -870,10 +1007,9 @@ inline float smallGameEff(float coverage, float archExp) {
 
 // The season-interpolated site temperature from the cached profile.
 inline float cachedSeasonT(const Settlement& s, double t) {
-    double sf = std::fmod(t, 365.0) / 365.0 * 4.0 - 0.5;
-    int s0 = ((int)std::floor(sf) % 4 + 4) % 4, s1 = (s0 + 1) % 4;
-    float f = (float)(sf - std::floor(sf));
-    return s.tSeason[s0] * (1 - f) + s.tSeason[s1] * f;
+    const atmosphere::SeasonBlend sb = atmosphere::seasonBlendAt(t);
+    float f = (float)sb.f;
+    return s.tSeason[sb.s0] * (1 - f) + s.tSeason[sb.s1] * f;
 }
 
 // A settlement at the moment it comes to be: its site, its people, the

@@ -1,7 +1,11 @@
 // CPU mirror of the terrain functions in shaders/globe.frag.
 // Same hash, same noise, same constants, float arithmetic — so heights
 // computed here match what the GPU draws (up to the octave count). Keep the
-// two in sync: any change to a constant here must be made in the shader too.
+// two in sync: this side is the source of truth, and every function below
+// that the shader copies names its twin there. HEIGHT_SCALE_M, CRUST_WEIGHT,
+// LAND_RELIEF, RANGE_GAIN, NSUB and NCOV reach the shader from here, through
+// the constants main.cpp puts in front of it; the rest of the numbers are
+// written on both sides and change together.
 #pragma once
 #include <cmath>
 #include <cstdint>
@@ -73,6 +77,7 @@ inline V3 gradient(int ix, int iy, int iz) {
     return g * (1.0f / l);
 }
 
+// 3D gradient noise, roughly in [-1, 1]. Mirrored in globe.frag noise.
 inline float noise(V3 p) {
     int ix = (int)std::floor(p.x), iy = (int)std::floor(p.y), iz = (int)std::floor(p.z);
     V3 f = {p.x - ix, p.y - iy, p.z - iz};
@@ -87,6 +92,7 @@ inline float noise(V3 p) {
                mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z) * 1.6f;
 }
 
+// Fractal sum of noise octaves. Mirrored in globe.frag fbm.
 inline float fbm(V3 p, int octaves, float gain) {
     float sum = 0, amp = 1, norm = 0;
     for (int i = 0; i < octaves; i++) {
@@ -98,6 +104,7 @@ inline float fbm(V3 p, int octaves, float gain) {
     return sum / norm;
 }
 
+// Ridged multifractal for mountain ranges. Mirrored in globe.frag ridged.
 inline float ridged(V3 p, int octaves) {
     float sum = 0, amp = 0.5f, norm = 0;
     for (int i = 0; i < octaves; i++) {
@@ -125,6 +132,7 @@ inline V3 hash01(int ix, int iy, int iz) {
 // irregular: rock shoved against rock, with no uniform edge band.
 // Feature points sit in the middle half of their cell, so the 2x2x2 cells
 // around the point (found by rounding) hold every heap that can reach it.
+// Mirrored in globe.frag blocks.
 inline float blocks(V3 p) {
     int cx = (int)std::floor(p.x - 0.5f), cy = (int)std::floor(p.y - 0.5f), cz = (int)std::floor(p.z - 0.5f);
     V3 f = {p.x - cx, p.y - cy, p.z - cz};
@@ -154,6 +162,7 @@ inline float blocks(V3 p) {
 inline float fbm(V3 p, int octaves, float gain);
 
 // Blocks at a given frequency with a domain warp so edges are crooked.
+// Mirrored in globe.frag warpedBlocks.
 inline float warpedBlocks(V3 p, float freq, float seedOff) {
     V3 q = p * freq;
     V3 w = {fbm(q * 0.7f + seedOff, 2, 0.55f), fbm(q * 0.7f + seedOff + 7.0f, 2, 0.55f),
@@ -166,7 +175,8 @@ inline float smoothstep(float a, float b, float x) {
     return t * t * (3 - 2 * t);
 }
 
-// The raw continent field before the sea level is subtracted.
+// The raw continent field before the sea level is subtracted. Mirrored in
+// globe.frag continentField.
 inline float continentField(V3 p, const ContinentParams& cp) {
     V3 warp = {fbm(p * 1.3f + 11.0f, 3, 0.5f), fbm(p * 1.3f + 23.0f, 3, 0.5f), fbm(p * 1.3f + 37.0f, 3, 0.5f)};
     V3 q = p * cp.freq + warp * cp.warp;
@@ -250,6 +260,8 @@ inline bool loadTemplate(const std::string& path) {
     return ok;
 }
 inline float smoothstep(float a, float b, float x);
+// The Earth template's height: its metres with the same detail, hills and
+// peaks laid on top. Mirrored in globe.frag templateHeight.
 inline float templateHeight(V3 p, V3 n, int octaves) {
     float e = TEMPLATE.sample(n);
     float detail = fbm(p * 9.0f + 5.0f, std::max(octaves - 3, 1), 0.5f);
@@ -267,7 +279,8 @@ inline float templateHeight(V3 p, V3 n, int octaves) {
 // Height in metres above sea level. `p` is the point in noise space, `n` the
 // unit surface normal in world space (the plate layer is indexed by it).
 // `octaves` is the shader's level-of-detail value; the hydrology grid uses
-// a fixed count matched to its cell size.
+// a fixed count matched to its cell size. Mirrored in globe.frag
+// terrainHeight, which takes the Ground where this takes p and n.
 inline float heightMeters(V3 p, V3 n, const ContinentParams& cp, float seaLevel, int octaves,
                           const plates::Field& pf, const float rot[9]) {
     if (TEMPLATE.active) return templateHeight(p, n, octaves);
@@ -352,7 +365,7 @@ inline float moistureAt(V3 w, float lat) {
 }
 
 // Every point is a mixture: substrate fractions and cover fractions, each
-// summing to 1. Mirrors the shader (globe.frag) — keep in sync.
+// summing to 1. NSUB and NCOV reach the shader from here (main.cpp).
 constexpr int NSUB = 7;   // soil, sand, rock, scree, silt, mud, ice
 constexpr int NCOV = 11;  // bare, tundra, taiga, forest, rainforest, grass, steppe, savanna, shrub, marsh, desert
 enum Substrate { SUB_SOIL = 0, SUB_SAND, SUB_ROCK, SUB_SCREE, SUB_SILT, SUB_MUD, SUB_ICE };
@@ -374,12 +387,14 @@ inline float patchNoise(V3 w) { return fbm(w * 90.0f + 7.0f, 3, 0.5f) * 0.5f + 0
 // `swamp` (0..1) is the climate's waterlogging: it pulls flat ground toward
 // mud, and marsh cover follows mud. 0 keeps the pre-climate behaviour.
 // Fine within-region moisture variation, added to the coarse climate-derived
-// moisture so vegetation keeps sub-cell texture. Mirrored in the shader.
+// moisture so vegetation keeps sub-cell texture. Mirrored in globe.frag by
+// the detail term of derivedMoist.
 inline float moistureDetail(V3 w) { return 0.12f * fbm(w * 5.0f + 31.0f, 3, 0.5f); }
 
 // `tCold` is the coldest-season temperature (rainforest needs warmth all
 // year) and `tWarm` the warmest; the sentinel defaults derive both crudely
 // from the annual mean, for callers with no seasonal climate to hand.
+// Mirrored in globe.frag substrateMix and coverMix.
 inline Mixture mixtureAt(float h, float slope, float temp, float moist, float uplift, bool nearRiver, float patch,
                          float swamp = 0.0f, float tCold = -999.0f, float tWarm = -999.0f) {
     if (tCold < -900.0f) tCold = temp - 4.0f;

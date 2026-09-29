@@ -1,9 +1,9 @@
 // The event loop (Design/Event-Driven.md): every due event in strict
 // chronological order, since each can change the rates of the others --
-// settlement wakes, contact draws, the invention clocks, band steps, the
-// game-pool tick -- then a catch-up that brings the whole world current to
-// the displayed moment. The rules each event applies live in the headers
-// included below; this file only decides what runs when.
+// settlement wakes, contact draws, the contact network growing, the
+// invention clocks, band steps, the game-pool tick -- then a catch-up that
+// brings the whole world current to the displayed moment. The rules each event applies live in the
+// headers included below; this file only decides what runs when.
 #pragma once
 #include "technology.h"
 #include "events.h"
@@ -94,10 +94,15 @@ inline void sweepDeparted(population::Field& pf, double now) {
         if (pf.settlementAt[cell] == i) pf.settlementAt[cell] = nu[i]; // -1 frees the site
     }
     std::vector<std::vector<int>> nb(k);
+    std::vector<std::vector<population::Field::Unmet>> um(k);
+    std::vector<char> lostNearest(k, 0);
     for (int i = 0; i < n; i++) {
         if (nu[i] < 0) continue;
         for (int j : pf.neighbours[i])
             if (nu[j] >= 0) nb[nu[i]].push_back(nu[j]);
+        for (const population::Field::Unmet& u : pf.unmet[i])
+            if (nu[u.idx] >= 0) um[nu[i]].push_back({u.km, nu[u.idx]});
+        lostNearest[nu[i]] = !pf.unmet[i].empty() && nu[pf.unmet[i].front().idx] < 0;
     }
     std::vector<population::Settlement> keep;
     keep.reserve(k);
@@ -105,6 +110,11 @@ inline void sweepDeparted(population::Field& pf, double now) {
         if (nu[i] >= 0) keep.push_back(pf.settlements[i]);
     pf.settlements.swap(keep);
     pf.neighbours.swap(nb);
+    pf.unmet.swap(um);
+    // Whoever had one of the departed nearest on their unmet list now meets
+    // the next nearest instead, on its own day.
+    for (int i = 0; i < k; i++)
+        if (lostNearest[i]) population::scheduleContact(pf, i);
 }
 
 // What the queue holds. Each entry is (time, kind, id); a pop is validated
@@ -113,6 +123,7 @@ enum class Due {
     InventionClock, // the world clock of one technology (tech)
     SettlementWake, // a settlement's scheduled re-evaluation (idx)
     ContactDraw,    // a settlement's contact draw for one technology (idx, tech)
+    ContactGrows,   // a settlement's awareness reaches someone new (idx)
     BandStep,       // a band's next step (idx = band id, stable across erases)
     GameTick        // the regional game pools' fixed-cadence update
 };
@@ -143,6 +154,9 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
         void clockEvent(int tech, double when) override {
             if (when < 1e17) q->push({when, Due::InventionClock, 0, tech});
         }
+        void contactEvent(int idx, double when) override {
+            if (when < 1e17) q->push({when, Due::ContactGrows, idx, 0});
+        }
     } sink;
     sink.q = &q;
     ws.sink = &sink;
@@ -152,6 +166,7 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
         if (s.nextUpdate < 1e17) q.push({s.nextUpdate, Due::SettlementWake, i, 0});
         for (int t = 0; t < population::NTECH; t++)
             if (s.nextTech[t] < 1e17) q.push({s.nextTech[t], Due::ContactDraw, i, t});
+        if (s.nextContact < 1e17) q.push({s.nextContact, Due::ContactGrows, i, 0});
     };
     auto pushBand = [&](const population::Band& b) {
         q.push({b.nextUpdate, Due::BandStep, (int)b.id, 0});
@@ -236,6 +251,11 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
             }
             technology::scheduleInvention(pf, ws, ev.tech, t);
             changed = true;
+            break;
+        }
+        case Due::ContactGrows: {
+            if (t != pf.settlements[ev.idx].nextContact) continue; // stale
+            technology::widenContact(pf, ev.idx, ws, t);
             break;
         }
         case Due::GameTick: {

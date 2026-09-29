@@ -19,7 +19,8 @@ inline terrain::V3 sectorDir(const terrain::V3& c, int k) {
     return norm3(east * std::cos(a) + north * std::sin(a));
 }
 
-// How far settlement `s` reaches towards the point `q`.
+// How far settlement `s` reaches towards the point `q`. Mirrored in
+// globe.frag claimReach.
 inline float claimReach(const population::Settlement& s, const terrain::V3& q) {
     terrain::V3 c = cellCentre(s.cell);
     terrain::V3 east = norm3({-c.y, c.x, 0.0f});

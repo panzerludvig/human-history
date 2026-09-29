@@ -1,6 +1,6 @@
 # 06 — Close the CPU/GPU drifts and mark every mirror
 
-**Status:** planned (2026-09-28)
+**Status:** taken by the night of 2026-09-28; passed, merged into `nightly/2026-09-28` as `a0d7ceb`
 
 Line references checked against 5087977 on 2026-09-28.
 
@@ -147,3 +147,51 @@ A guide, not a limit:
 Nothing. The CPU/GPU sampling probe that would machine-check the tooltip against the
 picture is order 15, shaped separately; until it exists, the tooltip's agreement with the
 picture is checked in the game in the morning.
+
+## Run
+
+**Outcome:** passed. Branch `wo/06-cpu-gpu-drift`, one commit `1a86c3e` (globe.frag and
+inspect.h mix every concern, so the change was not split). Merged into `nightly` as
+`a0d7ceb`, first of the night.
+
+What it did: `hydrology::lakeLevelAt`, the CPU copy of the shader's 2x2 smoothstep
+average, and `hydrology::LAKE_SHORE_RISE_M` for the 12 m both sides wrote by hand; the
+tooltip uses them. `sim::FROZEN_T` is -4 C and `sim::ICE_FORMING_T` -1 C; the shader's
+`iceAt` ramps between them and the tooltip says "(frozen)" / "(thin ice)" by them.
+`atmosphere::DIURNAL_PEAK_HOUR` (15) and `diurnalPhase()` serve `Prescribed::surfaceT`
+and the tooltip; `atmosphere::seasonBlendAt` is the one season interpolation.
+`globeConstants()` in `main.cpp` emits the shared constants as GLSL, and
+`gl::buildProgram` inserts them after `#version`, then `#line 2`, so shader errors keep
+their file line numbers. `temperatureC` and `moistureAt` are gone from the shader.
+
+Done when:
+
+1. `build.bat` and all nine `build_*.bat` exit 0; only C4996 warnings, the baseline's set.
+2. The first grep prints nothing. The second prints `src/terrain.h:357` `inline float
+   temperatureC(...)` and `:361` `inline float moistureAt(...)`: the CPU originals the
+   order's Evidence says stay, which the pattern also matches. Nothing in the shader, no
+   `granaryNear` anywhere. The grep should be limited to `shaders/globe.frag`.
+3. Screenshots byte-identical before and after, and again on `nightly` (md5):
+   `46.318 -174.111 4 7 30 60 0 0` c9d5b918, `46.318 -174.111 400 7 30 60 0 0` a42e7c2a,
+   `20 30 12000 7 30 60 0 0` 54b19e8c, `46.5 10 4 earth 30 60 0 0.0012937` 3527a14b,
+   `46.5 10 400 earth 30 60 0 0.0012937` 4febac38.
+4. `sweep.exe 7 0 rules 1` byte-identical; `test_resources.exe 3 40` byte-identical;
+   `7 40` identical through day 4015, where a band now perishes on ice it used to cross
+   (`> band: perished 0 at lat 62.82 lon -69.87, 10 people, day 4025` against
+   `< band: founded settlement 401 at lat 61.61 lon -70.93, 34 people, day 4035`); after
+   that only `band:` lines and the summary differ: settlements 402/405 -> 401/405, people
+   151047/149800 -> 150435/150168.
+5. A comment naming the twin at both sites for every row of the table, checked by
+   script; beyond the table, `sim::fieldInnerKm`/`fieldsNear`, `sim::hutCount`/`hutsNear`
+   and `terrain::moistureDetail`/`derivedMoist` are marked too.
+
+On `nightly`: probe outputs and all five screenshots identical to the branch's.
+
+Unsure of: the tooltip against the globe (lake, thin ice, 15:00 peak) is for the game
+until order 15. `ICE_FORMING_T` and `FROZEN_T` carry no unit in the name. Values still
+written by hand on both sides, not in this order's list: `FSTEAD_R0_KM`/`FSTEAD_DR_KM` as
+`2.5 + 1.1*k`, `FSTEAD_MAX`, the granary radii, the lapse rate and the Earth's radius
+(the last two are order 09's). The "Thrust blocks" comments above `blocks` on both sides
+describe the old model.
+
+Review note for the night: [[Dev Log/Nightly/2026-09-28]].

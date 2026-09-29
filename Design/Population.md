@@ -19,7 +19,7 @@ Before farming, food binds almost everywhere and water is slack — historically
 
 ## Settlements
 
-Sparse actors at local maxima of K (at least 80 km apart, K ≥ 800). Each has:
+Sparse actors. The world opens with them at local maxima of K, at least 80 km apart and able to hold 150 people -- a starting condition, not a rule of the model; after that a place is settled when it can hold the people who would settle it, whatever their number ([[Design/Migration]]). Each has:
 
 - **P** — people. Not individuals; a count.
 - **R** — condition of the surrounding land, 0–1. Effective food supply = K·R.
@@ -54,7 +54,7 @@ Deferred: children eating less than adults (the yield table is calibrated in who
 
 ## Time
 
-No ticks. Each settlement integrates its own P and R forward at scheduled re-evaluations, choosing the next moment as "when will my state have drifted ~5%" (clamped 1 month–5 years). A settlement at equilibrium wakes rarely; one in collapse wakes often. This is the first real client of [[Design/Event-Driven]].
+No ticks. Each settlement integrates its own P and R forward at scheduled re-evaluations, choosing the next moment as "when will my state have drifted ~5%" (clamped 1 month–5 years). A settlement at equilibrium wakes rarely; one in collapse wakes often. Between wakes the state is integrated in steps of at most five days (two for a band on the move); a long span takes more steps, never longer ones. This is the first real client of [[Design/Event-Driven]].
 
 ## Wild game: a shared, slow, mortal pool
 

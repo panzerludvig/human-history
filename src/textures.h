@@ -79,7 +79,8 @@ inline std::vector<float> popTexData(const population::Field& pf) {
 // Ten texels per settlement: its people, granaries, village field reach and
 // farmstead count; the sixteen sectors of its claim, four to a texel; then
 // each farmstead's own field radius, four to a texel. A settlement is
-// SITE_STRIDE texels along the row, so the shader indexes site*10 + k.
+// SITE_STRIDE texels along the row, so the shader indexes site*10 + k; it
+// receives SITE_STRIDE from here (main.cpp).
 constexpr int SITE_TEX_W = 256;
 constexpr int SITE_STRIDE = 10;
 inline std::vector<float> siteTexData(const population::Field& pf, int& rows) {

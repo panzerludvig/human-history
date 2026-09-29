@@ -23,7 +23,7 @@
 static int compared = 0;
 static int failures = 0;
 
-static void progress(const char* stage) {
+static void logStage(const char* stage) {
     if (stage[0]) fprintf(stderr, "build: %s\n", stage);
 }
 
@@ -99,6 +99,9 @@ static void compareSettlements(const population::Field& a, const population::Fie
         check("tillSite", k, s.tillSite, l.tillSite);
         for (int c = 0; c <= population::FSTEAD_MAX; c++)
             check("tilled", k * 100 + c, s.tilled[c], l.tilled[c]);
+        check("hadFields", k, s.hadFields, l.hadFields);
+        for (int c = 0; c <= population::FSTEAD_MAX; c++)
+            check("wildPace", k * 100 + c, s.wildPace[c], l.wildPace[c]);
         checkTech("tech", k, s.tech, l.tech);
     }
 }
@@ -178,7 +181,7 @@ int main(int argc, char** argv) {
     world::World w;
     w.seed = seed;
     w.name = "roundtrip-probe";
-    w.build(progress);
+    w.build(logStage);
     w.simTime += years * 365.0;
     sim::simulate(w.pop, w.tech, w.hydro, w.clim, w.simTime);
     camera::Camera c;
@@ -198,7 +201,7 @@ int main(int argc, char** argv) {
 
     world::World l;
     camera::Camera lc;
-    if (!savefile::load(w.name, l, lc, progress)) {
+    if (!savefile::load(w.name, l, lc, logStage)) {
         fprintf(stderr, "FAIL: load returned false\n");
         return 1;
     }

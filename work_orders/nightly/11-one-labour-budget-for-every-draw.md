@@ -1,6 +1,6 @@
 # 11 — Every labour draw comes out of the one budget
 
-**Status:** planned (2026-09-28)
+**Status:** taken by the night of 2026-09-28; passed, merged into `nightly/2026-09-28` as `44c98f6`
 
 Line references checked against 5087977 on 2026-09-28.
 
@@ -93,3 +93,39 @@ A guide, not a limit:
 ## Depends on
 
 Nothing.
+
+## Run
+
+**Outcome:** passed. Branch `wo/11-one-labour-budget-for-every-draw`, one commit
+`4314733`. Merged into `nightly` as `44c98f6`, after 06 and 07, cleanly.
+
+What it did: each sub-step keeps one ledger. `stepFoodLabour` opens it with the day's
+budget and food's claim (stepHeat's expressions, moved unchanged); `stepHeat` books the
+woodcutters from it; `allocateProjects`, after the annual judgement, scales every active
+project's ceiling (`*_LABOUR_SHARE` x people) by one fraction when the surplus falls
+short, and by zero at or below `HOARD_FILL`, so bows stop in famine too. `closeLedger`
+sets `Settlement::labProj` (a readout, not saved) and aborts if food + heat + projects
+exceed the budget. The panel shows "Builders and crafts: N% of the day's labour".
+
+Done when:
+
+1. `build.bat` and `build_testresources.bat` exit 0, C4996 only.
+2. Seeds 7 and 3, both passes, on the branch and again on `nightly`:
+   `ledger: max labour/budget 1.0000; over budget 0 settlement-days (0 sub-steps);
+   projects in famine 0 settlement-days (0 sub-steps)`.
+3. Year 700, settlements / people, pre-order -> order. On the branch, against `main`:
+   seed 7 cold 8123/1985115 -> 8368/1925248, heat 8207/1999743 -> 8699/2069321; seed 3
+   cold 8913/2071535 -> 9164/2032831, heat 9178/2169828 -> 9355/2220924 (at most 6%).
+   On `nightly`, against `nightly` before the merge: seed 7 cold 8831/2199489 ->
+   8477/1914923 (people -12.9%), heat 8370/2092920 -> 8578/2033436; seed 3 cold
+   9091/2136860 -> 9114/2000124, heat 9191/2133838 -> 9393/2151738. The seed 7 cold
+   figure misses the 10% band. Kept on the developer's decision that the guard measures
+   noise: order 06, which changes only ice, moved the same figure +10.8%. The checklist
+   no longer gates on world totals (`work_orders/README.md`, 2026-09-28).
+
+Unsure of: farming 2-5x larger in all four branch runs; a diagnostic with bows carving in
+famine as before brought the first invention back to the baseline's, so part is the famine
+rule and the rest likely divergence. The overdraw abort is live in the game.
+`stepBuilding` keeps its own famine check, now redundant. For the game: the panel line.
+
+Review note for the night: [[Dev Log/Nightly/2026-09-28]].
