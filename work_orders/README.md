@@ -103,6 +103,10 @@ night is in flight, and the game in its `build\` keeps running. Worktrees live u
 `.claude/worktrees/` (a dot folder, which Obsidian does not index), each with its own
 `build\`.
 
+The run is launched with `powershell -File tools\night.ps1`, never with `claude` directly.
+The launcher runs the whole process tree at BelowNormal priority, so the run uses every
+idle core and the developer's work still comes first. No step raises a process's priority.
+
 1. Fork `nightly/YYYY-MM-DD` from `main` into its own worktree,
    `.claude/worktrees/nightly-YYYY-MM-DD`; every step below that touches `nightly` (moving
    orders, merging, the second probes, the review note) is done there. Note the time: it
