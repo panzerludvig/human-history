@@ -342,6 +342,7 @@ inline bool load(const std::string& name, world::World& w, camera::Camera& c,
             }
             if (sv.hadFields >= 0) st.hadFields = sv.hadFields > 0.5;
             st.gRegion = population::gameRegion(cell);
+            st.promM = population::prominenceM(w.hydro, w.clim, cell);
             for (int t = 0; t < population::NTECH; t++) {
                 st.tech[t].aware = sv.tech[t][0] > 0.5;
                 st.tech[t].practising = sv.tech[t][1] > 0.5;
@@ -424,7 +425,7 @@ inline bool load(const std::string& name, world::World& w, camera::Camera& c,
             if (b.targetCell >= 0 && b.targetCell < population::W * population::H)
                 w.pop.bands.push_back(b);
         }
-        population::computeNeighbours(w.pop);
+        population::computeNeighbours(w.pop, savedTime); // contact is derived, not saved
     }
     if (!savedCultures.empty()) w.pop.cultures = savedCultures;
     // The roll of names is not saved; it is exactly what is standing and

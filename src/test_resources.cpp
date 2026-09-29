@@ -11,8 +11,12 @@
 // settlements that never had a field. With `lapse`, farming is ended
 // everywhere at year 300 (and kept ended) and the world's tilled km2 is
 // printed at years 300, 310, 325, 350 and 360 -- the reversion clock.
+// Each pass also reports the world's shape -- bands on the road, settlements
+// practising each technology, raids -- and how long it took, so a change to
+// the population model can be measured against the run before it.
 //
 //   build_testresources.bat, then build\test_resources.exe [seed] [years] [lapse]
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -52,6 +56,11 @@ struct Report {
     int farmLapses = 0;        // farming lapses
     int farmLapsesNoField = 0; // ...of those, for want of means, never having had a field
     int forcedReadoptions = 0; // `lapse` mode: farming found practised again after year 300
+    // The world's shape:
+    int bands = 0, peakBands = 0;
+    int practising[population::NTECH] = {};
+    int raidsLaunched = 0, raidsHit = 0, raidsHeld = 0;
+    double seconds = 0; // wall clock for the pass
 };
 
 // Who farmed at the last yearly look, and when each settlement's farming
@@ -70,6 +79,15 @@ static double tilledOf(const population::Settlement& s) {
 
 static Report survey(const population::Field& pf, double now, const LapseLog& log) {
     Report r;
+    r.bands = (int)pf.bands.size();
+    r.peakBands = (int)pf.peakBands;
+    r.raidsLaunched = pf.eventCount[population::EV_RAID_LAUNCH];
+    r.raidsHit = pf.eventCount[population::EV_RAID_HIT];
+    r.raidsHeld = pf.eventCount[population::EV_RAID_HELD];
+    for (const population::Settlement& s : pf.settlements) {
+        if (s.leaving || s.P <= 0) continue;
+        for (int t = 0; t < population::NTECH; t++) r.practising[t] += s.tech[t].practising;
+    }
     for (const population::Settlement& s : pf.settlements) {
         if (s.leaving || s.P <= 0) continue;
         r.settlements++;
@@ -193,6 +211,7 @@ int main(int argc, char** argv) {
         Report r;
         population::LEDGER_AUDIT = &r.ledger;
         LapseLog log;
+        auto start = std::chrono::steady_clock::now();
         for (int y = 1; y <= years; y++) {
             sim::simulate(pf, ws, hy, clim, y * 365.0);
             countLapses(pf, y * 365.0, log, r);
@@ -222,6 +241,7 @@ int main(int argc, char** argv) {
         m.farmLapses = r.farmLapses;
         m.farmLapsesNoField = r.farmLapsesNoField;
         m.forcedReadoptions = r.forcedReadoptions;
+        m.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         out[pass] = m;
     }
 
@@ -288,5 +308,15 @@ int main(int argc, char** argv) {
             fprintf(stderr, "  (farming found again and re-ended: %d)\n", out[p].forcedReadoptions);
         }
     }
+    fprintf(stderr, "\nworld shape (baseline vs heat)\n");
+    fprintf(stderr, "bands on the road %6d      %6d   (peak %d / %d)\n", c0.bands, c1.bands,
+            c0.peakBands, c1.peakBands);
+    for (int t = 0; t < population::NTECH; t++)
+        fprintf(stderr, "practising %-9s %5d      %6d\n", technology::techName(t), c0.practising[t],
+                c1.practising[t]);
+    fprintf(stderr, "raids launched    %6d      %6d\n", c0.raidsLaunched, c1.raidsLaunched);
+    fprintf(stderr, "raids hit / held  %d / %d   %d / %d\n", c0.raidsHit, c0.raidsHeld, c1.raidsHit,
+            c1.raidsHeld);
+    fprintf(stderr, "wall clock        %6.1f s    %6.1f s\n", c0.seconds, c1.seconds);
     return 0;
 }

@@ -342,8 +342,8 @@ inline std::string envText(const world::World& wd, const population::Settlement&
     terrain::V3 n = sim::cellCentre(st.cell);
     float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
     float lon = std::atan2(n.y, n.x) * 180.0f / 3.14159265f;
-    float awareKm = population::settlementAwareKm(now - st.founded,
-                                                  sim::prominenceM(wd.hydro, wd.clim, st.cell));
+    float awareKm = population::settlementAwareKm(
+        now - st.founded, population::prominenceM(wd.hydro, wd.clim, st.cell));
     char b[128];
     std::string out;
     snprintf(b, sizeof b, "%.1f%c  %.1f%c\n", std::fabs(lat), lat >= 0 ? 'N' : 'S', std::fabs(lon),
@@ -402,7 +402,11 @@ inline std::string envText(const world::World& wd, const population::Settlement&
                  (int)std::lround(st.labProj * 100));
         out += b;
     }
-    snprintf(b, sizeof b, "Awareness: %d km\n", (int)awareKm);
+    // Contact is awareness: the places known, either way round.
+    int self = settlementIndexById(wd.pop, st.id);
+    int known = self >= 0 ? (int)wd.pop.neighbours[self].size() : 0;
+    snprintf(b, sizeof b, "Awareness: %d km, %d place%s known\n", (int)awareKm, known,
+             known == 1 ? "" : "s");
     out += b;
     if (st.scarceSince >= 0) {
         snprintf(b, sizeof b, "Scarce since year %d%s\n", (int)(st.scarceSince / 365.0) + 1,
@@ -508,8 +512,8 @@ inline std::string techDetailText(const world::World& wd, const population::Sett
                      knowing == 1 ? " knows it" : "s know it",
                      technology::AWARE_MEAN_YEARS / knowing);
         else
-            snprintf(b, sizeof b, "Hearing of it: nobody within %d km knows\n",
-                     (int)population::CONTACT_KM);
+            snprintf(b, sizeof b, "Hearing of it: none of the %d places known knows\n",
+                     (int)wd.pop.neighbours[idx].size());
         out += b;
         return out;
     }
@@ -536,8 +540,8 @@ inline std::string techDetailText(const world::World& wd, const population::Sett
         snprintf(b, sizeof b, " need: %d%% (phi %.2f, content at 1.11)%s\n",
                  (int)std::lround(need * 100), phi, need <= 0 ? "  <- BLOCKED" : "");
     out += b;
-    snprintf(b, sizeof b, " teachers in %d km: %d, expertise sum %.2f%s\n",
-             (int)population::CONTACT_KM, teachers, esum, esum <= 0 ? "  <- BLOCKED" : "");
+    snprintf(b, sizeof b, " teachers: %d of %d places known, expertise sum %.2f%s\n", teachers,
+             (int)wd.pop.neighbours[idx].size(), esum, esum <= 0 ? "  <- BLOCKED" : "");
     out += b;
     double rate = (double)suit * need * esum;
     if (rate > 0)
@@ -619,7 +623,8 @@ inline std::string bandText(const world::World& wd, uint32_t bandId) {
             float away = sim::distKm({bd.px, bd.py, bd.pz}, sim::cellCentre(bd.targetCell));
             double rest = bd.resting ? now - bd.restStart : 0.0;
             float awareKm = population::bandAwareKm(
-                rest, sim::prominenceM(wd.hydro, wd.clim, sim::cellOf({bd.px, bd.py, bd.pz})));
+                rest,
+                population::prominenceM(wd.hydro, wd.clim, sim::cellOf({bd.px, bd.py, bd.pz})));
             if (bd.purpose == population::BAND_RAID)
                 snprintf(b, sizeof b,
                          "Raiding party\nPeople: %d\nState: %s\n%s: %d km away\n"

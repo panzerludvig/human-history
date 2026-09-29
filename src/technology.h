@@ -4,8 +4,11 @@
 #pragma once
 #include "population.h"
 #include "events.h"
+#include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 namespace technology {
 
@@ -49,6 +52,7 @@ struct WorldState {
     struct Sink {
         virtual void techEvent(int idx, int tech, double when) = 0;
         virtual void clockEvent(int tech, double when) = 0;
+        virtual void contactEvent(int idx, double when) = 0;
     };
     uint64_t rng = 0;
     double nextEvent[population::NTECH] = {INF_T, INF_T, INF_T, INF_T}; // fire or resample
@@ -306,6 +310,71 @@ inline void startPractising(population::Field& pf, int i, WorldState& ws, int te
     // the new rate applies now rather than at the next resample.
     if (tech == population::TECH_FARMING) redraw(pf, i, ws, population::TECH_GRANARY, now);
     for (int j : pf.neighbours[i]) redraw(pf, j, ws, tech, now);
+}
+
+// Contact (settlement.h, "contact"): the network grows by events, and each
+// new pair changes the rates of every clock that counts neighbours, so both
+// sides are redrawn.
+inline void rescheduleContact(population::Field& pf, int i, WorldState& ws) {
+    population::scheduleContact(pf, i);
+    if (ws.sink && pf.settlements[i].nextContact < 1e17)
+        ws.sink->contactEvent(i, pf.settlements[i].nextContact);
+}
+
+inline void meet(population::Field& pf, int i, int j, WorldState& ws, double now) {
+    population::link(pf, i, j);
+    if (population::dropUnmet(pf, j, i)) rescheduleContact(pf, j, ws);
+    for (int t = 0; t < population::NTECH; t++) {
+        redraw(pf, i, ws, t, now);
+        redraw(pf, j, ws, t, now);
+    }
+}
+
+// Settlement i's awareness has grown to reach the nearest settlement it had
+// not met: everyone now within its range comes into contact.
+inline void widenContact(population::Field& pf, int i, WorldState& ws, double now) {
+    std::vector<population::Field::Unmet>& u = pf.unmet[i];
+    float reachKm = population::awareKmOf(pf.settlements[i], now);
+    // The front is due by construction (it is what scheduled this event);
+    // the rest are met if the range already covers them.
+    // Meeting j touches j's list, never this one, so the prefix stays put
+    // until it is erased.
+    size_t k = 0;
+    while (k < u.size() && (k == 0 || u[k].km <= reachKm)) k++;
+    for (size_t m = 0; m < k; m++)
+        if (!pf.settlements[u[m].idx].leaving) meet(pf, i, u[m].idx, ws, now);
+    u.erase(u.begin(), u.begin() + k);
+    rescheduleContact(pf, i, ws);
+}
+
+// A settlement just founded, the last in the list, takes its place in the
+// network: in contact with everyone either side knows of today, and on the
+// unmet lists of everyone either side will know of later.
+inline void joinContact(population::Field& pf, int idx, WorldState& ws, double now) {
+    assert(idx == (int)pf.settlements.size() - 1 && idx == (int)pf.neighbours.size() &&
+           idx == (int)pf.unmet.size());
+    pf.neighbours.push_back({});
+    pf.unmet.push_back({});
+    const population::Settlement& s = pf.settlements[idx];
+    float mineKm = population::awareKmOf(s, now);
+    float reachKm = population::awareReachKm(s.promM);
+    for (int j = 0; j < idx; j++) {
+        const population::Settlement& o = pf.settlements[j];
+        if (o.leaving) continue;
+        float d = population::cellDistKm(s.cell, o.cell);
+        if (d <= mineKm || d <= population::awareKmOf(o, now)) {
+            population::link(pf, idx, j);
+            continue;
+        }
+        if (d <= reachKm) pf.unmet[idx].push_back({d, j});
+        if (d <= population::awareReachKm(o.promM) && population::addUnmet(pf, j, idx, d))
+            rescheduleContact(pf, j, ws);
+    }
+    std::sort(pf.unmet[idx].begin(), pf.unmet[idx].end(),
+              [](const population::Field::Unmet& a, const population::Field::Unmet& b) {
+                  return a.km < b.km;
+              });
+    rescheduleContact(pf, idx, ws);
 }
 
 // Weighted pick of the inventor among the unaware. Need-driven techs draw
