@@ -7,6 +7,7 @@
 // (decisions). A member added to Settlement is set in newSettlement below,
 // the one place both founding sites start from.
 #pragma once
+#include "constants.h"
 #include "terrain.h"
 #include "hydrology.h"
 #include "atmosphere.h"
@@ -58,7 +59,7 @@ constexpr float CLAIM_GROW_KM_YR = 0.1f; // ten km a century: a lifetime of rang
 // Worked value of a disc of radius r, in km2 of land-at-the-door.
 inline float claimValueKm2(float r) {
     float t2 = CLAIM_TAPER_KM * CLAIM_TAPER_KM;
-    return 3.14159265f * t2 * std::log(1.0f + r * r / t2);
+    return constants::PI_F * t2 * std::log(1.0f + r * r / t2);
 }
 // The same, scaled so a floor-sized claim is worth today's fixed catchment.
 inline float claimYieldKm2(float r) {
@@ -70,7 +71,7 @@ inline float claimYieldKm2(float r) {
 inline float claimRadiusFor(float km2) {
     static const float unit = FORAGE_KM2 / claimValueKm2(CLAIM_CAP_KM);
     float t2 = CLAIM_TAPER_KM * CLAIM_TAPER_KM;
-    float e = std::exp(std::max(km2, 0.0f) / unit / (3.14159265f * t2)) - 1.0f;
+    float e = std::exp(std::max(km2, 0.0f) / unit / (constants::PI_F * t2)) - 1.0f;
     return std::sqrt(std::max(e, 0.0f) * t2);
 }
 constexpr float WATER_L_PER_PERSON = 20.0f; // per day
@@ -207,14 +208,14 @@ constexpr float BOW_PER_HUNTER = 0.2f;     // one bow per hunter; a fifth hunt
 // makes more bows at once but never a single bow faster.
 constexpr float BOW_LABOUR_SHARE = 0.05f; // ceiling on the surplus: people at most carving
 constexpr float BOW_WORK_DAYS = 90.0f;    // one bowyer, at full skill
-constexpr float BOW_LIFE_DAYS = 3650.0f;  // bows wear out and are replaced
+constexpr float BOW_LIFE_DAYS = 10 * constants::DAYS_PER_YEAR_F; // bows wear out and are replaced
 constexpr double GAME_TICK_DAYS = 90.0;   // pool update cadence (a slow layer)
 constexpr double SPLIT_AFTER_DAYS = 730.0;
 // A group that has looked around and found nothing worth the move does not
 // re-survey the horizon every other year; it settles into its life and
 // looks again less often, until things get worse. Cheap in-world reason for
 // what is also the expensive part of the decision (a prospect search).
-constexpr double LOOK_BACKOFF_MAX = 32.0 * 365.0;
+constexpr double LOOK_BACKOFF_MAX = 32.0 * constants::DAYS_PER_YEAR;
 constexpr float SPLIT_MIN_P = 50.0f;
 constexpr float SPLIT_SHARE = 1.0f / 3.0f;
 constexpr float BAND_MIN_P = 20.0f;
@@ -225,7 +226,7 @@ constexpr float BAND_SPEED_KM_DAY = 15.0f;
 // horizon formula. One function each; the shader receives the result.
 constexpr float AWARE_BASE_KM = 150.0f;
 constexpr float AWARE_GROWTH_KM = 300.0f;     // settlements, toward base+this
-constexpr double AWARE_TAU_DAYS = 30.0 * 365; // settlement growth timescale
+constexpr double AWARE_TAU_DAYS = 30.0 * constants::DAYS_PER_YEAR; // settlement growth timescale
 constexpr float AWARE_REST_KM = 100.0f;       // resting bands, toward base+this
 constexpr double AWARE_REST_TAU_DAYS = 45.0;
 constexpr float AWARE_CAP_KM = 600.0f;
@@ -260,15 +261,15 @@ inline float prominenceM(const hydrology::Result& hy, const atmosphere::Climatol
 inline float awareReachKm(float promM) { return settlementAwareKm(1e30, promM); }
 
 // How many days after founding a settlement on this site first knows ground
-// `km` away: 0 if it does from the start, 1e18 if it never will. Found by
+// `km` away: 0 if it does from the start, NEVER_DAY if it never will. Found by
 // bisection on settlementAwareKm itself, so the answer follows that function
 // whatever its form, as long as awareness only grows with age.
 inline double awareAgeDaysFor(float km, float promM) {
     if (km <= settlementAwareKm(0.0, promM)) return 0.0;
-    if (km > awareReachKm(promM)) return 1e18;
+    if (km > awareReachKm(promM)) return constants::NEVER_DAY;
     double hi = AWARE_TAU_DAYS;
     for (int k = 0; settlementAwareKm(hi, promM) < km; k++) {
-        if (k == 60) return 1e18; // the asymptote: never quite reached
+        if (k == 60) return constants::NEVER_DAY; // the asymptote: never quite reached
         hi *= 2.0;
     }
     double lo = 0.0;
@@ -303,8 +304,8 @@ inline float hopeRatio(double days) {
 }
 // Ruins: only places that were invested in leave a trace, and it weathers
 // away. A camp of thirty that stood a decade leaves nothing to find.
-constexpr double RUIN_MIN_AGE_DAYS = 60.0 * 365.0;
-constexpr double RUIN_LIFE_DAYS = 400.0 * 365.0;
+constexpr double RUIN_MIN_AGE_DAYS = 60.0 * constants::DAYS_PER_YEAR;
+constexpr double RUIN_LIFE_DAYS = 400.0 * constants::DAYS_PER_YEAR;
 // Raiding (Design/Conflict.md). The trigger is circumscription: a group
 // that must move or divide and has nowhere to go. Raids are journeys with
 // a task -- reach them, fight, carry it home -- so distance is a real cost
@@ -323,6 +324,10 @@ constexpr float LOOT_HERD_SHARE = 0.35f;    // livestock needs no carrying
 constexpr float FARMYARD_SHARE_POP = 0.05f; // household animals, no pasture needed
 constexpr float HERD_GROWTH_YR = 0.25f;     // logistic growth rate
 constexpr float HERD_PASTURE_K = 2.0f;      // people/km2 on pure pasture at full expertise
+// A herd's flow over the year, as a share of its capacity: livestock yield
+// follows the pasture's seasons. The model does not step the herd through
+// the seasons, so this mean stands in wherever the herd's food is counted.
+constexpr float HERD_SEASONAL_MEAN = 0.85f;
 
 // Granaries (Design/Technology.md): built structures that extend storage.
 // Demand is measured, not planned, from the annual fill cycle: a build
@@ -660,8 +665,9 @@ struct Settlement {
                              // never reset by splitting (need-driven invention)
     double founded = 0;      // sim day the settlement was founded (awareness age)
     float promM = 0;         // the site's rise above its region (awareness vantage), m
-    double nextContact = 1e18; // sim day its awareness reaches the nearest settlement
-                               // not yet in contact (Field::unmet; derived, not saved)
+    double nextContact =
+        constants::NEVER_DAY; // sim day its awareness reaches the nearest settlement
+                              // not yet in contact (Field::unmet; derived, not saved)
     // Fixed local properties (from the terrain at the cell):
     float kFoodP = 0;                    // pristine food capacity (already / SUSTAIN_R)
     float kGame = 0;                     // the big-game part of kFoodP (regional pool)
@@ -691,7 +697,8 @@ struct Settlement {
     uint8_t builtGranaries = 0; // finished this step; the sim reports and clears
     // Technology state (see technology.h / Design/Technology.md):
     TechState tech[NTECH];
-    double nextTech[NTECH] = {1e18, 1e18, 1e18, 1e18}; // next draw or resample moment
+    double nextTech[NTECH] = {constants::NEVER_DAY, constants::NEVER_DAY, constants::NEVER_DAY,
+                              constants::NEVER_DAY}; // next draw or resample moment
     bool techFires[NTECH] = {false, false, false, false};
     // How far the claim reaches in each of CLAIM_SECTORS directions, sector 0
     // due east and turning north. Set to the floor when the place is founded.
@@ -825,8 +832,9 @@ struct Field {
 inline float cellCondition(const Field& f, int cell, double now) {
     auto it = f.scars.find(cell);
     if (it == f.scars.end()) return 1.0f;
-    float rec = 1.0f - (1.0f - it->second.R) *
-                           (float)std::exp(-(now - it->second.t) / (R_REGEN_YEARS * 365.0));
+    float rec =
+        1.0f - (1.0f - it->second.R) * (float)std::exp(-(now - it->second.t) /
+                                                       (R_REGEN_YEARS * constants::DAYS_PER_YEAR));
     return std::clamp(rec, 0.0f, 1.0f);
 }
 
@@ -867,17 +875,17 @@ inline float cellDistKm(int a, int b) {
     hydrology::V3orig p = hydrology::cellDir(a % W, a / W), q = hydrology::cellDir(b % W, b / W);
     float dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z;
     float half = std::sqrt(dx * dx + dy * dy + dz * dz) * 0.5f;
-    return 2.0f * std::asin(std::clamp(half, 0.0f, 1.0f)) * 6371.0f;
+    return 2.0f * std::asin(std::clamp(half, 0.0f, 1.0f)) * constants::EARTH_RADIUS_KM_F;
 }
 
 inline float awareKmOf(const Settlement& s, double now) {
     return settlementAwareKm(now - s.founded, s.promM);
 }
 
-// The sim day settlement `s` first knows ground `km` away; 1e18 if never.
+// The sim day settlement `s` first knows ground `km` away; NEVER_DAY if never.
 inline double contactDayFor(const Settlement& s, float km) {
     double age = awareAgeDaysFor(km, s.promM);
-    return age >= 1e17 ? 1e18 : s.founded + age;
+    return age >= constants::NEVER_DAY ? constants::NEVER_DAY : s.founded + age;
 }
 
 inline void link(Field& f, int i, int j) {
@@ -909,8 +917,8 @@ inline bool addUnmet(Field& f, int i, int j, float km) {
 
 inline void scheduleContact(Field& f, int i) {
     Settlement& s = f.settlements[i];
-    s.nextContact =
-        s.leaving || f.unmet[i].empty() ? 1e18 : contactDayFor(s, f.unmet[i].front().km);
+    s.nextContact = s.leaving || f.unmet[i].empty() ? constants::NEVER_DAY
+                                                    : contactDayFor(s, f.unmet[i].front().km);
 }
 
 // The whole network as it stands at `now`, and every pair still to meet:

@@ -9,6 +9,7 @@
 // 10 km altitude over a unit sphere needs the precision, and nothing here
 // is a per-cell field.
 #pragma once
+#include "constants.h"
 #include <algorithm>
 #include <cmath>
 
@@ -29,9 +30,7 @@ inline Vec3 normalize(Vec3 a) {
     return a * (1.0 / l);
 }
 
-constexpr double PI = 3.14159265358979323846;
-constexpr double EARTH_RADIUS_KM = 6371.0;
-constexpr double FOV_V = 45.0 * PI / 180.0; // vertical field of view
+constexpr double FOV_V = 45.0 * constants::PI / 180.0; // vertical field of view
 constexpr double MIN_SCREEN_WIDTH_KM = 0.1; // max zoom in: this many km across the screen
 
 // Unit vector on the sphere for a latitude/longitude (radians). +Z is the north pole.
@@ -50,7 +49,7 @@ struct Camera {
     double tanHalfV() const { return std::tan(FOV_V / 2); }
 
     double minAltitude() const {
-        return MIN_SCREEN_WIDTH_KM / EARTH_RADIUS_KM / (2.0 * tanHalfV() * aspect());
+        return MIN_SCREEN_WIDTH_KM / constants::EARTH_RADIUS_KM / (2.0 * tanHalfV() * aspect());
     }
     double maxAltitude() const {
         // The full disc fits vertically with a small margin beyond its edge.
@@ -89,7 +88,9 @@ struct Camera {
     }
 
     // Surface kilometres per screen pixel, used for level-of-detail.
-    double kmPerPixel() const { return 2.0 * altitude * EARTH_RADIUS_KM * tanHalfV() / height; }
+    double kmPerPixel() const {
+        return 2.0 * altitude * constants::EARTH_RADIUS_KM * tanHalfV() / height;
+    }
 };
 
 // Zoom towards whatever the cursor is over: the ground under it stays under
@@ -158,19 +159,20 @@ inline void applyDrag(Camera& c, const Drag& drag, int x, int y) {
         double latAnc = std::asin(std::clamp(drag.anchor.z, -1.0, 1.0));
         double lonAnc = std::atan2(drag.anchor.y, drag.anchor.x);
         double dLon = lonHit - lonAnc;
-        if (dLon > PI) dLon -= 2 * PI;
-        if (dLon < -PI) dLon += 2 * PI;
+        if (dLon > constants::PI) dLon -= 2 * constants::PI;
+        if (dLon < -constants::PI) dLon += 2 * constants::PI;
         c.lon -= dLon;
         c.lat -= latHit - latAnc;
     } else {
         // Cursor is off the globe: rotate by a pixel-proportional amount.
-        double radPerPx = std::min(2.0 * c.altitude * c.tanHalfV() / c.height, PI / c.height);
+        double radPerPx =
+            std::min(2.0 * c.altitude * c.tanHalfV() / c.height, constants::PI / c.height);
         c.lon -= (x - drag.lastX) * radPerPx;
         c.lat += (y - drag.lastY) * radPerPx;
     }
-    c.lat = std::clamp(c.lat, -89.0 * PI / 180, 89.0 * PI / 180);
-    while (c.lon > PI) c.lon -= 2 * PI;
-    while (c.lon < -PI) c.lon += 2 * PI;
+    c.lat = std::clamp(c.lat, -89.0 * constants::PI / 180, 89.0 * constants::PI / 180);
+    while (c.lon > constants::PI) c.lon -= 2 * constants::PI;
+    while (c.lon < -constants::PI) c.lon += 2 * constants::PI;
 }
 
 } // namespace camera

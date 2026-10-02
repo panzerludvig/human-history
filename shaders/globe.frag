@@ -57,9 +57,8 @@ uniform vec4 uScaleBar;   // x0, y0, x1, y1 in pixels (bottom-left origin); x0 <
 // HEIGHT_SCALE_M, CRUST_WEIGHT, LAND_RELIEF, RANGE_GAIN, NSUB, NCOV
 // (terrain.h); HW, HH, NO_LAKE, LAKE_SHORE_RISE_M (hydrology.h); PW, PH
 // (plates.h); SITE_STRIDE (textures.h); HUT_KMPP, WALK_KMPP (overlay.h);
-// ICE_FORMING_T, FROZEN_T (bands.h).
-
-const float PI = 3.14159265;
+// ICE_FORMING_T, FROZEN_T (bands.h); PI, EARTH_RADIUS_KM, EARTH_RADIUS_M,
+// LAPSE_K_PER_KM, DAYS_PER_YEAR (constants.h).
 
 // ------------------------------------------------------------ noise
 
@@ -410,7 +409,7 @@ float claimReach(int idx, vec3 cc, vec3 q) {
     vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
     vec3 north = cross(cc, east);
     vec3 d = q - cc;
-    float a = atan(dot(d, north), dot(d, east)) / 6.2831853 * 16.0 - 0.5;
+    float a = atan(dot(d, north), dot(d, east)) / (2.0 * PI) * 16.0 - 0.5;
     float f = fract(a);
     int k0 = int(floor(a)), k1 = k0 + 1;
     k0 = ((k0 % 16) + 16) % 16;
@@ -435,7 +434,7 @@ float borderNear(vec3 n) {
             int idx = siteIndex(cw);
             if (idx < 0) continue;
             vec3 cc = cellCentre(cw);
-            float d = length(n - cc) * 6371.0;
+            float d = length(n - cc) * EARTH_RADIUS_KM;
             if (d < 5.0 || d > 66.0) continue;
             float reach = claimReach(idx, cc, n);
             if (abs(d - reach) > w) continue;
@@ -487,7 +486,7 @@ int hutsNear(vec3 n) {
             if (site.r <= 0.0) continue;
             vec3 cc = cellCentre(cw);
             float rKm = villageRadiusKm(site.r);
-            if (length(n - cc) * 6371.0 > rKm * 1.2 + granKm) continue;
+            if (length(n - cc) * EARTH_RADIUS_KM > rKm * 1.2 + granKm) continue;
             vec3 east = normalize(vec3(-cc.y, cc.x, 0.0));
             vec3 north = cross(cc, east);
             int cell = cw.y * HW + cw.x;
@@ -499,13 +498,13 @@ int hutsNear(vec3 n) {
                 // sunflower do not show through as a pattern.
                 float rr = rKm * (0.18 + 0.82 * sqrt(float(k) / float(huts))) *
                            (0.82 + 0.36 * fract(sin(float(k) * 12.9898 + ph) * 43758.5453));
-                vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
+                vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / EARTH_RADIUS_KM));
                 vec3 dv = n - p;
-                if (dot(dv, dv) * 40602000.0 > hutKm * hutKm) continue; // 6371^2
-                vec2 lp = vec2(dot(dv, east), dot(dv, north)) * 6371.0;
+                if (dot(dv, dv) * (EARTH_RADIUS_KM * EARTH_RADIUS_KM) > hutKm * hutKm) continue;
+                vec2 lp = vec2(dot(dv, east), dot(dv, north)) * EARTH_RADIUS_KM;
                 // Houses face whichever way they were built; the settlement
                 // has no plan, only a scatter.
-                float ang = a * 1.7 + fract(sin(float(k) * 45.164 + ph) * 21943.7) * 3.14159;
+                float ang = a * 1.7 + fract(sin(float(k) * 45.164 + ph) * 21943.7) * PI;
                 vec2 r2 = vec2(lp.x * cos(ang) + lp.y * sin(ang),
                                -lp.x * sin(ang) + lp.y * cos(ang));
                 if (abs(r2.x) < 0.0045 && abs(r2.y) < 0.003) return r2.y < 0.0 ? 1 : 4;
@@ -516,12 +515,12 @@ int hutsNear(vec3 n) {
             for (int k = 0; k < g && k < 8; k++) {
                 float a = 2.39996 * float(k) + ph;
                 float rr = 0.03 + 0.008 * float(k);
-                vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
-                if (length(n - p) * 6371.0 < granKm) return 2;
+                vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / EARTH_RADIUS_KM));
+                if (length(n - p) * EARTH_RADIUS_KM < granKm) return 2;
             }
             // Ground walked bare between the houses: without it a village
             // reads as a hole in the fields rather than a place.
-            if (length(n - cc) * 6371.0 < rKm * 1.2) return 3;
+            if (length(n - cc) * EARTH_RADIUS_KM < rKm * 1.2) return 3;
         }
     // Farmsteads: sim::farmsteadPos mirrored exactly -- lone houses standing
     // kilometres from their village among the far fields. The pop texture's
@@ -550,16 +549,16 @@ int hutsNear(vec3 n) {
                 for (int k = 0; k < f && k < 20; k++) {
                     float a = 2.39996 * float(k) + ph + 1.1;
                     float rr = 2.5 + 1.1 * float(k); // sim::FSTEAD_R0/DR
-                    vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
+                    vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / EARTH_RADIUS_KM));
                     vec3 dv = n - p;
-                    if (dot(dv, dv) * 40602000.0 > fhKm * fhKm) continue;
-                    vec2 lp = vec2(dot(dv, east), dot(dv, north)) * 6371.0;
-                    float ang = a * 1.7 + fract(sin(float(k) * 45.164 + ph) * 21943.7) * 3.14159;
+                    if (dot(dv, dv) * (EARTH_RADIUS_KM * EARTH_RADIUS_KM) > fhKm * fhKm) continue;
+                    vec2 lp = vec2(dot(dv, east), dot(dv, north)) * EARTH_RADIUS_KM;
+                    float ang = a * 1.7 + fract(sin(float(k) * 45.164 + ph) * 21943.7) * PI;
                     vec2 r2 = vec2(lp.x * cos(ang) + lp.y * sin(ang),
                                    -lp.x * sin(ang) + lp.y * cos(ang));
                     // The farmhouse, and the trodden yard around it.
                     if (abs(r2.x) < 0.0045 && abs(r2.y) < 0.003) return r2.y < 0.0 ? 1 : 4;
-                    if (dot(dv, dv) * 40602000.0 < 0.005 * 0.005) return 3;
+                    if (dot(dv, dv) * (EARTH_RADIUS_KM * EARTH_RADIUS_KM) < 0.005 * 0.005) return 3;
                 }
             }
     }
@@ -583,15 +582,15 @@ bool bandDotsNear(vec3 n) {
             vec4 b = texelFetch(uBands, ivec2(idx % 256, idx / 256), 0);
             int dots = clamp(int(b.w + 0.5), 3, 200);        // sim::bandDots
             float spread = 0.012 + 0.004 * sqrt(float(dots)); // sim::bandSpreadKm
-            if (length(n - b.xyz) * 6371.0 > spread + dotKm) continue;
+            if (length(n - b.xyz) * EARTH_RADIUS_KM > spread + dotKm) continue;
             vec3 east = normalize(vec3(-b.y, b.x, 0.0));
             vec3 north = cross(b.xyz, east);
             for (int k = 0; k < dots; k++) {
                 float a = 2.39996 * float(k) + float(idx) * 0.37;
                 float rr = spread * sqrt(float(k) / float(dots)) *
                            (0.7 + 0.6 * fract(sin(float(k) * 78.233 + float(idx)) * 43758.5453));
-                vec3 p = normalize(b.xyz + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
-                if (length(n - p) * 6371.0 < dotKm) return true;
+                vec3 p = normalize(b.xyz + (east * cos(a) + north * sin(a)) * (rr / EARTH_RADIUS_KM));
+                if (length(n - p) * EARTH_RADIUS_KM < dotKm) return true;
             }
         }
     return false;
@@ -609,7 +608,7 @@ float ruinNear(vec3 n) {
             ivec2 c = c0 + ivec2(dx, dy);
             ivec2 cw = ivec2((c.x + HW) % HW, clamp(c.y, 0, HH - 1));
             if (texelFetch(uPop, cw, 0).g >= 0.0) continue;
-            if (length(n - cellCentre(cw)) * 6371.0 < rad) return 1.0;
+            if (length(n - cellCentre(cw)) * EARTH_RADIUS_KM < rad) return 1.0;
         }
     return 0.0;
 }
@@ -631,7 +630,7 @@ float ruinNear(vec3 n) {
 // standing plots, `innerKm` a hole for the houses.
 vec4 plotsAt(vec2 f, float builtKm2, float innerKm, float seed) {
     float d2 = dot(f, f);
-    float R = sqrt(builtKm2 / 3.14159265);
+    float R = sqrt(builtKm2 / PI);
     if (d2 > (R + 0.9) * (R + 0.9) || d2 < innerKm * innerKm) return vec4(0.0);
     vec2 blk = floor(f * 2.0); // clearing proceeds in quarter-km2 blocks
     float h = fract(sin(dot(blk, vec2(12.9898, 78.233)) + seed) * 43758.5453);
@@ -694,7 +693,7 @@ vec4 fieldsNear(vec3 n) {
             vec3 north = cross(cc, east);
             int cell = cw.y * HW + cw.x;
             float turn = float(cell % 628) * 0.01;
-            vec2 e = vec2(dot(n - cc, east), dot(n - cc, north)) * 6371.0;
+            vec2 e = vec2(dot(n - cc, east), dot(n - cc, north)) * EARTH_RADIUS_KM;
             vec2 f = vec2(e.x * cos(turn) + e.y * sin(turn),
                           -e.x * sin(turn) + e.y * cos(turn));
             vec4 m = plotsAt(f, site.b, villageRadiusKm(site.r) * 1.2, turn * 100.0);
@@ -726,8 +725,8 @@ vec4 fieldsNear(vec3 n) {
                 for (int k = 0; k < nf && k < 20; k++) {
                     float a = 2.39996 * float(k) + ph + 1.1; // sim::farmsteadPos
                     float rr = 2.5 + 1.1 * float(k);
-                    vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / 6371.0));
-                    vec2 e = vec2(dot(n - p, east), dot(n - p, north)) * 6371.0;
+                    vec3 p = normalize(cc + (east * cos(a) + north * sin(a)) * (rr / EARTH_RADIUS_KM));
+                    vec2 e = vec2(dot(n - p, east), dot(n - p, north)) * EARTH_RADIUS_KM;
                     if (dot(e, e) > 3.0 * 3.0) continue; // beyond the block
                     float area = siteTexel(idx, 5 + k / 4)[k % 4];
                     if (area <= 0.05) continue;
@@ -758,9 +757,9 @@ vec3 climFuzz(vec3 n) {
 vec4 climSample(sampler2D tex, vec3 nf) {
     float lat = asin(clamp(nf.z, -1.0, 1.0));
     float lon = atan(nf.y, nf.x);
-    float cx = (lon + 3.14159265) / 6.2831853;
-    float cy = clamp((lat + 1.5707963) / 3.14159265, 0.02, 0.98);
-    float sf = uDoy / 365.0 * 4.0 - 0.5;
+    float cx = (lon + PI) / (2.0 * PI);
+    float cy = clamp((lat + PI / 2.0) / PI, 0.02, 0.98);
+    float sf = uDoy / DAYS_PER_YEAR * 4.0 - 0.5;
     float s0 = mod(floor(sf), 4.0), f = fract(sf);
     float s1 = mod(s0 + 1.0, 4.0);
     vec4 a = texture(tex, vec2(cx, (s0 + cy) * 0.25));
@@ -773,8 +772,8 @@ vec4 climAt(vec3 nf) { return climSample(uClim, nf); }
 vec4 climAnnual(sampler2D tex, vec3 nf) {
     float lat = asin(clamp(nf.z, -1.0, 1.0));
     float lon = atan(nf.y, nf.x);
-    float cx = (lon + 3.14159265) / 6.2831853;
-    float cy = clamp((lat + 1.5707963) / 3.14159265, 0.02, 0.98);
+    float cx = (lon + PI) / (2.0 * PI);
+    float cy = clamp((lat + PI / 2.0) / PI, 0.02, 0.98);
     vec4 sum = vec4(0.0);
     for (int sSeason = 0; sSeason < 4; sSeason++)
         sum += texture(tex, vec2(cx, (float(sSeason) + cy) * 0.25));
@@ -786,15 +785,15 @@ vec4 climAnnual(sampler2D tex, vec3 nf) {
 // derivedMoisture).
 float derivedTempC(vec3 nf, float h) {
     vec4 c2 = climAnnual(uClim2, nf);
-    return c2.r - 6.5 * (max(h, 0.0) - c2.b) / 1000.0;
+    return c2.r - LAPSE_K_PER_KM * (max(h, 0.0) - c2.b) / 1000.0;
 }
 
 // Coldest-season surface temperature (rainforest gate).
 float derivedTCold(vec3 nf, float h) {
     float lat2 = asin(clamp(nf.z, -1.0, 1.0));
     float lon2 = atan(nf.y, nf.x);
-    float cx = (lon2 + 3.14159265) / 6.2831853;
-    float cy = clamp((lat2 + 1.5707963) / 3.14159265, 0.02, 0.98);
+    float cx = (lon2 + PI) / (2.0 * PI);
+    float cy = clamp((lat2 + PI / 2.0) / PI, 0.02, 0.98);
     float t = 1e9;
     float e = 0.0;
     for (int sSeason = 0; sSeason < 4; sSeason++) {
@@ -802,7 +801,7 @@ float derivedTCold(vec3 nf, float h) {
         t = min(t, c2.r);
         e += c2.b * 0.25;
     }
-    return t - 6.5 * (max(h, 0.0) - e) / 1000.0;
+    return t - LAPSE_K_PER_KM * (max(h, 0.0) - e) / 1000.0;
 }
 
 // Warmest-season surface temperature. The treeline, the tundra edge and the
@@ -810,8 +809,8 @@ float derivedTCold(vec3 nf, float h) {
 float derivedTWarm(vec3 nf, float h) {
     float lat2 = asin(clamp(nf.z, -1.0, 1.0));
     float lon2 = atan(nf.y, nf.x);
-    float cx = (lon2 + 3.14159265) / 6.2831853;
-    float cy = clamp((lat2 + 1.5707963) / 3.14159265, 0.02, 0.98);
+    float cx = (lon2 + PI) / (2.0 * PI);
+    float cy = clamp((lat2 + PI / 2.0) / PI, 0.02, 0.98);
     float t = -1e9;
     float e = 0.0;
     for (int sSeason = 0; sSeason < 4; sSeason++) {
@@ -819,7 +818,7 @@ float derivedTWarm(vec3 nf, float h) {
         t = max(t, c2.r);
         e += c2.b * 0.25;
     }
-    return t - 6.5 * (max(h, 0.0) - e) / 1000.0;
+    return t - LAPSE_K_PER_KM * (max(h, 0.0) - e) / 1000.0;
 }
 
 float derivedMoist(vec3 nf, vec3 w, float h) {
@@ -837,7 +836,7 @@ float derivedMoist(vec3 nf, vec3 w, float h) {
 // for the sea.
 float iceAt(vec3 nf, float hLocal) {
     vec4 c2 = climSample(uClim2, nf);
-    float tLoc = c2.r - 6.5 * (max(hLocal, 0.0) - c2.b) / 1000.0;
+    float tLoc = c2.r - LAPSE_K_PER_KM * (max(hLocal, 0.0) - c2.b) / 1000.0;
     return smoothstep(ICE_FORMING_T, FROZEN_T, tLoc);
 }
 
@@ -847,7 +846,7 @@ float iceAt(vec3 nf, float hLocal) {
 // atmosphere::seasonalTempC.
 float snowCoverAt(vec3 nf, float h) {
     vec4 c2 = climSample(uClim2, nf);
-    float tLoc = c2.r - 6.5 * (max(h, 0.0) - c2.b) / 1000.0;
+    float tLoc = c2.r - LAPSE_K_PER_KM * (max(h, 0.0) - c2.b) / 1000.0;
     return smoothstep(1.0, -3.0, tLoc) * smoothstep(0.01, 0.15, c2.g + climAt(nf).g * 0.05);
 }
 
@@ -858,7 +857,7 @@ float cloudsAt(vec3 n, vec3 nf, out float rainV) {
     // wind (m/s) -> angular drift; the local wind warps the noise domain
     vec3 east = normalize(vec3(-n.y, n.x, 0.0));
     vec3 north = normalize(cross(n, east));
-    vec3 drift = (east * cl.b + north * cl.w) * (86400.0 / 6371000.0) * uClock;
+    vec3 drift = (east * cl.b + north * cl.w) * (86400.0 / EARTH_RADIUS_M) * uClock;
     float n1 = fbm(n * 9.0 + drift * 0.35, 3, 0.5) * 0.5 + 0.5;
     float n2 = fbm(n * 23.0 + drift * 0.5 + 11.7, 2, 0.5) * 0.5 + 0.5;
     float field = 0.65 * n1 + 0.35 * n2;
@@ -901,7 +900,7 @@ float riverAt(vec3 n, vec3 w) {
             vec4 t = hydroFetch(c);
             if (t.g < minFlow || t.b < 0.0) continue;
             ivec2 d = c + DIRS[int(t.b + 0.5)];
-            float dist = segmentDistance(nj, cellCentre(c), cellCentre(d)) * 6371.0;
+            float dist = segmentDistance(nj, cellCentre(c), cellCentre(d)) * EARTH_RADIUS_KM;
             if (dist < riverHalfWidthKm(t.g)) best = max(best, t.g);
         }
     return best;
@@ -1150,9 +1149,8 @@ void main() {
     // the tangent plane, and their cross product is the normal. The exact
     // offset d stands in for n, whose own derivatives are only good to 40 cm.
     // Height is exaggerated 3x so relief stays visible from orbit.
-    const float R = 6371000.0;
-    vec3 dPdx = dFdx(d) * R + n * dFdx(h) * 3.2;
-    vec3 dPdy = dFdy(d) * R + n * dFdy(h) * 3.2;
+    vec3 dPdx = dFdx(d) * EARTH_RADIUS_M + n * dFdx(h) * 3.2;
+    vec3 dPdy = dFdy(d) * EARTH_RADIUS_M + n * dFdy(h) * 3.2;
     vec3 shadeN = normalize(cross(dPdx, dPdy));
     if (dot(shadeN, n) < 0.0) shadeN = -shadeN;
     // Physical slope (rise over run) decides rock; the exaggerated normal only shades.
@@ -1257,7 +1255,7 @@ void main() {
     // alpha fading with distance like the accuracy does, faint even at centre.
     float aw = 0.0;
     for (int i = 0; i < uAwareCount; i++) {
-        float d = acos(clamp(dot(n, uAware[i].xyz), -1.0, 1.0)) * 6371.0;
+        float d = acos(clamp(dot(n, uAware[i].xyz), -1.0, 1.0)) * EARTH_RADIUS_KM;
         aw = max(aw, clamp(1.0 - d / max(uAware[i].w, 1.0), 0.0, 1.0));
     }
     // Violet: a hue the terrain palette never uses, so the zone reads at low alpha.

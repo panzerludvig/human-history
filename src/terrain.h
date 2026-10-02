@@ -7,6 +7,7 @@
 // the constants main.cpp puts in front of it; the rest of the numbers are
 // written on both sides and change together.
 #pragma once
+#include "constants.h"
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
@@ -207,15 +208,16 @@ struct Template {
     bool lakeAt(V3 n) const {
         if (lakes.empty()) return false;
         float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)), lon = std::atan2(n.y, n.x);
-        int x = (int)std::floor((lon + 3.14159265f) / 6.2831853f * w), y = (int)std::floor((lat + 1.5707963f) / 3.14159265f * h);
+        int x = (int)std::floor((lon + constants::PI_F) / (2 * constants::PI_F) * w),
+            y = (int)std::floor((lat + constants::PI_F / 2) / constants::PI_F * h);
         x = ((x % w) + w) % w; y = std::clamp(y, 0, h - 1);
         return lakes[(size_t)y * w + x] != 0;
     }
     // Bilinear by hand; mirrored in shaders/globe.frag earthAtTexel.
     float sample(V3 n) const {
         float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)), lon = std::atan2(n.y, n.x);
-        float fx = (lon + 3.14159265f) / 6.2831853f * w - 0.5f;
-        float fy = (lat + 1.5707963f) / 3.14159265f * h - 0.5f;
+        float fx = (lon + constants::PI_F) / (2 * constants::PI_F) * w - 0.5f;
+        float fy = (lat + constants::PI_F / 2) / constants::PI_F * h - 0.5f;
         int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy);
         float tx = fx - x0, ty = fy - y0;
         auto at = [&](int x, int y) {
@@ -355,7 +357,8 @@ inline float seaLevelFor(float landFraction, const ContinentParams& cp, const fl
 // Mirrors of the shader's classification (globe.frag) — keep in sync.
 
 inline float temperatureC(float lat, float h) {
-    return 28.0f - 45.0f * std::pow(std::fabs(lat) / 1.5707963f, 1.3f) - 6.5f * std::max(h, 0.0f) / 1000.0f;
+    return 28.0f - 45.0f * std::pow(std::fabs(lat) / (constants::PI_F / 2), 1.3f) -
+           constants::LAPSE_K_PER_KM_F * std::max(h, 0.0f) / 1000.0f;
 }
 
 inline float moistureAt(V3 w, float lat) {
@@ -468,7 +471,7 @@ inline Mixture mixtureAt(float h, float slope, float temp, float moist, float up
 // Physical slope (rise over run) from two height samples ~500 m apart.
 inline float slopeAt(V3 n, const ContinentParams& cp, float seaLevel, int octaves,
                      const plates::Field& pf, const float rot[9], V3 offset) {
-    const float eps = 500.0f / 6371000.0f;
+    const float eps = (float)(500.0 / constants::EARTH_RADIUS_M);
     V3 tx = std::fabs(n.z) < 0.99f ? V3{-n.y, n.x, 0} : V3{1, 0, 0};
     float tl = std::sqrt(dot(tx, tx));
     tx = tx * (1.0f / tl);

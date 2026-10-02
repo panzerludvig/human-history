@@ -5,6 +5,7 @@
 // §Population describes the markers and their thinning; the design of the
 // event marks is the comment at MarkGlyph below.
 #pragma once
+#include "constants.h"
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -440,13 +441,13 @@ inline void paint(State& ov, const world::World& w, const camera::Camera& cam, b
     std::unordered_map<long long, int> best; // fresh: its order is the draw order
     auto offer = [&](float x, float y, float w, int idx, bool band, const terrain::V3& at) {
         if (x < -60 || y < -30 || x > ov.ovW + 60 || y > ov.ovH + 30) return;
-        double latDeg = std::asin(std::clamp(at.z, -1.0f, 1.0f)) * 180 / camera::PI;
-        double lonDeg = std::atan2(at.y, at.x) * 180 / camera::PI;
+        double latDeg = std::asin(std::clamp(at.z, -1.0f, 1.0f)) * 180 / constants::PI;
+        double lonDeg = std::atan2(at.y, at.x) * 180 / constants::PI;
         long long li = (long long)std::floor(latDeg / stepDeg);
         // Columns narrow towards the poles, so the longitude step widens with
         // the band's own latitude -- the band's, not the marker's, or two
         // neighbours would land in overlapping grids.
-        double bandLat = (li + 0.5) * stepDeg * camera::PI / 180;
+        double bandLat = (li + 0.5) * stepDeg * constants::PI / 180;
         double lonStep = stepDeg / std::max(std::cos(bandLat), 0.02);
         long long ci = (long long)std::floor(lonDeg / lonStep);
         cands.push_back({x, y, w, idx, band});

@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include "constants.h"
 #include "camera.h"
 #include "world.h"
 #include "sim.h"
@@ -182,7 +183,7 @@ int main(int argc, char** argv) {
     w.seed = seed;
     w.name = "roundtrip-probe";
     w.build(logStage);
-    w.simTime += years * 365.0;
+    w.simTime += years * constants::DAYS_PER_YEAR;
     sim::simulate(w.pop, w.tech, w.hydro, w.clim, w.simTime);
     camera::Camera c;
     c.lat = 0.5;

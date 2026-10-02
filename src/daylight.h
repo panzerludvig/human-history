@@ -6,12 +6,12 @@
 // these formulas, so the lit hemisphere on screen and the hours people
 // work can never drift apart.
 #pragma once
+#include "constants.h"
 #include <algorithm>
 #include <cmath>
 
 namespace daylight {
 
-constexpr double PI_D = 3.14159265358979323846;
 constexpr float SLEEP_HOURS = 7.0f;               // biological constant
 constexpr float WAKE_HOURS = 24.0f - SLEEP_HOURS; // activity cap: 17 h
 constexpr float FIRE_EFFICIENCY = 0.35f;          // working by firelight
@@ -21,25 +21,27 @@ constexpr float SUN_ALT_MOVE = -6.0f;  // civil twilight: bright enough to walk
 // Solar declination, radians. Phase matches the renderer's sun exactly:
 // +-23.5 deg peaking at the June 21 solstice (day 171 of the 365-day year).
 inline double declination(double t) {
-    return 23.5 * PI_D / 180.0 * std::cos(2 * PI_D * (std::fmod(t, 365.0) - 171.0) / 365.0);
+    return 23.5 * constants::PI / 180.0 *
+           std::cos(2 * constants::PI * (std::fmod(t, constants::DAYS_PER_YEAR) - 171.0) /
+                    constants::DAYS_PER_YEAR);
 }
 
 // The subsolar direction for rendering: declination above, one westward lap
 // per day, solar noon at longitude 0 at 12:00.
 inline void subsolar(double t, double& dec, double& hourAngle) {
     dec = declination(t);
-    hourAngle = PI_D - 2.0 * PI_D * std::fmod(t, 1.0);
+    hourAngle = constants::PI - 2.0 * constants::PI * std::fmod(t, 1.0);
 }
 
 // Hours per day the sun sits above altDeg at latitude lat (radians).
 inline float hoursAbove(float lat, double t, float altDeg) {
     double dec = declination(t);
-    double a = altDeg * PI_D / 180.0;
+    double a = altDeg * constants::PI / 180.0;
     double cosH = (std::sin(a) - std::sin((double)lat) * std::sin(dec)) /
                   std::max(std::cos((double)lat) * std::cos(dec), 1e-9);
     if (cosH <= -1.0) return 24.0f; // polar day
     if (cosH >= 1.0) return 0.0f;   // polar night
-    return (float)(24.0 / PI_D * std::acos(cosH));
+    return (float)(24.0 / constants::PI * std::acos(cosH));
 }
 
 // The day's work budget in effective hours: daylight at full efficiency up
@@ -66,7 +68,7 @@ inline float travelHours(float lat, double t) {
 inline double activeDays(float lon, double t0, double t1, float hours) {
     if (t1 - t0 >= 1.0) return t1 - t0;
     if (hours <= 0 || t1 <= t0) return 0.0;
-    double lonOff = lon / (2 * PI_D); // local solar time offset, in days
+    double lonOff = lon / (2 * constants::PI); // local solar time offset, in days
     double a = t0 + lonOff, b = t1 + lonOff;
     double half = hours / 48.0; // half-window in days
     double sum = 0;

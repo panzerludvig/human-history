@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include "constants.h"
 #include "terrain.h"
 #include "hydrology.h"
 #define HH_QG2GEO // the sweep carries the mesh weather; the game does not (see atmosphere::QG2GEO)
@@ -82,7 +83,7 @@ static Score judge(const atmosphere::Climatology& c) {
     Score s;
     double gT = 0, gR = 0, gw = 0;
     for (int y = 0; y < AH; y++) {
-        double w = std::cos(((y + 0.5) / (double)AH - 0.5) * 3.14159265);
+        double w = std::cos(((y + 0.5) / (double)AH - 0.5) * constants::PI);
         for (int x = 0; x < AW; x++)
             for (int se = 0; se < atmosphere::SEASONS; se++) {
                 int i = se * AW * AH + y * AW + x;
@@ -183,7 +184,9 @@ static void reportLakes(const world::World& globe) {
                 }
         }
         sizes.push_back(n);
-        if (n * (4 * 3.14159265 * 6371.0 * 6371.0 / (hydrology::W * hydrology::H)) > 50000) {
+        if (n * (4 * constants::PI * constants::EARTH_RADIUS_KM * constants::EARTH_RADIUS_KM /
+                 (hydrology::W * hydrology::H)) >
+            50000) {
             double sx = 0, sy = 0;
             int m = 0;
             float lvl = hy.cells[i0].lakeLevel, flo = 1e9;
@@ -217,14 +220,16 @@ static void reportLakes(const world::World& globe) {
             fprintf(stderr,
                     "  big lake: %.0f km2 at lat %.0f lon %.0f, level %.0f m, floor %.0f m, depth "
                     "median %.0f p90 %.0f\n",
-                    n * (4 * 3.14159265 * 6371.0 * 6371.0 / (hydrology::W * hydrology::H)),
+                    n * (4 * constants::PI * constants::EARTH_RADIUS_KM *
+                         constants::EARTH_RADIUS_KM / (hydrology::W * hydrology::H)),
                     (sy / m + 0.5) / hydrology::H * 180 - 90,
                     (sx / m + 0.5) / hydrology::W * 360 - 180, lvl, flo, depths[depths.size() / 2],
                     depths[depths.size() * 9 / 10]);
         }
     }
     std::sort(sizes.rbegin(), sizes.rend());
-    double km2 = 4 * 3.14159265 * 6371.0 * 6371.0 / (hydrology::W * hydrology::H);
+    double km2 = 4 * constants::PI * constants::EARTH_RADIUS_KM * constants::EARTH_RADIUS_KM /
+                 (hydrology::W * hydrology::H);
     fprintf(stderr, "LAKES: %d, largest (km2, cell-area mean):", (int)sizes.size());
     for (size_t k = 0; k < sizes.size() && k < 8; k++) fprintf(stderr, " %.0f", sizes[k] * km2);
     fprintf(stderr, "\n");
@@ -265,7 +270,7 @@ static void reportLandSeaVote(const world::World& globe) {
     const int AW = atmosphere::W, AH = atmosphere::H;
     double hist[5] = {0}, wgt = 0, mixed = 0, landLost = 0, seaLost = 0, landAll = 0;
     for (int y = 0; y < AH; y++) {
-        double cw = std::cos(((y + 0.5) / AH - 0.5) * 3.14159265);
+        double cw = std::cos(((y + 0.5) / AH - 0.5) * constants::PI);
         for (int x = 0; x < AW; x++) {
             // Proportional slices, as the atmosphere now takes them (the
             // integer division that stood here shrank the map by 6%).
@@ -395,7 +400,7 @@ static void reportContrast(const world::World& globe) {
         return sw ? EARTH[6].sw : EARTH[6].olr;
     };
     const int NZ = atmosphere::Climatology::NZB;
-    const double R = 6.371e6;
+    const double R = constants::EARTH_RADIUS_M;
     fprintf(stderr, "\nWHERE THE CONTRAST IS MADE (zonal, W/m2; transport in PW)\n");
     fprintf(stderr, "  %5s | %6s %6s %6s | %6s %6s %6s | %6s %6s | %6s %6s %6s %6s %6s | %6s\n",
             "lat", "absSW", "OLR", "net", "eSW", "eOLR", "enet", "PW", "ePW", "BLhor", "FThor",
@@ -404,8 +409,8 @@ static void reportContrast(const world::World& globe) {
     std::vector<double> pwRow(AH, 0.0), epwRow(AH, 0.0);
     for (int y = 0; y < AH; y++) {
         double lat = ((y + 0.5) / (double)AH - 0.5) * 180.0;
-        double area =
-            2 * 3.14159265 * R * R * std::cos(lat * 3.14159265 / 180.0) * (3.14159265 / AH);
+        double area = 2 * constants::PI * R * R * std::cos(lat * constants::PI / 180.0) *
+                      (constants::PI / AH);
         const double* z = &c.zonBud[NZ * y];
         pw += (z[0] - z[1]) * area * 1e-15;
         epw += (earthAt(std::fabs(lat), true) - earthAt(std::fabs(lat), false)) * area * 1e-15;
@@ -432,7 +437,7 @@ static void reportContrast(const world::World& globe) {
                 s[10], s[11], s[12]);
     }
     {
-        double area = 4 * 3.14159265 * R * R;
+        double area = 4 * constants::PI * R * R;
         fprintf(stderr,
                 "  planet: absorbed - emitted = %+.1f W/m2 (%+.2f PW); a steady\n"
                 "  state is zero, and anything else is a term that is not conserving\n",
@@ -441,7 +446,7 @@ static void reportContrast(const world::World& globe) {
         // to zero over the planet; the one that does not is the leak.
         double g[NZ] = {0}, wsum = 0;
         for (int y = 0; y < AH; y++) {
-            double cw = std::cos(((y + 0.5) / (double)AH - 0.5) * 3.14159265);
+            double cw = std::cos(((y + 0.5) / (double)AH - 0.5) * constants::PI);
             const double* z = &c.zonBud[NZ * y];
             for (int k = 0; k < NZ - 1; k++) g[k] += z[k] * cw;
             wsum += cw;
@@ -894,8 +899,8 @@ static void reportHeightSources(const world::World& globe) {
     std::vector<double> baseV;
     for (int y = 0; y < hydrology::H; y += 3)
         for (int x = 0; x < hydrology::W; x += 3) {
-            double lat = ((y + 0.5) / hydrology::H - 0.5) * 3.14159265;
-            double lon = ((x + 0.5) / hydrology::W * 2.0 - 1.0) * 3.14159265;
+            double lat = ((y + 0.5) / hydrology::H - 0.5) * constants::PI;
+            double lon = ((x + 0.5) / hydrology::W * 2.0 - 1.0) * constants::PI;
             terrain::V3 n{(float)(std::cos(lat) * std::cos(lon)),
                           (float)(std::cos(lat) * std::sin(lon)), (float)std::sin(lat)};
             terrain::V3 w = terrain::rotate(rot, n) + offset;
@@ -1000,7 +1005,7 @@ static void reportCycle(const world::World& globe) {
     {
         double ev = 0, rn = 0, wgt = 0;
         for (int y = 0; y < AH; y++) {
-            double cwl = std::cos(((y + 0.5) / AH - 0.5) * 3.14159265);
+            double cwl = std::cos(((y + 0.5) / AH - 0.5) * constants::PI);
             for (int x = 0; x < AW; x++)
                 for (int se = 0; se < atmosphere::SEASONS; se++) {
                     int i = se * AW * AH + y * AW + x;
@@ -1041,7 +1046,7 @@ static void reportFullRes(const world::World& globe) {
     double zBleed[12] = {0}, zBleedN[12] = {0};
 #pragma omp parallel for
     for (int y = 0; y < GH; y++) {
-        double lat = ((y + 0.5) / GH - 0.5) * 3.14159265;
+        double lat = ((y + 0.5) / GH - 0.5) * constants::PI;
         // Accumulate the row privately and merge once, not per cell:
         // a critical section two million times over is not a probe.
         double rSand = 0, rDes = 0, rBare = 0, rT = 0, rM = 0, rN = 0, rHot = 0, rHotN = 0;
@@ -1051,7 +1056,7 @@ static void reportFullRes(const world::World& globe) {
         for (int x = 0; x < GW; x += 2) {
             float h = hy.heightM[y * GW + x];
             if (h <= 0) continue;
-            double lon = ((x + 0.5) / GW * 2.0 - 1.0) * 3.14159265;
+            double lon = ((x + 0.5) / GW * 2.0 - 1.0) * constants::PI;
             terrain::V3 n{(float)(std::cos(lat) * std::cos(lon)),
                           (float)(std::cos(lat) * std::sin(lon)), (float)std::sin(lat)};
             terrain::V3 w = terrain::rotate(rot, n) + offset;
@@ -1099,8 +1104,8 @@ static void reportFullRes(const world::World& globe) {
                     if (raw > 2.0 && msk <= 2.0) rBleedGate += 1;
                 }
             }
-            int ax = std::min(AW - 1, std::max(0, (int)((lon / 6.2831853 + 0.5) * AW)));
-            int ay = std::min(AH - 1, std::max(0, (int)((lat / 3.14159265 + 0.5) * AH)));
+            int ax = std::min(AW - 1, std::max(0, (int)((lon / (2 * constants::PI) + 0.5) * AW)));
+            int ay = std::min(AH - 1, std::max(0, (int)((lat / constants::PI + 0.5) * AH)));
             if (c.elev[ay * AW + ax] <= 0.0f) {
                 rGhost += 1;
                 rGhostSand += m.sub[1];
@@ -1109,7 +1114,7 @@ static void reportFullRes(const world::World& globe) {
             }
         }
         if (rN < 1) continue;
-        int b = std::min(NB - 1, std::max(0, (int)((lat / 3.14159265 + 0.5) * NB)));
+        int b = std::min(NB - 1, std::max(0, (int)((lat / constants::PI + 0.5) * NB)));
 #pragma omp critical
         {
             sSand[b] += rSand;
@@ -1303,8 +1308,8 @@ static void reportPalette(const world::World& globe) {
             continue;
         }
         int x = i % AW, y = i / AW;
-        double lat = ((y + 0.5) / (double)AH - 0.5) * 3.14159265;
-        double lon = ((x + 0.5) / (double)AW * 2.0 - 1.0) * 3.14159265;
+        double lat = ((y + 0.5) / (double)AH - 0.5) * constants::PI;
+        double lon = ((x + 0.5) / (double)AW * 2.0 - 1.0) * constants::PI;
         terrain::V3 nn{(float)(std::cos(lat) * std::cos(lon)),
                        (float)(std::cos(lat) * std::sin(lon)), (float)std::sin(lat)};
         terrain::V3 ww = terrain::rotate(rot, nn) + offset;
@@ -1435,8 +1440,8 @@ static void reportLandCover(const world::World& globe) {
     for (int i = 0; i < AW * AH; i++) {
         if (c.elev[i] <= 0.0f) continue;
         int x = i % AW, y = i / AW;
-        double lat = ((y + 0.5) / (double)AH - 0.5) * 3.14159265;
-        double lon = ((x + 0.5) / (double)AW * 2.0 - 1.0) * 3.14159265;
+        double lat = ((y + 0.5) / (double)AH - 0.5) * constants::PI;
+        double lon = ((x + 0.5) / (double)AW * 2.0 - 1.0) * constants::PI;
         terrain::V3 n{(float)(std::cos(lat) * std::cos(lon)),
                       (float)(std::cos(lat) * std::sin(lon)), (float)std::sin(lat)};
         terrain::V3 w = terrain::rotate(rot, n) + offset;
@@ -1651,7 +1656,7 @@ int main(int argc, char** argv) {
     // column in every mode; "game" runs the game's own stage set (see
     // PROBES) so the figures that survive the painting can be checked
     // against the full run.
-    if (argc >= 3) atmosphere::SPINUP_DAYS = atoi(argv[2]) * 365;
+    if (argc >= 3) atmosphere::SPINUP_DAYS = atoi(argv[2]) * constants::DAYS_PER_YEAR_INT;
     atmosphere::PROBES = true;
     if (argc >= 4 && std::string(argv[3]) == "rules") atmosphere::PRESCRIBED = true;
     if (argc >= 4 && std::string(argv[3]) == "game") {

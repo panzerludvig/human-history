@@ -9,6 +9,7 @@
 // §Verification: same seed, same world), so nothing in this header knows
 // about a window.
 #pragma once
+#include "constants.h"
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -78,7 +79,7 @@ struct World {
 
     void derive() {
         std::mt19937 rng(seed);
-        std::uniform_real_distribution<double> ang(0.0, 2 * camera::PI), off(-2.0, 2.0);
+        std::uniform_real_distribution<double> ang(0.0, 2 * constants::PI), off(-2.0, 2.0);
         double a = ang(rng), b = ang(rng), c = ang(rng);
         // Rotation = Rz(a) * Ry(b) * Rx(c), stored column-major.
         double ca = cos(a), sa = sin(a), cb = cos(b), sb = sin(b), cc = cos(c), sc = sin(c);

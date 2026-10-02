@@ -22,6 +22,7 @@
 #include <cstring>
 #include <unordered_map>
 #include <vector>
+#include "constants.h"
 #include "world.h"
 #include "sim.h"
 
@@ -114,7 +115,7 @@ static Report survey(const population::Field& pf, double now, const LapseLog& lo
             // not exist, and fails the check loudly.
             auto at = log.lapsedDay.find(s.id);
             if (at != log.lapsedDay.end() &&
-                now - at->second <= population::FIELD_REVERT_YEARS * 365.0) {
+                now - at->second <= population::FIELD_REVERT_YEARS * constants::DAYS_PER_YEAR) {
                 r.idleRecentKm2 += tilledOf(s);
             } else {
                 r.idleOldKm2 += tilledOf(s);
@@ -194,7 +195,7 @@ static void printFirstInventions(const population::Field& pf, const char* pass) 
             fprintf(stderr, "first invented (%s): %-10s never\n", pass, technology::techName(t));
         else
             fprintf(stderr, "first invented (%s): %-10s year %.0f\n", pass, technology::techName(t),
-                    first / 365.0);
+                    first / constants::DAYS_PER_YEAR);
     }
 }
 
@@ -232,28 +233,30 @@ int main(int argc, char** argv) {
         LapseLog log;
         auto start = std::chrono::steady_clock::now();
         for (int y = 1; y <= years; y++) {
-            sim::simulate(pf, ws, hy, clim, y * 365.0);
-            countLapses(pf, y * 365.0, log, r);
+            sim::simulate(pf, ws, hy, clim, y * constants::DAYS_PER_YEAR);
+            countLapses(pf, y * constants::DAYS_PER_YEAR, log, r);
             if (forceLapse) {
                 for (int k = 0; k < 5; k++)
                     if (y == lapseProbeYears[k])
-                        lapseTilledKm2[pass][k] = survey(pf, y * 365.0, log).worldTilledKm2;
-                if (y == LAPSE_YEAR) endFarming(pf, ws, y * 365.0);
-                if (y > LAPSE_YEAR) r.forcedReadoptions += endFarming(pf, ws, y * 365.0);
+                        lapseTilledKm2[pass][k] =
+                            survey(pf, y * constants::DAYS_PER_YEAR, log).worldTilledKm2;
+                if (y == LAPSE_YEAR) endFarming(pf, ws, y * constants::DAYS_PER_YEAR);
+                if (y > LAPSE_YEAR)
+                    r.forcedReadoptions += endFarming(pf, ws, y * constants::DAYS_PER_YEAR);
             }
             if (population::HEAT_ENABLED) {
                 for (const population::Settlement& s : pf.settlements)
                     if (!s.leaving) r.coldSampled += s.coldYr;
             }
             if (y % 100 == 0) {
-                Report m = survey(pf, y * 365.0, log);
+                Report m = survey(pf, y * constants::DAYS_PER_YEAR, log);
                 fprintf(stderr,
                         "year %4d: %5d settlements, %8.0f people, cold/yr %6.0f, "
                         "hunger/yr %6.0f, low piles %4d\n",
                         y, m.settlements, m.people, m.coldYr, m.starvedYr, m.lowPile);
             }
         }
-        Report m = survey(pf, years * 365.0, log);
+        Report m = survey(pf, years * constants::DAYS_PER_YEAR, log);
         m.coldSampled = r.coldSampled;
         m.ledger = r.ledger;
         population::LEDGER_AUDIT = nullptr;

@@ -4,6 +4,7 @@
 // would have, what a claim of a given reach is worth, how far a frontier
 // creeps in a year. Design/Migration.md.
 #pragma once
+#include "constants.h"
 #include "technology.h"
 #include "sphere.h"
 #include <cmath>
@@ -15,7 +16,7 @@ inline terrain::V3 sectorDir(const terrain::V3& c, int k) {
     terrain::V3 east = norm3({-c.y, c.x, 0.0f});
     terrain::V3 north = {c.y * east.z - c.z * east.y, c.z * east.x - c.x * east.z,
                          c.x * east.y - c.y * east.x};
-    float a = 6.2831853f * (k + 0.5f) / population::CLAIM_SECTORS;
+    float a = (2 * constants::PI_F) * (k + 0.5f) / population::CLAIM_SECTORS;
     return norm3(east * std::cos(a) + north * std::sin(a));
 }
 
@@ -32,7 +33,7 @@ inline float claimReach(const population::Settlement& s, const terrain::V3& q) {
     // map draws is exactly what the simulation enforces.
     float a = std::atan2(d.x * north.x + d.y * north.y + d.z * north.z,
                          d.x * east.x + d.y * east.y + d.z * east.z) /
-                  6.2831853f * population::CLAIM_SECTORS -
+                  (2 * constants::PI_F) * population::CLAIM_SECTORS -
               0.5f;
     float fl = std::floor(a), f = a - fl;
     int k0 = ((int)fl % population::CLAIM_SECTORS + population::CLAIM_SECTORS) %
@@ -154,7 +155,7 @@ inline bool growClaim(population::Field& pf, int si, double now) {
     if (!wants) return false;
     // Hunger pushes the border: people range further before they leave.
     float phi = s.P > 1 ? technology::effectiveK(s, now) * s.R / s.P : 2.0f;
-    float step = (float)(population::CLAIM_GROW_KM_YR * span / 365.0) *
+    float step = (float)(population::CLAIM_GROW_KM_YR * span / constants::DAYS_PER_YEAR) *
                  (1.0f + 6.0f * population::needRamp(phi));
     terrain::V3 c = cellCentre(s.cell);
     bool moved = false, free = false;
@@ -162,7 +163,7 @@ inline bool growClaim(population::Field& pf, int si, double now) {
         if (s.claim[k] >= want - 0.01f) continue;
         float r = std::min(s.claim[k] + std::max(step, 0.01f), want);
         terrain::V3 u = sectorDir(c, k);
-        terrain::V3 q = norm3(c + u * (r / 6371.0f));
+        terrain::V3 q = norm3(c + u * (r / constants::EARTH_RADIUS_KM_F));
         if (claimant(pf, q, si) >= 0) continue; // somebody was here first
         free = true;
         if (step <= 0) continue;
