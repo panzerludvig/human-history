@@ -1,8 +1,6 @@
 # 09 — One name for each shared constant
 
-**Status:** planned (2026-09-28) — split 2026-09-28: the vector type went to order 16, the
-thresholds to 17, the unit names and enum classes to 18; restated 2026-10-02 without line
-references, after order 06
+**Status:** taken by the night of 2026-10-02; passed, merged into `nightly/2026-10-02` as `5d84618`
 
 ## Problem
 
@@ -83,3 +81,46 @@ of the include graph; most of `src/` (`atmosphere.h`, `terrain.h`, `hydrology.h`
 ## Depends on
 
 06 (implemented): the shader receives its constants from the C++ side.
+
+## Run
+
+**Outcome:** passed. Branch `wo/09-one-name-per-shared-constant`, one commit `53f5394`.
+Merged into `nightly` as `5d84618`, cleanly.
+
+What it did: a new header, `src/constants.h` (namespace `constants`), defines `PI`,
+`EARTH_RADIUS_KM`, `LAPSE_K_PER_KM`, `DAYS_PER_YEAR_INT` and `NEVER_DAY`, and derives the
+float, metre and double forms from them. The six names for pi, five for the radius,
+`atmosphere::PRE_LAPSE`, `technology::YEAR` and `technology::INF_T` are gone; every use
+names `constants::`. Every 365 meaning a year uses the constant, 3650 and 36500 included.
+The herd's factor is `population::HERD_SEASONAL_MEAN`. "Earlier than never" tests against
+`NEVER_DAY`. `globeConstants` passes `PI`, `EARTH_RADIUS_KM`, `EARTH_RADIUS_M`,
+`LAPSE_K_PER_KM` and `DAYS_PER_YEAR` to the shader, which writes none of them by hand.
+
+Done when:
+
+1. `build.bat` and all nine `build_*.bat` exit 0, C4996 only; again on `nightly`.
+2. The grep finds only `src/constants.h:15` (`PI`), `:20` (`EARTH_RADIUS_KM`) and `:38`
+   (`NEVER_DAY`), on the branch and on `nightly`.
+3. `sweep.exe earth 0 rules 1` identical in full; `sweep.exe 7 0 rules 1` identical in the
+   `CLIMATE` block and water line (one line elsewhere, `-82:+0.0` -> `-82:-0.0`); on
+   `nightly` identical to the branch.
+4. Quoted: `test_resources` at 40 years, settlements/people per pass, seed 7
+   403/151905 and 406/150658 -> 400/151440 and 406/150658; seed 3 identical
+   (399/158344, 401/157866). Screenshots, pixels changed and largest change:
+   `46.318 -174.111 4 7` 0%, `46.318 -174.111 400 7` 0.0023% 1/255, `20 30 12000 7`
+   0.0002% 1/255, `46.5 10 4 earth` 0.0001% 1/255, `46.5 10 400 earth` 0.0104% 1/255. On
+   `nightly` all five byte-identical to the branch's, and `test_resources` identical but
+   for its wall-clock line.
+
+Files beyond the list: `anchor.h`, `overlay.h`, `world.h`, `news.h`; the probes
+`gridtest.cpp`, `solvetest.cpp`, `test_qg2geo.cpp`, `test_savefile.cpp`, `terrprobe.cpp`,
+`transect.cpp`; `Technical/Globe Viewer.md`, `Technical/Architecture.md`.
+
+Unsure of: a new header rather than a block in an existing one. `gridtest`, `solvetest`
+and `sweep` keep a local `R` derived from the radius. Rounding moves the order accepted:
+the atmosphere's pi is full double; the shader's hut-cull radius squared, written as
+40602000 and commented "6371^2", is the true 40589641; `1.5707963f` is `PI_F/2`; the
+hut and farmstead angle hash uses `PI` for `3.14159`. For the game: huts and farmstead
+dots at close zoom.
+
+Review note for the night: [[Dev Log/Nightly/2026-10-02]].
