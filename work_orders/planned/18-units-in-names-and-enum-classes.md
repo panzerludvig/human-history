@@ -1,8 +1,7 @@
 # 18 — Units in the names of state fields; enum classes for closed sets
 
-**Status:** planned (2026-09-28) — split out of order 09
-
-Line references checked against 827c828 on 2026-09-28.
+**Status:** planned (2026-09-28) — split out of order 09; restated 2026-10-02 without line
+references
 
 ## Problem
 
@@ -16,18 +15,18 @@ without a `default`).
 
 ## Evidence
 
-- Settlement state (`src/settlement.h:600-652`): `P` people (about 160 lines in 15
-  files, counting the same name on bands and on the per-step state), `S` the food store in
-  person-days of rations, `R` land condition 0..1, `t` the sim day `P` and `R` hold at,
+- Settlement state (`population::Settlement`): `P` people (used across most of the
+  population model, the same name on bands and on the per-step state), `S` the food store
+  in person-days of rations, `R` land condition 0..1, `t` the sim day `P` and `R` hold at,
   `herd` in people-fed units, `fuelS` fuel in kg, `claim[]` territory reach per sector in
-  km. The per-step state (`population::Step`, `population.h:422` and on) mirrors them.
-- `Band::P` (`settlement.h:689`), `Band::water` person-days of water (`settlement.h:702`).
-- `camera::Camera::altitude` in Earth radii (`src/camera.h:46`).
-- Plain integers for closed sets: `panels::Panel::kind` and `tab` (`src/panels.h:29, 32`),
-  `App::genKind` and `debugMode` (`src/main.cpp:61, 68`), `news::State::level` and `kind`
-  (`src/news.h:41-42`). The event-queue kinds are already `enum class Due` (`src/sim.h`).
-- Saves write these fields by position, not by name (`src/savefile.h:57-67`), so renaming
-  them does not touch the save format.
+  km. The per-step state (`population::Step`) mirrors them.
+- `Band::P`, and `Band::water` in person-days of water.
+- `camera::Camera::altitude`, in Earth radii.
+- Plain integers for closed sets: `panels::Panel::kind` and `tab`, `App::genKind` and
+  `debugMode` in `main.cpp`, `news::State::level` and `kind`. The event-queue kinds are
+  already `enum class Due` (`src/sim.h`).
+- Saves write these fields by position, not by name (`savefile.h`), so renaming them does
+  not touch the save format.
 
 ## Design
 
@@ -70,8 +69,8 @@ probes that read these fields, and the design and Technical notes that name them
    for each field.
 3. Probe outputs byte-identical to the pre-order run: `build\sweep.exe 7 0 rules 1`,
    `build\test_resources.exe 7 40` and `3 40`, `build\test_savefile.exe 7 3`.
-4. A save written before this order loads, and game screenshots at the five views of order
-   06's Done when are byte-identical.
+4. A save written before this order loads, and game screenshots (with `HH_BENCH=5`) at the
+   five views of order 06's Done when are byte-identical.
 
 ## Depends on
 

@@ -1,8 +1,6 @@
 # 15 — A probe that checks the shader against its CPU source
 
-**Status:** planned (2026-09-28)
-
-Line references checked against 827c828 on 2026-09-28.
+**Status:** planned (2026-09-28); restated 2026-10-02 without line references, after order 06
 
 ## Problem
 
@@ -18,9 +16,11 @@ Serves `standards/general.md` §Mirrored code ("a drift between them is a bug") 
 
 - Order 06, Evidence: the lake shore, ice and diurnal rules drifted unnoticed between
   2026-08 and 2026-09.
-- `Technical/Architecture.md:40`: "The remaining risk is the two copies drifting apart; a
-  test that compares CPU and GPU heights at sample points would close it."
-- The mirror pairs are listed in order 06's Outcome (`work_orders/planned/06-cpu-gpu-drift.md`).
+- `Technical/Architecture.md`, on the terrain mirrored on CPU and GPU: "The remaining
+  risk is the two copies drifting apart; a test that compares CPU and GPU heights at
+  sample points would close it."
+- The mirror pairs are listed in order 06's Outcome
+  (`work_orders/implemented/06-cpu-gpu-drift.md`), each marked at both sites since.
 
 ## Design
 
@@ -67,7 +67,7 @@ A guide, not a limit: a new probe source and `build_*.bat`, a debug output in
    (the lapse rate from 6.5 to 7.0) makes the probe fail on the temperature comparison,
    and restoring it makes the probe pass. The Run section quotes both runs. The change is
    not committed.
-4. Game screenshots at the five views of order 06's Done when are byte-identical before and
+4. Game screenshots (with `HH_BENCH=5`) at the five views of order 06's Done when are byte-identical before and
    after: a debug output, if added, changes nothing in normal drawing.
 
 ## Depends on

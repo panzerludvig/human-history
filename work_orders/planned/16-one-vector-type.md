@@ -1,8 +1,6 @@
 # 16 — One vector type, in double
 
-**Status:** planned (2026-09-28)
-
-Line references checked against 827c828 on 2026-09-28.
+**Status:** planned (2026-09-28); restated 2026-10-02 without line references
 
 ## Problem
 
@@ -15,20 +13,18 @@ and `standards/cpp.md` §Numbers (`double` for geometry).
 
 ## Evidence
 
-- `src/terrain.h:32` `terrain::V3` (float) — 21 files, about 190 lines: noise, settlement
-  and band positions, most of the simulation.
-- `src/plates.h:20` `plates::V3` (float) — a copy of `terrain::V3`.
-- `src/camera.h:17` `camera::Vec3` (double) — camera, overlay, tooltip, `main.cpp`,
-  `anchor.h`.
-- `src/geodesic.h:42` `geodesic::D3` (double) — the geodesic mesh and the atmosphere models
-  on it; the only large arrays of vectors in the code (`geodesic.h:78, 84`,
-  `qg2geo.h:70-72`), already double.
-- Conversions by hand: `inspect.h` (`describePoint`), `main.cpp` (`pickAt`), `world.h`
-  (`terrainOffset`).
-- Three latitude/longitude-to-direction functions: `camera::sphereDir` (`camera.h:38`),
-  `atmosphere::unitAt` (`atmosphere.h:2941`), `hydrology::cellDir` (`hydrology.h:46`).
-- `standards/cpp.md:16` names `terrain::V3` against `geodesic::D3` as the float/double split
-  the code makes.
+- `terrain::V3` (float): about twenty files, noise, settlement and band positions, most of
+  the simulation. `hydrology` uses it under the alias `V3orig`.
+- `plates::V3` (float): a copy of `terrain::V3`.
+- `camera::Vec3` (double): the camera, overlay, tooltip, `main.cpp`, `anchor.h`.
+- `geodesic::D3` (double): the geodesic mesh and the atmosphere models on it; the only
+  large arrays of vectors in the code (the mesh's and `qg2geo`'s), already double.
+- Conversions by hand: `inspect::describePoint`, `main.cpp`'s `pickAt`,
+  `World::terrainOffset`.
+- Three latitude/longitude-to-direction functions: `camera::sphereDir`,
+  `atmosphere::unitAt`, `hydrology::cellDir`.
+- `standards/cpp.md` §Numbers names `terrain::V3` against `geodesic::D3` as the
+  float/double split the code makes.
 
 ## Design
 
@@ -63,13 +59,13 @@ and `standards/cpp.md`.
 3. The climate is the same: the `CLIMATE` block and water line of
    `build\sweep.exe earth 0 rules 1` and `7 0 rules 1` are identical as printed to the
    pre-order run.
-4. The world is the same to rounding: `build\test_resources.exe 7 40` and `3 40` give
-   settlement counts and people within 1% of the pre-order run; the Run quotes both.
+4. For the morning, not a gate: `build\test_resources.exe 7 40` and `3 40`, settlements
+   and people before and after, quoted.
 5. The world build is not slower: `World::build` for seed 7 and for `earth`, timed three
    times each before and after, is within 10% of the pre-order time. The Run quotes the
    times.
 6. `build\test_savefile.exe 7 3` passes, and a save written before this order loads.
-7. Screenshots at the five views of order 06's Done when: the Run quotes, per view, the
+7. Screenshots (with `HH_BENCH=5`) at the five views of order 06's Done when: the Run quotes, per view, the
    share of pixels changed and the largest change, for the morning.
 
 ## Depends on

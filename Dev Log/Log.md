@@ -1,5 +1,11 @@
 # Dev Log
 
+## 2026-10-02 — Planned orders describe behaviour, not lines
+
+The four orders in `planned/` (09, 15, 16, 18) named line numbers in their Evidence, checked against the tree of 2026-09-28; the night of 2026-09-28 moved most of them, and the morning's re-check of every reference was the step that had not been done. The developer's rule: a planned order describes the desired behaviour and the problem, and leaves where the code is and how to change it to the implementer. Line numbers rot with every merge and add nothing an implementer cannot find in a minute. The four orders were restated without them, their world-total checks turned into quotes per the rule of 2026-09-28, and the checklist's item 5 and the morning's re-check now ask whether what an order says is still true, not whether its lines still match (`work_orders/README.md`, [[Meta/Work Orders]]).
+
+---
+
 ## 2026-09-29 — The second night
 
 Orders 06, 07, 11, 12, 17 and 19, all kept and merged into `main` as `5ca4701`; order 13 dropped; the conflict rule and the planning checklist changed during the run: [[Dev Log/Nightly/2026-09-28]].

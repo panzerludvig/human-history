@@ -48,7 +48,9 @@ Every order has these, in this order:
   or how its stage ended (`failed on 2026-10-02: ...`). The folder is the stage; the line
   never contradicts it.
 - **Problem**: what is wrong, measured against `standards/` where a rule applies.
-- **Evidence**: file and line references, verified at the date of writing.
+- **Evidence**: what shows the problem, named by file, function or behaviour; never by
+  line number, which rots with every merge. Where the code is, and how to change it, is
+  the implementer's to find.
 - **Design**: the design or Technical note the order implements, by vault path. A game
   addition needs its note at status Designed or later; a refactoring names the standard
   it serves.
@@ -94,7 +96,8 @@ to `planned/` when all of these hold:
    from any change to an early random draw (orders 11 and 12, 2026-09-28).
 4. Every order in Depends on is implemented. (Until 2026-09-28 a planned dependency was
    enough; 09, 13 and 15 were planned that way and stand.)
-5. The Evidence line references were checked against the tree on the day it moved.
+5. The order names no line numbers, and what it says about the code is still true on
+   the day it moves.
 
 Overlap with other planned orders is not a criterion. Which orders share a night is the
 run's decision, and it only puts independent orders together.
@@ -184,8 +187,8 @@ Read the review note and the nightly branch. Per order, write the Verdict (keep,
 rework, drop) and why, and move the file as Stages says. Merge `nightly` into `main` only
 by deliberate decision. Then remove the night's worktrees and delete its branches, fill the
 Morning section (the merge hash or why not, what was removed), add the line to
-`Dev Log/Log.md`, and check the Evidence line
-references of the orders in `planned/` against the tree, since they rot with every merge.
+`Dev Log/Log.md`, and read the orders in `planned/` against what the night changed:
+an order whose problem the night solved or moved is restated or sent back to `ideas/`.
 
 ## Provisional
 

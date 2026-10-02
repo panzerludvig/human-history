@@ -45,7 +45,7 @@ Concretely:
 - **The outcome leaves no design decision open.** It states what must be true afterwards and the decisions behind it; an approach that shaped the order may appear, marked as a suggestion.
 - **The finish line is machine-checkable.** "Done when" names a build and a probe run, and the numbers or image the probe must produce. The developer verifies in-game in the morning; the run cannot, so it verifies by probe (`standards/general.md` §Verification).
 - **Dependencies are real, and built.** "Depends on" lists the orders whose result this one needs, and an order runs only once they are on `main`. It also becomes planned only once they are on `main`: an order shaped on top of something not yet built is shaped against a plan, and plans change (2026-09-28). An idea that waits says so in its Status line ("waits for NN") and stays at its problem and open questions until what it waits for is implemented; the flag keeps it from being taken up too early without shaping work that may not survive. Two orders touching the same file is not a dependency and does not keep either out of planned: the order's Files list is a guide for the run's scheduling, not a claim on the files.
-- **The evidence is current.** Line references rot with every merge; they are checked on the day the order moves to planned.
+- **The order describes behaviour, not code.** The problem, the evidence and the outcome are said in terms of what the game does and which files and functions are involved, never by line number: line numbers rot with every merge, and finding the code is the implementer's job (2026-10-02, after the orders planned on 2026-09-28 had to be restated because a night had moved every line they named).
 
 ---
 
@@ -97,7 +97,7 @@ The developer reads the review note and the nightly branch, and decides per orde
 
 Then `nightly` is merged into `main`, or not. That merge is the developer's deliberate act, as [[Meta/Git]] already says for every merge; the run never does it. Once merged, the night's worktrees are removed, its branches deleted, and the kept orders move to `implemented/`.
 
-This morning pass is also the recurring check of `planned/`: the line references there are checked against the tree, since the night's merge has just moved them.
+This morning pass is also the recurring check of `planned/`: an order whose problem the night solved or changed is restated, or goes back to ideas.
 
 ---
 
