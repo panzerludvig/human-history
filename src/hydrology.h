@@ -6,6 +6,7 @@
 // reads as a texture; the function stays the source of truth, this is a
 // derived layer that can be rebuilt from the seed at any time.
 #pragma once
+#include "constants.h"
 #include "terrain.h"
 #include <queue>
 #include <thread>
@@ -18,8 +19,6 @@ using V3orig = terrain::V3;
 // W, H and NO_LAKE reach the shader from here as HW, HH and NO_LAKE (main.cpp).
 constexpr int W = 2048, H = 1024;        // cells: ~20 km at the equator
 constexpr float NO_LAKE = -1.0e6f;        // lakeLevel value meaning "no lake here"
-constexpr float EARTH_RADIUS_KM = 6371.0f;
-constexpr float PI_F = 3.14159265f;
 
 // Neighbour offsets, index stored in the texture as the downstream direction.
 constexpr int DX[8] = {1, 1, 0, -1, -1, -1, 0, 1};
@@ -57,8 +56,8 @@ constexpr float LAKE_SHORE_RISE_M = 12.0f;
 inline float lakeLevelAt(const Result& r, terrain::V3 n) {
     float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
     float lon = std::atan2(n.y, n.x);
-    float u = (lon + PI_F) / (2.0f * PI_F) * (float)W - 0.5f;
-    float v = (lat + PI_F / 2.0f) / PI_F * (float)H - 0.5f;
+    float u = (lon + constants::PI_F) / (2.0f * constants::PI_F) * (float)W - 0.5f;
+    float v = (lat + constants::PI_F / 2.0f) / constants::PI_F * (float)H - 0.5f;
     int x0 = (int)std::floor(u), y0 = (int)std::floor(v);
     float fx = u - (float)x0, fy = v - (float)y0;
     fx = fx * fx * (3.0f - 2.0f * fx);
@@ -79,15 +78,16 @@ inline float lakeLevelAt(const Result& r, terrain::V3 n) {
 }
 
 inline terrain::V3 cellDir(int x, int y) {
-    float lat = ((y + 0.5f) / H) * PI_F - PI_F / 2;
-    float lon = ((x + 0.5f) / W) * 2 * PI_F - PI_F;
+    float lat = ((y + 0.5f) / H) * constants::PI_F - constants::PI_F / 2;
+    float lon = ((x + 0.5f) / W) * 2 * constants::PI_F - constants::PI_F;
     return {std::cos(lat) * std::cos(lon), std::cos(lat) * std::sin(lon), std::sin(lat)};
 }
 
 inline float cellAreaKm2(int y) {
-    float lat = ((y + 0.5f) / H) * PI_F - PI_F / 2;
-    float dLat = PI_F / H, dLon = 2 * PI_F / W;
-    return EARTH_RADIUS_KM * EARTH_RADIUS_KM * std::cos(lat) * dLat * dLon;
+    float lat = ((y + 0.5f) / H) * constants::PI_F - constants::PI_F / 2;
+    float dLat = constants::PI_F / H, dLon = 2 * constants::PI_F / W;
+    return constants::EARTH_RADIUS_KM_F * constants::EARTH_RADIUS_KM_F * std::cos(lat) * dLat *
+           dLon;
 }
 
 // Heights in metres for every cell, computed in parallel.
@@ -320,7 +320,8 @@ inline void reweight(Result& r, const std::vector<float>& rainMmDay,
                        (atT(x0, y0 + 1) * (1 - fx) + atT(x0 + 1, y0 + 1) * fx) * fy;
             balance[i] = rain - petMmDay(tC);
             petArr[i] = petMmDay(tC);
-            float runoff = std::max(rain * 365.0f * 0.55f - 120.0f, 2.0f); // mm/yr
+            float runoff =
+                std::max(rain * constants::DAYS_PER_YEAR_F * 0.55f - 120.0f, 2.0f); // mm/yr
             acc[i] = cellAreaKm2(y) * runoff / REF_RUNOFF_MM_YR;
         }
     for (int k = N - 1; k >= 0; k--) {
@@ -346,7 +347,8 @@ inline void reweight(Result& r, const std::vector<float>& rainMmDay,
                 int c = comp[k];
                 balSum += balance[c];
                 accMax = std::max(accMax, (double)acc[c]);
-                demand += petArr[c] * 365.0 * cellAreaKm2(c / W);   // km2 * mm/yr the lake evaporates
+                demand += petArr[c] * constants::DAYS_PER_YEAR *
+                          cellAreaKm2(c / W); // km2 * mm/yr the lake evaporates
                 int cx = c % W, cy = c / W;
                 for (int d = 0; d < 8; d++) {
                     int ny = cy + DY[d];

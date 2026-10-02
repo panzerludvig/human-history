@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include "constants.h"
 #include "world.h"
 
 int main(int argc, char** argv) {
@@ -49,8 +50,12 @@ int main(int argc, char** argv) {
     fprintf(stderr,
             "\nTransect at %.1f deg, %d cells of land (~%.0f km), from %d cells offshore.\n"
             "Summer = season %d. Cell is ~%.0f km wide here.\n\n",
-            lat, bestRun, bestRun * 2 * 3.14159265 * 6371.0 / W * std::cos(lat * 3.14159 / 180),
-            4, summer, 2 * 3.14159265 * 6371.0 / W * std::cos(lat * 3.14159 / 180));
+            lat, bestRun,
+            bestRun * 2 * constants::PI * constants::EARTH_RADIUS_KM / W *
+                std::cos(lat * constants::PI / 180),
+            4, summer,
+            2 * constants::PI * constants::EARTH_RADIUS_KM / W *
+                std::cos(lat * constants::PI / 180));
 
     printf("%4s %6s %6s %6s %6s %6s %6s %6s %6s %6s %6s %6s\n", "cell", "elev", "T_sum", "T_win",
            "Tair", "press", "u", "v", "water", "RH", "rain", "cloud");

@@ -4,6 +4,7 @@
 // uplift (mountain belts), trenches, ridges and rifts. The result is a small
 // per-cell table sampled by the height function on both CPU and GPU.
 #pragma once
+#include "constants.h"
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
@@ -15,8 +16,6 @@ namespace plates {
 
 // W and H reach the shader from here as PW and PH (main.cpp).
 constexpr int W = 1024, H = 512;   // ~40 km cells; boundaries are smooth
-constexpr float PI_F = 3.14159265f;
-constexpr float EARTH_RADIUS_KM = 6371.0f;
 
 struct V3 {
     float x, y, z;
@@ -54,8 +53,8 @@ struct Field {
     Cell sample(V3 n) const {
         float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
         float lon = std::atan2(n.y, n.x);
-        float u = (lon + PI_F) / (2 * PI_F) * W - 0.5f;
-        float v = (lat + PI_F / 2) / PI_F * H - 0.5f;
+        float u = (lon + constants::PI_F) / (2 * constants::PI_F) * W - 0.5f;
+        float v = (lat + constants::PI_F / 2) / constants::PI_F * H - 0.5f;
         int x0 = (int)std::floor(u), y0 = (int)std::floor(v);
         float fx = u - x0, fy = v - y0;
         float wx[4], wy[4];
@@ -87,8 +86,8 @@ struct Field {
 };
 
 inline V3 cellDir(int x, int y) {
-    float lat = ((y + 0.5f) / H) * PI_F - PI_F / 2;
-    float lon = ((x + 0.5f) / W) * 2 * PI_F - PI_F;
+    float lat = ((y + 0.5f) / H) * constants::PI_F - constants::PI_F / 2;
+    float lon = ((x + 0.5f) / W) * 2 * constants::PI_F - constants::PI_F;
     return {std::cos(lat) * std::cos(lon), std::cos(lat) * std::sin(lon), std::sin(lat)};
 }
 
@@ -123,7 +122,8 @@ inline Field build(uint32_t seed) {
     std::mt19937 rng(seed ^ 0x9E3779B9u);
     std::uniform_real_distribution<float> u01(0.0f, 1.0f);
     auto randDir = [&] {
-        float z = u01(rng) * 2 - 1, a = u01(rng) * 2 * PI_F, r = std::sqrt(std::max(0.0f, 1 - z * z));
+        float z = u01(rng) * 2 - 1, a = u01(rng) * 2 * constants::PI_F,
+              r = std::sqrt(std::max(0.0f, 1 - z * z));
         return V3{r * std::cos(a), r * std::sin(a), z};
     };
 
@@ -179,7 +179,7 @@ inline Field build(uint32_t seed) {
                     for (int j = 0; j < (int)f.plates.size(); j++) {
                         if (j == a) continue;
                         const Plate& B = f.plates[j];
-                        float distKm = (dist[j] - dist[a]) * 0.5f * EARTH_RADIUS_KM;
+                        float distKm = (dist[j] - dist[a]) * 0.5f * constants::EARTH_RADIUS_KM_F;
                         beltDist = std::min(beltDist, distKm);
                         if (distKm > 1200.0f) continue;
 

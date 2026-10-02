@@ -6,6 +6,7 @@
 // the handlers here; click reports the event to go to, since moving the
 // camera and opening a panel are the caller's business.
 #pragma once
+#include "constants.h"
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -146,7 +147,7 @@ inline void paint(HWND h, const State& st, const world::World& w, const theme::T
         if (st.pick < (int)v.size()) {
             const population::Event& e = *v[st.pick];
             char line[160];
-            int yr = (int)(e.t / 365.0) + 1;
+            int yr = (int)(e.t / constants::DAYS_PER_YEAR) + 1;
             snprintf(line, sizeof line, "Year %d", yr);
             SetTextColor(dc, RGB(230, 230, 235));
             TextOutA(dc, 12, y, line, (int)strlen(line));

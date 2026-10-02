@@ -5,6 +5,7 @@
 // standing plots feed (Settlement::farmK) is computed here as well.
 // Design/Technology.md (farming, farmsteads, tilled land).
 #pragma once
+#include "constants.h"
 #include "claims.h"
 #include <cmath>
 
@@ -38,7 +39,7 @@ inline terrain::V3 granaryPos(int cell, int k) {
     terrain::V3 north = {c.y * east.z - c.z * east.y, c.z * east.x - c.x * east.z,
                          c.x * east.y - c.y * east.x};
     float a = 2.39996f * k + (float)(cell % 628) * 0.01f;
-    float r = (GRANARY_R0_KM + GRANARY_DR_KM * k) / 6371.0f;
+    float r = (GRANARY_R0_KM + GRANARY_DR_KM * k) / constants::EARTH_RADIUS_KM_F;
     return norm3(c + (east * std::cos(a) + north * std::sin(a)) * r);
 }
 
@@ -53,7 +54,8 @@ inline terrain::V3 farmsteadPos(int cell, int k) {
     terrain::V3 north = {c.y * east.z - c.z * east.y, c.z * east.x - c.x * east.z,
                          c.x * east.y - c.y * east.x};
     float a = 2.39996f * k + (float)(cell % 628) * 0.01f + 1.1f; // offset from the granary ring
-    float r = (population::FSTEAD_R0_KM + population::FSTEAD_DR_KM * k) / 6371.0f;
+    float r =
+        (population::FSTEAD_R0_KM + population::FSTEAD_DR_KM * k) / constants::EARTH_RADIUS_KM_F;
     return norm3(c + (east * std::cos(a) + north * std::sin(a)) * r);
 }
 
@@ -113,7 +115,7 @@ inline float farmRadiusKm(const population::Settlement& s, double now) {
     float inner = fieldInnerKm(s.P);
     // The spiral's packing makes its reach the annulus radius; the margin
     // is a plot's own half-width past its centre.
-    return std::sqrt(inner * inner + s.tilled[0] / 3.14159265f) + 0.6f;
+    return std::sqrt(inner * inner + s.tilled[0] / constants::PI_F) + 0.6f;
 }
 
 } // namespace sim

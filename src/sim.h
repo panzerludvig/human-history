@@ -5,6 +5,7 @@
 // brings the whole world current to the displayed moment. The rules each event applies live in the
 // headers included below; this file only decides what runs when.
 #pragma once
+#include "constants.h"
 #include "technology.h"
 #include "events.h"
 #include "sphere.h"
@@ -51,9 +52,10 @@ inline void gameTick(population::Field& pf, double now) {
         if (pf.gameDmax[r] <= 0) continue;
         float g = pf.gameG[r];
         float regen = g >= population::GAME_FLOOR
-                          ? (1.0f - g) / (population::GAME_REGEN_YEARS * 365.0f)
+                          ? (1.0f - g) / (population::GAME_REGEN_YEARS * constants::DAYS_PER_YEAR_F)
                           : 0.0f;
-        float depl = draw[r] / pf.gameDmax[r] / (population::GAME_DEPLETE_YEARS * 365.0f);
+        float depl = draw[r] / pf.gameDmax[r] /
+                     (population::GAME_DEPLETE_YEARS * constants::DAYS_PER_YEAR_F);
         float before = g;
         pf.gameG[r] = std::clamp(g + (regen - depl) * (float)dt, 0.0f, 1.0f);
         if (before >= population::GAME_FLOOR && pf.gameG[r] < population::GAME_FLOOR)
@@ -149,13 +151,13 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
     struct HeapSink : technology::WorldState::Sink {
         std::priority_queue<Ev>* q;
         void techEvent(int idx, int tech, double when) override {
-            if (when < 1e17) q->push({when, Due::ContactDraw, idx, tech});
+            if (when < constants::NEVER_DAY) q->push({when, Due::ContactDraw, idx, tech});
         }
         void clockEvent(int tech, double when) override {
-            if (when < 1e17) q->push({when, Due::InventionClock, 0, tech});
+            if (when < constants::NEVER_DAY) q->push({when, Due::InventionClock, 0, tech});
         }
         void contactEvent(int idx, double when) override {
-            if (when < 1e17) q->push({when, Due::ContactGrows, idx, 0});
+            if (when < constants::NEVER_DAY) q->push({when, Due::ContactGrows, idx, 0});
         }
     } sink;
     sink.q = &q;
@@ -163,10 +165,11 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
 
     auto pushSettlement = [&](int i) {
         const population::Settlement& s = pf.settlements[i];
-        if (s.nextUpdate < 1e17) q.push({s.nextUpdate, Due::SettlementWake, i, 0});
+        if (s.nextUpdate < constants::NEVER_DAY) q.push({s.nextUpdate, Due::SettlementWake, i, 0});
         for (int t = 0; t < population::NTECH; t++)
-            if (s.nextTech[t] < 1e17) q.push({s.nextTech[t], Due::ContactDraw, i, t});
-        if (s.nextContact < 1e17) q.push({s.nextContact, Due::ContactGrows, i, 0});
+            if (s.nextTech[t] < constants::NEVER_DAY)
+                q.push({s.nextTech[t], Due::ContactDraw, i, t});
+        if (s.nextContact < constants::NEVER_DAY) q.push({s.nextContact, Due::ContactGrows, i, 0});
     };
     auto pushBand = [&](const population::Band& b) {
         q.push({b.nextUpdate, Due::BandStep, (int)b.id, 0});
@@ -174,7 +177,8 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
     for (int i = 0; i < (int)pf.settlements.size(); i++) pushSettlement(i);
     for (const population::Band& b : pf.bands) pushBand(b);
     for (int t = 0; t < population::NTECH; t++)
-        if (ws.nextEvent[t] < 1e17) q.push({ws.nextEvent[t], Due::InventionClock, 0, t});
+        if (ws.nextEvent[t] < constants::NEVER_DAY)
+            q.push({ws.nextEvent[t], Due::InventionClock, 0, t});
     if (!pf.gameG.empty()) q.push({pf.gameT + population::GAME_TICK_DAYS, Due::GameTick, 0, 0});
 
     while (!q.empty() && q.top().t <= now) {
@@ -219,7 +223,8 @@ inline bool simulate(population::Field& pf, technology::WorldState& ws, const hy
             // Decide first: leaving or growing scarce can pull the next wake
             // earlier, and the queue entry must carry the final time.
             maybeRelocateOrSplit(pf, ws, hy, clim, ev.idx, t);
-            if (s.nextUpdate < 1e17) q.push({s.nextUpdate, Due::SettlementWake, ev.idx, 0});
+            if (s.nextUpdate < constants::NEVER_DAY)
+                q.push({s.nextUpdate, Due::SettlementWake, ev.idx, 0});
             for (size_t b = bandsBefore; b < pf.bands.size(); b++) pushBand(pf.bands[b]);
             break;
         }

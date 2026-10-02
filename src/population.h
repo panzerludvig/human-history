@@ -5,6 +5,7 @@
 // data these functions work on is settlement.h; the decisions taken between
 // wakes (claims, journeys, raids) are the sim headers.
 #pragma once
+#include "constants.h"
 #include "settlement.h"
 #include "daylight.h"
 #include <cassert>
@@ -117,7 +118,8 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         // Coarse slope from neighbouring cell heights.
         float hx = hm[y * W + hydrology::wrapX(x + 1)] - hm[y * W + hydrology::wrapX(x - 1)];
         float hyv = hm[std::min(y + 1, H - 1) * W + x] - hm[std::max(y - 1, 0) * W + x];
-        float cellKm = 2 * 3.14159265f * 6371.0f / W * std::max(std::cos(lat), 0.05f);
+        float cellKm =
+            2 * constants::PI_F * constants::EARTH_RADIUS_KM_F / W * std::max(std::cos(lat), 0.05f);
         float slope = std::sqrt(hx * hx + hyv * hyv) / (2000.0f * cellKm);
         float uplift = pf.sample({n.x, n.y, n.z}).uplift;
         terrain::Mixture m = terrain::mixtureAt(h, slope, temp, moist, uplift,
@@ -132,7 +134,8 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         kSmall = coverSmallYield(m) * FORAGE_KM2 / SUSTAIN_R;
         // Water within reach: accKm2 is runoff-equivalent drainage area at the
         // reference runoff (hydrology::reweight), fed by the climate's rain.
-        float litresPerDay = hy.accKm2[i] * hydrology::REF_RUNOFF_MM_YR * 1.0e6f / 365.0f;
+        float litresPerDay =
+            hy.accKm2[i] * hydrology::REF_RUNOFF_MM_YR * 1.0e6f / constants::DAYS_PER_YEAR_F;
         kWater = litresPerDay * USABLE_WATER / WATER_L_PER_PERSON;
         sFarm = farmSuitability(m, temp);
         pasture = pastureSuitability(m);
@@ -191,9 +194,10 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
     f.gameG.assign(atmosphere::W * atmosphere::H, 1.0f);
     f.gameDmax.assign(atmosphere::W * atmosphere::H, 0.0f);
     for (int y = 0; y < H; y++) {
-        float lat = ((y + 0.5f) / H - 0.5f) * 3.14159265f;
-        float cellKm2 = (2 * 3.14159265f * 6371.0f / W * std::max(std::cos(lat), 0.01f)) *
-                        (3.14159265f * 6371.0f / H);
+        float lat = ((y + 0.5f) / H - 0.5f) * constants::PI_F;
+        float cellKm2 = (2 * constants::PI_F * constants::EARTH_RADIUS_KM_F / W *
+                         std::max(std::cos(lat), 0.01f)) *
+                        (constants::PI_F * constants::EARTH_RADIUS_KM_F / H);
         for (int x = 0; x < W; x++) {
             int i = y * W + x;
             if (f.kGameMap[i] <= 0) continue;
@@ -226,7 +230,8 @@ inline Field build(const terrain::ContinentParams& cp, float seaLevel, const flo
         bool clear = true;
         for (const Settlement& s : f.settlements) {
             terrain::V3 sn = cellN(s.cell);
-            float d = std::acos(std::clamp(terrain::dot(n, sn), -1.0f, 1.0f)) * 6371.0f;
+            float d = std::acos(std::clamp(terrain::dot(n, sn), -1.0f, 1.0f)) *
+                      constants::EARTH_RADIUS_KM_F;
             if (d < 80.0f) { clear = false; break; }
         }
         if (!clear) continue;
@@ -294,11 +299,13 @@ inline void derivatives(float P, float R, float S, float flow, float K, float ca
     float excl = std::clamp(1.0f - fill / HOARD_FILL, 0.0f, 1.0f);
     float shortfall = P > 0 ? std::clamp(1.0f - H / P, 0.0f, 1.0f) : 0.0f;
     float phi = P > 1 ? flow / P : 2.0f;
-    float g = phi >= 1 ? GROWTH_MAX / 365.0f * std::min((phi - 1) / 0.11f, 1.0f) : 0.0f;
+    float g = phi >= 1 ? GROWTH_MAX / constants::DAYS_PER_YEAR_F * std::min((phi - 1) / 0.11f, 1.0f)
+                       : 0.0f;
     dStarve = STARVE_MAX * P * excl * shortfall; // deaths/day, the felt part
     dP = P * g - dStarve;
     (void)g;
-    dR = (1 - R) / (R_REGEN_YEARS * 365) - (P / std::max(K, 1.0f)) * R / (R_DEPLETE_YEARS * 365);
+    dR = (1 - R) / (R_REGEN_YEARS * constants::DAYS_PER_YEAR_F) -
+         (P / std::max(K, 1.0f)) * R / (R_DEPLETE_YEARS * constants::DAYS_PER_YEAR_F);
     dS = H - P;
 }
 
@@ -310,7 +317,7 @@ inline void derivatives(float P, float R, float S, float flow, float K, float ca
 // workers. No share is enforced anywhere: the structure is what the flows
 // leave behind.
 inline void stepCohorts(Cohorts& c, float phi, float starveDeaths, float dt) {
-    float yr = dt / 365.0f;
+    float yr = dt / constants::DAYS_PER_YEAR_F;
     float surplus = phi >= 1 ? std::min((phi - 1.0f) / 0.11f, 1.0f) : 0.0f;
     float births = BIRTHS_REPLACE * (1.0f + FERT_SURPLUS * surplus) * c.W * yr;
     float grow = c.C / CHILD_YEARS * yr;      // reaching adulthood
@@ -351,7 +358,7 @@ struct FoodTerms {
     float bigGame = 0;   // the regional pool's herds, at their present health
     float smallGame = 0; // the local small game, at this group's bows
     float farm = 0;      // the standing plots at current expertise
-    float herd = 0;      // the livestock's mean flow (seasonal mean ~0.85)
+    float herd = 0;      // the livestock's mean flow (HERD_SEASONAL_MEAN)
     float farmyard = 0;  // household animals, no pasture needed
     float fish = 0;      // the water in reach, at current gear
 };
@@ -363,7 +370,7 @@ inline FoodTerms foodTerms(const Settlement& s, const SeasonCtx& ctx) {
     f.bigGame = s.kGame * bigEff;
     f.smallGame = s.kSmall * smallGameEff(ctx.bowCover, ctx.archExp);
     f.farm = ctx.farmFlow;
-    f.herd = s.herd * 0.85f;
+    f.herd = s.herd * HERD_SEASONAL_MEAN;
     f.farmyard = FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp;
     f.fish = s.kFish * fishEff(ctx.fishExp);
     return f;
@@ -572,7 +579,7 @@ inline float stepHeat(const Settlement& s, Step& st) {
 inline void stepFillCycle(const Settlement& s, const SeasonCtx& ctx, Step& st) {
     st.fillLo = std::min(st.fillLo, st.fill);
     st.fillHi = std::max(st.fillHi, st.fill);
-    if (!(st.tk - st.cycleT >= 365.0)) return;
+    if (!(st.tk - st.cycleT >= constants::DAYS_PER_YEAR)) return;
     bool binds = st.fillHi > GRANARY_HI && st.fillLo < GRANARY_LO;
     st.granNeed = binds ? st.granNeed + 1.0f : 0.0f;
     if (binds && st.buildWork <= 0 && ctx.granExp > 0) st.buildWork = GRANARY_WORK;
@@ -674,7 +681,7 @@ inline void stepBuilding(Settlement& s, const SeasonCtx& ctx, Step& st) {
 // simply unbuilt again: the next plot there costs the full clearing.
 inline void stepReversion(Settlement& s, Step& st) {
     float tendKm2 = s.tech[TECH_FARMING].practising ? st.P * FARM_KM2_PER_PERSON : 0.0f;
-    const double revertDays = FIELD_REVERT_YEARS * 365.0;
+    const double revertDays = FIELD_REVERT_YEARS * constants::DAYS_PER_YEAR;
     float sum = 0;
     for (int i = 0; i <= FSTEAD_MAX; i++) {
         float& t = s.tilled[i];
@@ -737,8 +744,8 @@ inline void closeLedger(Step& st) {
 // carry, and is gone the day there is no pasture at all.
 inline void stepHerd(Settlement& s, float herdCap, float hstep) {
     if (s.herd > 0 && herdCap > 0)
-        s.herd = std::clamp(s.herd + HERD_GROWTH_YR / 365.0f * s.herd * (1.0f - s.herd / herdCap) *
-                                         hstep,
+        s.herd = std::clamp(s.herd + HERD_GROWTH_YR / constants::DAYS_PER_YEAR_F * s.herd *
+                                         (1.0f - s.herd / herdCap) * hstep,
                             0.0f, herdCap * 1.05f);
     else if (herdCap <= 0)
         s.herd = 0;
@@ -751,14 +758,14 @@ inline void driftAffinity(Settlement& s, const SeasonCtx& ctx, double span) {
     float plant = (s.kFoodP - s.kGame - s.kSmall) * s.meanF;
     float game = (s.kGame + s.kSmall) * s.meanF;
     float crop = ctx.farmFlow;
-    float stock = s.herd * 0.85f + FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp;
+    float stock = s.herd * HERD_SEASONAL_MEAN + FARMYARD_SHARE_POP * s.kFoodP * ctx.husbExp;
     float tot = std::max(plant + game + crop + stock, 1e-3f);
-    float k = std::min((float)(span / (AFFINITY_TAU_YEARS * 365.0)), 1.0f);
+    float k = std::min((float)(span / (AFFINITY_TAU_YEARS * constants::DAYS_PER_YEAR)), 1.0f);
     s.aff.gather += (plant / tot - s.aff.gather) * k;
     s.aff.hunt += (game / tot - s.aff.hunt) * k;
     s.aff.farm += (crop / tot - s.aff.farm) * k;
     s.aff.herd += (stock / tot - s.aff.herd) * k;
-    s.aff.fight *= std::exp(-(float)(span / (FIGHT_FORGET_YEARS * 365.0)));
+    s.aff.fight *= std::exp(-(float)(span / (FIGHT_FORGET_YEARS * constants::DAYS_PER_YEAR)));
 }
 
 // Schedule the next re-evaluation at the moment the state will have drifted
@@ -801,7 +808,7 @@ inline void scheduleWake(Settlement& s, float K, const SeasonCtx& ctx, float fue
 inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
     if (K <= 0) {
         s.t = now;
-        s.nextUpdate = now + 3650;
+        s.nextUpdate = now + 10 * constants::DAYS_PER_YEAR;
         return false;
     }
     float herdCap =
@@ -829,9 +836,9 @@ inline bool advance(Settlement& s, float K, const SeasonCtx& ctx, double now) {
         stepFoodLabour(st);
         float dCold = stepHeat(s, st);
         st.starved += (dStarve + dCold) * st.hstep;
-        st.starved *= std::max(1.0f - st.hstep / 365.0f, 0.0f); // trailing year
+        st.starved *= std::max(1.0f - st.hstep / constants::DAYS_PER_YEAR_F, 0.0f); // trailing year
         st.coldYr += dCold * st.hstep;
-        st.coldYr *= std::max(1.0f - st.hstep / 365.0f, 0.0f);
+        st.coldYr *= std::max(1.0f - st.hstep / constants::DAYS_PER_YEAR_F, 0.0f);
         // Sub-day steps see the rhythm: harvesting and eating happen inside
         // the day's activity window, so stores hold flat through the night.
         double a = s.t + k * (double)st.hstep;

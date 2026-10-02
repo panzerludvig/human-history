@@ -3,6 +3,7 @@
 // to whoever it happened to. Counts stay exact; stored entries stop at a
 // cap so a thousand-year step cannot eat memory.
 #pragma once
+#include "constants.h"
 #include "settlement.h"
 #include <cmath>
 #include <cstdio>
@@ -36,8 +37,8 @@ inline void note(population::Field& pf, int kind, double t, uint32_t sid, uint32
 }
 
 inline void logAt(const char* what, int id, terrain::V3 n, float P, double day) {
-    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
-    float lon = std::atan2(n.y, n.x) * 180.0f / 3.14159265f;
+    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / constants::PI_F;
+    float lon = std::atan2(n.y, n.x) * 180.0f / constants::PI_F;
     fprintf(stderr, "band: %s %d at lat %.2f lon %.2f, %d people, day %.0f\n", what, id, lat, lon,
             (int)P, day);
 }

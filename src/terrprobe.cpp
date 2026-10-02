@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <vector>
+#include "constants.h"
 #include "world.h"
 
 int main(int argc, char** argv) {
@@ -36,10 +37,10 @@ int main(int argc, char** argv) {
         double peak = -1e9, sum = 0, hi2 = 0, hi4 = 0, nL = 0, nAll = 0, wL = 0, wAll = 0;
         #pragma omp parallel for reduction(+:sum,hi2,hi4,nL,nAll,wL,wAll)
         for (int y = 0; y < GH; y++) {
-            double lat = ((y + 0.5) / GH - 0.5) * 3.14159265;
+            double lat = ((y + 0.5) / GH - 0.5) * constants::PI;
             double cw = std::cos(lat);
             for (int x = 0; x < GW; x++) {
-                double lon = ((x + 0.5) / GW * 2.0 - 1.0) * 3.14159265;
+                double lon = ((x + 0.5) / GW * 2.0 - 1.0) * constants::PI;
                 terrain::V3 n{(float)(cw*std::cos(lon)), (float)(cw*std::sin(lon)), (float)std::sin(lat)};
                 terrain::V3 w = terrain::rotate(rot, n) + offset;
                 float h = terrain::heightMeters(w, n, cp, seaLevel, 8, pf, rot);

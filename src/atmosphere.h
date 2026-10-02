@@ -7,6 +7,7 @@
 // continuity turns low-level convergence into uplift (rain) and divergence
 // into subsidence (drying) — the return flow's effect without its state.
 #pragma once
+#include "constants.h"
 #include "terrain.h"
 #include "hydrology.h"
 #include "progress.h"
@@ -23,9 +24,8 @@ constexpr int W = 192, H = 96;   // ~208 km cells at the equator
 constexpr int SEASONS = 4;       // DJF, MAM, JJA, SON
 
 constexpr double DT = 3600.0;            // s, one step per sim hour
-inline int SPINUP_DAYS = 365;         // discarded first year
+inline int SPINUP_DAYS = constants::DAYS_PER_YEAR_INT; // discarded first year
 inline int STAT_YEARS = 2;               // averaged years after spin-up
-constexpr double R_EARTH = 6371000.0;    // m
 constexpr double OMEGA = 7.292e-5;       // rad/s
 
 // Energy budget (W/m^2, degC, J/K/m^2)
@@ -723,7 +723,6 @@ constexpr double QG2_BLEND_DEG = 6.0;   // degrees over which the mesh weather's
 // (see PRESCRIBED for what it is) with the mesh weather for the wind:
 // sweep.exe earth 0 geo 1.
 inline bool PAINT_INIT = true;
-constexpr double PRE_LAPSE = 6.5;          // K/km on the model's smoothed elevation
 constexpr double PRE_CONT_KM = 500.0;      // e-folding of continentality with distance from the sea: 500 km inland is already continental
 // The old diagnostic model's 120 Pa/K was tuned on its own small land-sea
 // contrasts; on the painted climate's 20 K summer continents it made 10-30
@@ -782,7 +781,7 @@ constexpr double DIURNAL_PEAK_HOUR = 15.0;
 // 1 at DIURNAL_PEAK_HOUR, -1 twelve hours later. The one definition of the
 // daily cycle; the tooltip's current temperature asks it too.
 inline double diurnalPhase(double localHour) {
-    return std::cos(2 * 3.14159265 * (localHour - DIURNAL_PEAK_HOUR) / 24.0);
+    return std::cos(2 * constants::PI * (localHour - DIURNAL_PEAK_HOUR) / 24.0);
 }
 struct Prescribed {
     std::vector<float> cont;    // continentality: 0 at sea, 1 deep in a continent
@@ -825,11 +824,11 @@ struct Prescribed {
             for (int x = 0; x < W; x++) {
                 int i = y * W + x;
                 lonDeg[i] = (float)(((x + 0.5) / W) * 360.0 - 180.0);
-                latDeg[i] = (float)(latRad[i] * 180.0 / 3.14159265);
+                latDeg[i] = (float)(latRad[i] * 180.0 / constants::PI);
             }
         // Distance to the sea, in km, by relaxation over the grid: each land
         // cell is the nearest neighbour's distance plus the step to it.
-        const double dyKm = 3.14159265 * R_EARTH / H / 1000.0;
+        const double dyKm = constants::PI * constants::EARTH_RADIUS_M / H / 1000.0;
         std::vector<float> d(W * H, 1e9f);
         for (int i = 0; i < W * H; i++) if (water[i]) d[i] = 0.0f;
         for (int pass = 0; pass < 64; pass++) {
@@ -856,7 +855,7 @@ struct Prescribed {
         dEast.assign(W * H, 1e9f); dWest.assign(W * H, 1e9f); dUpwind.assign(W * H, 1e9f);
         for (int y = 0; y < H; y++) {
             double dxKm = dyKm * 2.0 * std::max(std::cos((double)latRad[y * W]), 0.05);
-            double alat = std::fabs(latRad[y * W] * 180.0 / 3.14159265);
+            double alat = std::fabs(latRad[y * W] * 180.0 / constants::PI);
             // westerlies above 32 degrees, trades below 28, a blend between
             double west = std::clamp((alat - 28.0) / 4.0, 0.0, 1.0);
             for (int x = 0; x < W; x++) {
@@ -889,7 +888,7 @@ struct Prescribed {
     double landZonalT(int i, double doy) const {
         double lat = latDeg[i], alat = std::fabs(lat);
         double peak = 200.0 + (lat < 0 ? 182.5 : 0.0);
-        double phase = std::cos(2 * 3.14159265 * (doy - peak) / 365.0);
+        double phase = std::cos(2 * constants::PI * (doy - peak) / constants::DAYS_PER_YEAR);
         const double c = 0.7;
         double mean = (1 - c) * knots(SEA_MEAN, 7, 15.0, alat) + c * knots(LAND_MEAN, 7, 15.0, alat);
         double amp = (1 - c) * (knots(SEA_AMP, 7, 15.0, alat) + 2.0) + c * knots(LAND_AMP, 7, 15.0, alat);
@@ -901,7 +900,7 @@ struct Prescribed {
         // Land peaks about a month after the solstice, the sea two; the
         // south is half a year behind.
         double peak = (water ? 230.0 : 200.0) + (lat < 0 ? 182.5 : 0.0);
-        double phase = std::cos(2 * 3.14159265 * (doy - peak) / 365.0);
+        double phase = std::cos(2 * constants::PI * (doy - peak) / constants::DAYS_PER_YEAR);
         double mean, amp;
         auto band = [](double a, double lo, double hi) { // 1 inside lo..hi, fading over 5 degrees
             return std::clamp((a - lo) / 5.0 + 1.0, 0.0, 1.0) * std::clamp((hi - a) / 5.0 + 1.0, 0.0, 1.0);
@@ -929,7 +928,7 @@ struct Prescribed {
             (void)c;
         }
         double T = mean + amp * phase;
-        if (!water) T -= PRE_LAPSE * std::max(elevM, 0.0) / 1000.0;
+        if (!water) T -= constants::LAPSE_K_PER_KM * std::max(elevM, 0.0) / 1000.0;
         double lh = hour + lonDeg[i] / 15.0;
         double di = water ? PRE_DIURNAL_SEA : PRE_DIURNAL_LAND * (0.5 + 0.5 * cont[i]);
         T += di * diurnalPhase(lh);
@@ -954,7 +953,7 @@ struct Prescribed {
     // got no rain in any season.
     double shiftAt(int i, double doy) const {
         return (PRE_ITCZ_SHIFT + PRE_ITCZ_LAND_SHIFT * wide[i]) *
-               std::cos(2 * 3.14159265 * (doy - 200.0) / 365.0);
+               std::cos(2 * constants::PI * (doy - 200.0) / constants::DAYS_PER_YEAR);
     }
     double beltUplift(int i, double doy) const {
         double shift = shiftAt(i, doy);
@@ -1035,7 +1034,7 @@ struct Rules {
     }
     static double within(double d, double km, double w = 300.0) { return std::clamp((km - d) / w + 0.5, 0.0, 1.0); }
     static double season(double doy, double latDegSigned) {   // +1 at midsummer, -1 at midwinter, for this hemisphere
-        double s = std::cos(2 * 3.14159265 * (doy - 202.0) / 365.0);
+        double s = std::cos(2 * constants::PI * (doy - 202.0) / constants::DAYS_PER_YEAR);
         return latDegSigned >= 0 ? s : -s;
     }
     void init(int w, int h, const std::vector<float>& elevM, const std::vector<unsigned char>& wat,
@@ -1058,12 +1057,12 @@ struct Rules {
         }
         latDeg.assign(W * H, 0.0f); base.assign(W * H, 1.0f); kind.assign(W * H, 0);
         dSeaW.assign(W * H, 1e9f); dSeaE.assign(W * H, 1e9f); dSea.assign(W * H, 0.0f); dSeaEq.assign(W * H, 1e9f); dSeaPole.assign(W * H, 1e9f);
-        const double dyKm = 3.14159265 * R_EARTH / H / 1000.0;
+        const double dyKm = constants::PI * constants::EARTH_RADIUS_M / H / 1000.0;
         for (int y = 0; y < H; y++) {
             double dxKm = dyKm * 2.0 * std::max(std::cos((double)latRad[y * W]), 0.05);
             for (int x = 0; x < W; x++) {
                 int i = y * W + x;
-                latDeg[i] = (float)(latRad[i] * 180.0 / 3.14159265);
+                latDeg[i] = (float)(latRad[i] * 180.0 / constants::PI);
                 if (water[i]) continue;
                 for (int k = 1; k < W; k++) if (water[y * W + (x - k + W) % W]) { dSeaW[i] = (float)(k * dxKm); break; }
                 for (int k = 1; k < W; k++) if (water[y * W + (x + k) % W]) { dSeaE[i] = (float)(k * dxKm); break; }
@@ -1200,7 +1199,8 @@ struct Rules {
     // mm/day at this cell on this day
     double rain(int i, double doy) const {
         double lat = latDeg[i];
-        double shift = (RUL_ITCZ_SHIFT + RUL_ITCZ_LAND_SHIFT * wide[i]) * std::cos(2 * 3.14159265 * (doy - 202.0) / 365.0);
+        double shift = (RUL_ITCZ_SHIFT + RUL_ITCZ_LAND_SHIFT * wide[i]) *
+                       std::cos(2 * constants::PI * (doy - 202.0) / constants::DAYS_PER_YEAR);
         double r = knots(R0, 10, 10.0, std::fabs(lat - shift));
         if (water[i]) {
             // the upwelling coast under the subtropical high: the sea with land to its east
@@ -1395,10 +1395,10 @@ struct Model {
                 double landFrac = land / std::max(cells, 1.0);
                 water[i] = landFrac < 0.5 ? 1 : 0;
                 elev[i] = water[i] ? 0.0f : (float)(hsum / std::max(land, 1.0));
-                float lat = (float)((((y + 0.5) / H) - 0.5) * 3.14159265);
+                float lat = (float)((((y + 0.5) / H) - 0.5) * constants::PI);
                 latRad[i] = lat;
                 // First-guess surface properties from the painted climate.
-                float lon = (float)((((x + 0.5) / W) * 2.0 - 1.0) * 3.14159265);
+                float lon = (float)((((x + 0.5) / W) * 2.0 - 1.0) * constants::PI);
                 terrain::V3 n = {std::cos(lat) * std::cos(lon), std::cos(lat) * std::sin(lon),
                                  std::sin(lat)};
                 terrain::V3 w = terrain::rotate(rot, n) + offset;
@@ -1503,7 +1503,7 @@ struct Model {
         static std::vector<double> tmp;
         tmp.resize(W * H);
         for (int y = 1; y < H - 1; y++) {
-            double cosl = std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265);
+            double cosl = std::cos(((y + 0.5) / (double)H - 0.5) * constants::PI);
             // How much to smooth is not a taste. A cell here is dx wide and
             // dy tall, and dy does not change with latitude while dx goes as
             // the cosine: at 76 degrees the cell is 50 km by 208, an aspect
@@ -1532,7 +1532,8 @@ struct Model {
             int passes;
             if (stabilityOnly) {
                 // Only where a wave outruns the cell in one substep.
-                double dxHere = (2 * 3.14159265 * R_EARTH / W) * std::max(cosl, 0.02);
+                double dxHere =
+                    (2 * constants::PI * constants::EARTH_RADIUS_M / W) * std::max(cosl, 0.02);
                 double need = std::sqrt(GPRIME * H_LAYER) * (DT / DYN_SUBSTEPS);
                 passes = dxHere < need ? (int)std::clamp(std::lround(need / dxHere), (long)1,
                                                          (long)8)
@@ -1589,8 +1590,8 @@ struct Model {
     // answers the slope of the thickness, turned by the Coriolis force and
     // slowed by the ground.
     void stepDynamics(double dt) {
-        double dx0 = 2 * 3.14159265 * R_EARTH / W;
-        double dy = 3.14159265 * R_EARTH / H;
+        double dx0 = 2 * constants::PI * constants::EARTH_RADIUS_M / W;
+        double dy = constants::PI * constants::EARTH_RADIUS_M / H;
         // FLUX FORM. The boundary layer's heat rides on this substep's own
         // mass fluxes: the prognostic is thickness times temperature, and
         // it moves with the same face fluxes, the same relaxation, the
@@ -1614,7 +1615,7 @@ struct Model {
         {
             double neg = 0, negT = 0;
             for (int y = 1; y < H - 1; y++) {
-                double cw = std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265);
+                double cw = std::cos(((y + 0.5) / (double)H - 0.5) * constants::PI);
                 for (int x = 0; x < W; x++) {
                     int i = idx(x, y);
                     tSub[i] = hT[i] / (H_LAYER + hP[i]);
@@ -1630,10 +1631,10 @@ struct Model {
         }
 #pragma omp parallel for
         for (int y = 1; y < H - 1; y++) {
-            double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.05);
+            double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * constants::PI), 0.05);
             double dx = dx0 * cosl;
-            double cosN = std::max(std::cos(((y + 1.0) / (double)H - 0.5) * 3.14159265), 0.02);
-            double cosS = std::max(std::cos(((y + 0.0) / (double)H - 0.5) * 3.14159265), 0.02);
+            double cosN = std::max(std::cos(((y + 1.0) / (double)H - 0.5) * constants::PI), 0.02);
+            double cosS = std::max(std::cos(((y + 0.0) / (double)H - 0.5) * constants::PI), 0.02);
             for (int x = 0; x < W; x++) {
                 int i = idx(x, y);
                 int xe = idx(wrapX(x + 1), y), xw = idx(wrapX(x - 1), y);
@@ -1714,7 +1715,7 @@ struct Model {
             // (see QG2GEO): this layer's own momentum stands only where the
             // QG approximation does not, and the heat rides the storms.
             for (int i = 0; i < W * H; i++) {
-                double la = std::fabs(latRad[i] * 180.0 / 3.14159265);
+                double la = std::fabs(latRad[i] * 180.0 / constants::PI);
                 double w = std::clamp((la - qg2geo::QG_EQ) / QG2_BLEND_DEG, 0.0, 1.0);
                 int j = meshOfCell[i];
                 u[i] = (1 - w) * u[i] + w * qgg.u2[j];
@@ -1741,8 +1742,8 @@ struct Model {
     // belt wind from the Earth targets (see PRESCRIBED), every hour when
     // PRESCRIBED, once as the initial state otherwise (see PAINT_INIT).
     void paintHour(double doy, double hour) {
-        double dx0 = 2 * 3.14159265 * R_EARTH / W;
-        double dy = 3.14159265 * R_EARTH / H;
+        double dx0 = 2 * constants::PI * constants::EARTH_RADIUS_M / W;
+        double dy = constants::PI * constants::EARTH_RADIUS_M / H;
         painted = true;
 #pragma omp parallel for
         for (int i = 0; i < W * H; i++) {
@@ -1758,7 +1759,7 @@ struct Model {
             Tb[i] = T[i] - BL_LAPSE - (water[i] ? 1.5 + chill : 2.0);
             Tf[i] = Tb[i] - 40.0;
             ice[i] = (water[i] && T[i] <= SEA_FREEZE + 0.05) ? 1.0 : 0.0;
-            anomA[i] = T[i] + PRE_LAPSE * std::max((double)elev[i], 0.0) / 1000.0;
+            anomA[i] = T[i] + constants::LAPSE_K_PER_KM * std::max((double)elev[i], 0.0) / 1000.0;
         }
         for (int y = 0; y < H; y++) {
             double m = 0;
@@ -1790,7 +1791,7 @@ struct Model {
         }
 #pragma omp parallel for
         for (int y = 1; y < H - 1; y++) {
-            double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.2);
+            double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * constants::PI), 0.2);
             double dx = dx0 * cosl;
             for (int x = 0; x < W; x++) {
                 int i = idx(x, y);
@@ -1829,9 +1830,12 @@ struct Model {
             // tropics, fading in over QG2_BLEND_DEG.
             if (tnsBuf.empty()) tnsBuf.assign(W * H, 0.0);
             for (int i = 0; i < W * H; i++)
-                tnsBuf[i] = T[i] - (water[i] ? 1.5 : 2.0) + (water[i] ? 0.0 : 6.5 * std::max((double)elev[i], 0.0) / 1000.0);
+                tnsBuf[i] = T[i] - (water[i] ? 1.5 : 2.0) +
+                            (water[i] ? 0.0
+                                      : constants::LAPSE_K_PER_KM * std::max((double)elev[i], 0.0) /
+                                            1000.0);
             auto dirOf = [&](int i) {
-                double la = latRad[i], lo = ((i % W) + 0.5) / W * 2 * 3.14159265 - 3.14159265;
+                double la = latRad[i], lo = ((i % W) + 0.5) / W * 2 * constants::PI - constants::PI;
                 return geodesic::D3{std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la)};
             };
             if (!qggInit) {
@@ -1842,8 +1846,9 @@ struct Model {
                 for (int j = 0; j < M; j++) {
                     const geodesic::D3& c = probe.c[j];
                     double la = std::asin(std::clamp(c.z, -1.0, 1.0)), lo = std::atan2(c.y, c.x);
-                    int x = std::clamp((int)((lo + 3.14159265) / (2 * 3.14159265) * W), 0, W - 1);
-                    int y = std::clamp((int)((la / 3.14159265 + 0.5) * H), 0, H - 1);
+                    int x =
+                        std::clamp((int)((lo + constants::PI) / (2 * constants::PI) * W), 0, W - 1);
+                    int y = std::clamp((int)((la / constants::PI + 0.5) * H), 0, H - 1);
                     cellOfMesh[j] = idx(x, y);
                     mElev[j] = elev[cellOfMesh[j]]; mWater[j] = water[cellOfMesh[j]];
                 }
@@ -1859,7 +1864,9 @@ struct Model {
                 qggT.assign(M, 0.0);
                 for (int j = 0; j < M; j++) qggT[j] = tnsBuf[cellOfMesh[j]];
                 qgg.setTargets(qggT, true);
-                for (int j = 0; j < M; j++) qgg.q2[j] += 1e-6 * std::sin(5.0 * qgg.lon[j] + 0.7 * qgg.lat[j] * 180 / 3.14159265);
+                for (int j = 0; j < M; j++)
+                    qgg.q2[j] +=
+                        1e-6 * std::sin(5.0 * qgg.lon[j] + 0.7 * qgg.lat[j] * 180 / constants::PI);
                 qggInit = true;
             } else {
                 for (int j = 0; j < qgg.N; j++) qggT[j] = tnsBuf[cellOfMesh[j]];
@@ -1875,21 +1882,28 @@ struct Model {
                     if (a1 > m1) { m1 = a1; i1 = j; }
                     if (a2 > m2) { m2 = a2; i2 = j; }
                 }
-                if (bad >= 0) { fprintf(stderr, "QG non-finite at hour %d, mesh cell %d (lat %.0f)\n", qgHours, bad, qgg.lat[bad] * 180 / 3.14159265); std::exit(1); }
+                if (bad >= 0) {
+                    fprintf(stderr, "QG non-finite at hour %d, mesh cell %d (lat %.0f)\n", qgHours,
+                            bad, qgg.lat[bad] * 180 / constants::PI);
+                    std::exit(1);
+                }
                 if (qgHours % 24 == 0) {
                     double zn = 0, zs = 0, an = 0, as = 0, en = 0, es = 0;
                     for (int j = 0; j < qgg.N; j++) {
-                        double la = qgg.lat[j] * 180 / 3.14159265;
+                        double la = qgg.lat[j] * 180 / constants::PI;
                         if (la > 40 && la < 55) { zn += qgg.u2[j] * qgg.g.area[j]; en += qgg.u1[j] * qgg.g.area[j]; an += qgg.g.area[j]; }
                         if (la < -40 && la > -55) { zs += qgg.u2[j] * qgg.g.area[j]; es += qgg.u1[j] * qgg.g.area[j]; as += qgg.g.area[j]; }
                     }
-                    fprintf(stderr, "QG day %d |V up| %.1f at lat %.0f  |V low| %.1f at lat %.0f  %d iterations  u 40-55N low %.1f up %.1f  S low %.1f up %.1f\n",
-                            qgHours / 24, m1, qgg.lat[i1] * 180 / 3.14159265, m2, qgg.lat[i2] * 180 / 3.14159265, qgg.solveIterations,
-                            zn / an, en / an, zs / as, es / as);
+                    fprintf(stderr,
+                            "QG day %d |V up| %.1f at lat %.0f  |V low| %.1f at lat %.0f  %d "
+                            "iterations  u 40-55N low %.1f up %.1f  S low %.1f up %.1f\n",
+                            qgHours / 24, m1, qgg.lat[i1] * 180 / constants::PI, m2,
+                            qgg.lat[i2] * 180 / constants::PI, qgg.solveIterations, zn / an,
+                            en / an, zs / as, es / as);
                 }
             }
             for (int i = 0; i < W * H; i++) {
-                double la = std::fabs(latRad[i] * 180.0 / 3.14159265);
+                double la = std::fabs(latRad[i] * 180.0 / constants::PI);
                 double w = std::clamp((la - qg2geo::QG_EQ) / QG2_BLEND_DEG, 0.0, 1.0);
                 int j = meshOfCell[i];
                 u[i] = (1 - w) * u[i] + w * qgg.u2[j];
@@ -1933,9 +1947,10 @@ struct Model {
         HourCtx h;
         h.doy = doy;
         h.hour = hour;
-        h.dec = 23.5 * 3.14159265 / 180.0 * std::cos(2 * 3.14159265 * (doy - 171.0) / 365.0);
-        h.dx0 = 2 * 3.14159265 * R_EARTH / W; // m at equator
-        h.dy = 3.14159265 * R_EARTH / H;
+        h.dec = 23.5 * constants::PI / 180.0 *
+                std::cos(2 * constants::PI * (doy - 171.0) / constants::DAYS_PER_YEAR);
+        h.dx0 = 2 * constants::PI * constants::EARTH_RADIUS_M / W; // m at equator
+        h.dy = constants::PI * constants::EARTH_RADIUS_M / H;
         // The layers' heat capacities: the moving layer is its own mass,
         // the free troposphere is the rest of the column.
         h.C_BL = RHO * CP_AIR * H_LAYER;
@@ -1946,7 +1961,7 @@ struct Model {
     RowCtx rowContext(const HourCtx& h, int y) const {
         RowCtx r;
         r.y = y;
-        double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.2);
+        double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * constants::PI), 0.2);
         r.dx = h.dx0 * cosl;
         // Meridians converge, and a flux per unit area does not. Cells at
         // 80 degrees hold a seventh of the area of cells at the equator, so
@@ -1954,8 +1969,8 @@ struct Model {
         // one CREATES water -- and heat, in the temperature diffusion. The
         // spherical divergence weights each face by its own length; these
         // are those weights, relative to this row.
-        double cosN = std::max(std::cos(((y + 1.0) / (double)H - 0.5) * 3.14159265), 0.05);
-        double cosS = std::max(std::cos(((y + 0.0) / (double)H - 0.5) * 3.14159265), 0.05);
+        double cosN = std::max(std::cos(((y + 1.0) / (double)H - 0.5) * constants::PI), 0.05);
+        double cosS = std::max(std::cos(((y + 0.0) / (double)H - 0.5) * constants::PI), 0.05);
         r.fN = cosN / cosl;
         r.fS = cosS / cosl;
         r.ktx = std::min(KT_DIFF * DT / (r.dx * r.dx), 0.22);
@@ -1993,7 +2008,7 @@ struct Model {
     void reduceToSeaLevel() {
 #pragma omp parallel for
         for (int i = 0; i < W * H; i++) {
-            Tsl[i] = T[i] + 6.5 * elev[i] / 1000.0;
+            Tsl[i] = T[i] + constants::LAPSE_K_PER_KM * elev[i] / 1000.0;
             // The SURFACE gets a sea-level reduction, because a mountain top
             // really is colder than the valley and mixing that away would
             // erase every highland. The AIR does not: neither layer gets
@@ -2015,7 +2030,7 @@ struct Model {
     void upperPoolMean() {
         double sum = 0, tsum = 0, wsum = 0;
         for (int y = 0; y < H; y++) {
-            double cw = std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265);
+            double cw = std::cos(((y + 0.5) / (double)H - 0.5) * constants::PI);
             for (int x = 0; x < W; x++) {
                 double wt = std::max(wTop[idx(x, y)], 0.0) * cw;
                 sum += wt;
@@ -2048,7 +2063,7 @@ struct Model {
     void divergenceAndOrography(const HourCtx& h) {
 #pragma omp parallel for
         for (int y = 1; y < H - 1; y++) {
-            double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * 3.14159265), 0.2);
+            double cosl = std::max(std::cos((((y + 0.5) / (double)H) - 0.5) * constants::PI), 0.2);
             double dx = h.dx0 * cosl;
             for (int x = 0; x < W; x++) {
                 int i = idx(x, y);
@@ -2120,7 +2135,7 @@ struct Model {
     // the ground takes what is left.
     void solarAt(const HourCtx& h, CellHour& c) const {
         const int i = c.i;
-        double ha = 2 * 3.14159265 * (h.hour / 24.0 + (c.x + 0.5) / (double)W) + 3.14159265;
+        double ha = 2 * constants::PI * (h.hour / 24.0 + (c.x + 0.5) / (double)W) + constants::PI;
         double cosz =
             std::sin(c.lat) * std::sin(h.dec) + std::cos(c.lat) * std::cos(h.dec) * std::cos(ha);
         // Snow on land still follows the temperature ramp; sea ice
@@ -2246,7 +2261,7 @@ struct Model {
         // capping against the instantaneous figure lets the daylight
         // hours evaporate three or four times a day's worth of water.
         double h0 = std::acos(std::clamp(-std::tan(c.lat) * std::tan(h.dec), -1.0, 1.0));
-        double swDay = SOLAR / 3.14159265 *
+        double swDay = SOLAR / constants::PI *
                        (h0 * std::sin(c.lat) * std::sin(h.dec) +
                         std::cos(c.lat) * std::cos(h.dec) * std::sin(h0)) *
                        (1.0 - c.alb) * (1.0 - CLOUD_ALB * c.cf) * (1.0 - SW_ATM);
@@ -2579,7 +2594,7 @@ struct Model {
     void probeConservation() {
         double dE = 0, ph = 0, mm = 0, wsum = 0;
         for (int y = 1; y < H - 1; y++) {
-            double cw = std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265);
+            double cw = std::cos(((y + 0.5) / (double)H - 0.5) * constants::PI);
             double rowE = 0, rowM = 0;
             for (int x = 0; x < W; x++) {
                 int i = idx(x, y);
@@ -2701,11 +2716,11 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
     std::vector<double> lastE(W * H, 0.0);
     bool statSeeded = false;
     std::vector<double> cnt(SEASONS, 0.0);
-    int totalDays = SPINUP_DAYS + STAT_YEARS * 365;
+    int totalDays = SPINUP_DAYS + STAT_YEARS * constants::DAYS_PER_YEAR_INT;
     for (int day = 0; day < totalDays; day++) {
         // Cancelled: the caller throws the partial climatology away.
         if (ctx.cancelled()) return c;
-        int doy = day % 365;
+        int doy = day % constants::DAYS_PER_YEAR_INT;
         int season = Climatology::seasonOfDay(doy);
         bool stat = day >= SPINUP_DAYS;
         m.recordBudget = stat;
@@ -2771,8 +2786,9 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         }
         if (ctx.report && day % 15 == 0) {
             char b[80];
-            snprintf(b, sizeof b, "Simulating climate... year %d of %d", day / 365 + 1,
-                     (totalDays + 364) / 365);
+            snprintf(b, sizeof b, "Simulating climate... year %d of %d",
+                     day / constants::DAYS_PER_YEAR_INT + 1,
+                     (totalDays + constants::DAYS_PER_YEAR_INT - 1) / constants::DAYS_PER_YEAR_INT);
             ctx.say(b);
         }
         if (verbose && day % 30 == 0) {
@@ -2806,7 +2822,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
     {
         double e = 0, r = 0, wsum = 0, wv = 0, wnd = 0, rh = 0;
         for (int y = 0; y < H; y++) {
-            double wgt = std::cos(((y + 0.5) / (double)H - 0.5) * 3.14159265);
+            double wgt = std::cos(((y + 0.5) / (double)H - 0.5) * constants::PI);
             for (int x = 0; x < W; x++) {
                 int i = y * W + x;
                 e += m.evapAcc[i] * wgt;
@@ -2824,7 +2840,7 @@ inline Climatology build(const terrain::ContinentParams& cp, float seaLevel, con
         // four times high at a six-year spin-up and 1.5 times at one year,
         // which is a diagnostic that changes its answer with the length of
         // the run.
-        double allHours = (double)(SPINUP_DAYS + STAT_YEARS * 365) * 24.0;
+        double allHours = (double)(SPINUP_DAYS + STAT_YEARS * constants::DAYS_PER_YEAR_INT) * 24.0;
         c.dbgEvap = e / wsum / allHours * 24.0;
         c.dbgRain = r / wsum / allHours * 24.0;
         c.dbgWv = wv / wsum / allHours;
@@ -2984,8 +3000,8 @@ struct BilinearCell {
 inline BilinearCell bilinearCellAt(terrain::V3 n) {
     float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f));
     float lon = std::atan2(n.y, n.x);
-    float u = ((lon + 3.14159265f) / (2 * 3.14159265f)) * W - 0.5f;
-    float vv = ((lat + 3.14159265f / 2) / 3.14159265f) * H - 0.5f;
+    float u = ((lon + constants::PI_F) / (2 * constants::PI_F)) * W - 0.5f;
+    float vv = ((lat + constants::PI_F / 2) / constants::PI_F) * H - 0.5f;
     int x0 = (int)std::floor(u), y0 = (int)std::floor(vv);
     return {x0, y0, u - x0, vv - y0};
 }
@@ -3020,7 +3036,7 @@ struct SeasonBlend {
     double f;
 };
 inline SeasonBlend seasonBlendAt(double now) {
-    double sf = std::fmod(now, 365.0) / 365.0 * 4.0 - 0.5;
+    double sf = std::fmod(now, constants::DAYS_PER_YEAR) / constants::DAYS_PER_YEAR * 4.0 - 0.5;
     int s0 = ((int)std::floor(sf) % 4 + 4) % 4;
     return {s0, (s0 + 1) % 4, sf - std::floor(sf)};
 }
@@ -3050,8 +3066,8 @@ inline float annualBalanceAt(const Climatology& c, float latRad, float lonRad) {
 inline float derivedTempC(const Climatology& c, float latRad, float lonRad, float hLocal) {
     if (c.meanT.empty()) return terrain::temperatureC(latRad, hLocal);
     terrain::V3 n = climFuzz(unitAt(latRad, lonRad));
-    return annualAt(c.meanT, n) -
-           6.5f * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), n)) / 1000.0f;
+    return annualAt(c.meanT, n) - constants::LAPSE_K_PER_KM_F *
+                                      (std::max(hLocal, 0.0f) - annualAt(c.elev4(), n)) / 1000.0f;
 }
 
 // Coldest-season surface temperature: the Koppen-style gate for rainforest
@@ -3061,7 +3077,8 @@ inline float coldestSeasonTempC(const Climatology& c, float latRad, float lonRad
     terrain::V3 n = climFuzz(unitAt(latRad, lonRad));
     float t = 1e9f;
     for (int se = 0; se < SEASONS; se++) t = std::min(t, bilinearAt(c.meanT, se, n));
-    return t - 6.5f * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), n)) / 1000.0f;
+    return t - constants::LAPSE_K_PER_KM_F * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), n)) /
+                   1000.0f;
 }
 
 inline float derivedMoisture(const Climatology& c, float latRad, float lonRad, terrain::V3 w,
@@ -3081,7 +3098,8 @@ inline float seasonalTempC(const Climatology& c, terrain::V3 nRaw, float hLocal,
     if (c.meanT.empty()) return 10.0f;
     terrain::V3 nf = climFuzz(nRaw);
     float t = seasonalAt(c.meanT, nf, now);
-    return t - 6.5f * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), nf)) / 1000.0f;
+    return t - constants::LAPSE_K_PER_KM_F * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), nf)) /
+                   1000.0f;
 }
 
 // Growing activity from temperature: nothing grows at freezing, full growth
@@ -3102,7 +3120,8 @@ inline void seasonProfile(const Climatology& c, terrain::V3 nRaw, float hLocal, 
     for (int se = 0; se < SEASONS; se++) tOut[se] = 15.0f;
     if (c.meanT.empty()) return;
     terrain::V3 nf = climFuzz(nRaw);
-    float lapse = 6.5f * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), nf)) / 1000.0f;
+    float lapse =
+        constants::LAPSE_K_PER_KM_F * (std::max(hLocal, 0.0f) - annualAt(c.elev4(), nf)) / 1000.0f;
     meanF = 0;
     meanG2 = 0;
     for (int se = 0; se < SEASONS; se++) {
@@ -3140,7 +3159,7 @@ inline DerivedClimate deriveAt(const Climatology& c, float latRad, float lonRad,
     }
     terrain::V3 n = climFuzz(unitAt(latRad, lonRad));
     float coarseE = annualAt(c.elev4(), n);
-    float lapse = 6.5f * (std::max(hLocal, 0.0f) - coarseE) / 1000.0f;
+    float lapse = constants::LAPSE_K_PER_KM_F * (std::max(hLocal, 0.0f) - coarseE) / 1000.0f;
     float annT = 0, rain = 0, tMin = 1e9f, tMax = -1e9f;
     for (int se = 0; se < SEASONS; se++) {
         float t = bilinearAt(c.meanT, se, n);

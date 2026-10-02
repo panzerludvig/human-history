@@ -29,6 +29,7 @@
 // Helmholtz solve for the baroclinic one, warm-started from the previous
 // stage at a tolerance of 1e-5.
 #pragma once
+#include "constants.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -37,10 +38,8 @@
 
 namespace qg2geo {
 
-constexpr double A_EARTH = 6371000.0;
 constexpr double OMEGA = 7.292e-5;
 constexpr double R_GAS = 287.0;
-constexpr double PI = 3.14159265358979323846;
 
 inline int LEVEL = 5;                       // mesh subdivision: 10242 cells, about 250 km
 inline double QG_EQ = 20.0;                 // degrees: the tropics, where the QG wind is not used and is damped
@@ -105,15 +104,15 @@ struct Model {
     void init(const std::vector<float>& elev, const std::vector<unsigned char>& water) {
         g = geodesic::build(LEVEL);
         N = g.size();
-        solver.init(g, A_EARTH, 3);
+        solver.init(g, constants::EARTH_RADIUS_M, 3);
         for (auto* v : {&q1, &q2, &psi1, &psi2, &psib, &psic, &psicT, &topo, &f, &invF0, &trop, &lat, &lon,
                         &tmpA, &tmpB, &k1a, &k1b, &k2a, &k2b, &rhs, &u1, &v1, &u2, &v2,
                         &ekeAcc, &u2Acc, &v2Acc, &u1Acc, &psiAcc})
             v->assign(N, 0.0);
         V1.assign(N, {0, 0, 0}); V2.assign(N, {0, 0, 0}); east.resize(N); north.resize(N);
-        f0 = 2 * OMEGA * std::sin(LAT0 * PI / 180.0);
+        f0 = 2 * OMEGA * std::sin(LAT0 * constants::PI / 180.0);
         F = f0 * f0 / (G_REDUCED * H_LAYER);
-        double s45 = std::sin(LAT0 * PI / 180.0);
+        double s45 = std::sin(LAT0 * constants::PI / 180.0);
         nBands = (int)(180.0 / ZONAL_BAND);
         band.assign(N, 0); bandSum.assign(nBands, 0.0); bandN.assign(nBands, 0.0);
         for (int i = 0; i < N; i++) {
@@ -128,7 +127,7 @@ struct Model {
             // its own that, times a warm subtropical column, made easterly
             // shear from 10 to 45 degrees and confined the storms poleward.
             invF0[i] = (c.z >= 0 ? 1.0 : -1.0) / f0;
-            double la = std::fabs(lat[i]) * 180.0 / PI;
+            double la = std::fabs(lat[i]) * 180.0 / constants::PI;
             trop[i] = std::clamp((QG_EQ - la) / TROP_RAMP + 1.0, 0.0, 1.0);   // 1 inside QG_EQ - TROP_RAMP, 0 beyond QG_EQ
             geodesic::D3 z{0, 0, 1};
             geodesic::D3 e = geodesic::cross(z, c);
@@ -143,15 +142,17 @@ struct Model {
         // The sign of the corner-difference flux, settled once against the
         // geometric flux of a solid-body rotation.
         std::vector<double> ps(N);
-        for (int i = 0; i < N; i++) ps[i] = -10.0 * A_EARTH * g.c[i].z;
+        for (int i = 0; i < N; i++) ps[i] = -10.0 * constants::EARTH_RADIUS_M * g.c[i].z;
         std::vector<geodesic::D3> V(N);
-        for (int i = 0; i < N; i++) V[i] = geodesic::cross(g.c[i], geodesic::grad(g, ps, i, A_EARTH));
+        for (int i = 0; i < N; i++)
+            V[i] = geodesic::cross(g.c[i], geodesic::grad(g, ps, i, constants::EARTH_RADIUS_M));
         double corr = 0;
         for (int i = 0; i < N; i++) {
             int d = g.deg(i), b = g.nbrStart[i];
             for (int k = 0; k < d; k++) {
                 int j = g.nbr[b + k];
-                double geo = geodesic::dot((V[i] + V[j]) * 0.5, g.enorm[b + k]) * g.elen[b + k] * A_EARTH;
+                double geo = geodesic::dot((V[i] + V[j]) * 0.5, g.enorm[b + k]) * g.elen[b + k] *
+                             constants::EARTH_RADIUS_M;
                 corr += geo * cornerFlux(ps, i, k);
             }
         }
@@ -196,17 +197,17 @@ struct Model {
         // poleward. The target is zero at the equator by construction.
         std::vector<double> zmBand(nBands, 0.0), cum(nBands, 0.0);
         for (int b = 0; b < nBands; b++) zmBand[b] = bandN[b] > 0 ? bandSum[b] / bandN[b] : 0.0;
-        double fMin = 2 * OMEGA * std::sin(QG_EQ * PI / 180.0);
+        double fMin = 2 * OMEGA * std::sin(QG_EQ * constants::PI / 180.0);
         double coef = 0.5 * R_GAS * 0.6931 * TARGET_GAIN;
         int eq = nBands / 2;   // the first band north of the equator
         for (int b = eq; b < nBands; b++) {
-            double la = (-90.0 + (b + 0.5) * ZONAL_BAND) * PI / 180.0;
+            double la = (-90.0 + (b + 0.5) * ZONAL_BAND) * constants::PI / 180.0;
             double fb = std::max(2 * OMEGA * std::sin(la), fMin);
             double dT = b == eq ? 0.0 : zmBand[b] - zmBand[b - 1];
             cum[b] = (b == eq ? 0.0 : cum[b - 1]) + coef * dT / fb;
         }
         for (int b = eq - 1; b >= 0; b--) {
-            double la = (-90.0 + (b + 0.5) * ZONAL_BAND) * PI / 180.0;
+            double la = (-90.0 + (b + 0.5) * ZONAL_BAND) * constants::PI / 180.0;
             double fb = std::min(2 * OMEGA * std::sin(la), -fMin);
             double dT = zmBand[b] - zmBand[b + 1];
             cum[b] = cum[b + 1] + coef * dT / fb;
@@ -225,8 +226,11 @@ struct Model {
 
     void computeQ() {
         for (int i = 0; i < N; i++) {
-            q1[i] = geodesic::lap(g, psi1, i, A_EARTH) + f[i] + F * (psi2[i] - psi1[i]);
-            q2[i] = geodesic::lap(g, psi2, i, A_EARTH) + f[i] + F * (psi1[i] - psi2[i]) + (1.0 - trop[i]) * invF0[i] * f0 * f0 * topo[i] / H_LAYER;
+            q1[i] = geodesic::lap(g, psi1, i, constants::EARTH_RADIUS_M) + f[i] +
+                    F * (psi2[i] - psi1[i]);
+            q2[i] = geodesic::lap(g, psi2, i, constants::EARTH_RADIUS_M) + f[i] +
+                    F * (psi1[i] - psi2[i]) +
+                    (1.0 - trop[i]) * invF0[i] * f0 * f0 * topo[i] / H_LAYER;
         }
     }
 
@@ -248,7 +252,7 @@ struct Model {
     double advection(const std::vector<double>& p, const std::vector<double>& q, int i) const {
         double s = 0; int d = g.deg(i), b = g.nbrStart[i];
         for (int k = 0; k < d; k++) s += 0.5 * (q[i] + q[g.nbr[b + k]]) * cornerFlux(p, i, k);
-        return -s / (g.area[i] * A_EARTH * A_EARTH);
+        return -s / (g.area[i] * constants::EARTH_RADIUS_M * constants::EARTH_RADIUS_M);
     }
 
     void tendency(std::vector<double>& dq1, std::vector<double>& dq2) {
@@ -256,16 +260,18 @@ struct Model {
         for (int i = 0; i < N; i++) {
             double pc = 0.5 * (psi1[i] - psi2[i]);
             double heat = 2 * F * (psicT[i] - pc) / TAU_RELAX * (1.0 + TROP_RELAX * trop[i]);
-            double zeta2 = geodesic::lap(g, psi2, i, A_EARTH);
-            dq1[i] = -advection(psi1, q1, i) - heat + VISC * geodesic::lap(g, q1, i, A_EARTH);
-            dq2[i] = -advection(psi2, q2, i) + heat - EKMAN * (1.0 + TROP_DRAG * trop[i]) * zeta2 + VISC * geodesic::lap(g, q2, i, A_EARTH);
+            double zeta2 = geodesic::lap(g, psi2, i, constants::EARTH_RADIUS_M);
+            dq1[i] = -advection(psi1, q1, i) - heat +
+                     VISC * geodesic::lap(g, q1, i, constants::EARTH_RADIUS_M);
+            dq2[i] = -advection(psi2, q2, i) + heat - EKMAN * (1.0 + TROP_DRAG * trop[i]) * zeta2 +
+                     VISC * geodesic::lap(g, q2, i, constants::EARTH_RADIUS_M);
         }
     }
 
     void winds() {
         for (int i = 0; i < N; i++) {
-            V1[i] = geodesic::cross(g.c[i], geodesic::grad(g, psi1, i, A_EARTH));
-            V2[i] = geodesic::cross(g.c[i], geodesic::grad(g, psi2, i, A_EARTH));
+            V1[i] = geodesic::cross(g.c[i], geodesic::grad(g, psi1, i, constants::EARTH_RADIUS_M));
+            V2[i] = geodesic::cross(g.c[i], geodesic::grad(g, psi2, i, constants::EARTH_RADIUS_M));
             u1[i] = geodesic::dot(V1[i], east[i]); v1[i] = geodesic::dot(V1[i], north[i]);
             u2[i] = geodesic::dot(V2[i], east[i]); v2[i] = geodesic::dot(V2[i], north[i]);
         }

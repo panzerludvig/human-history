@@ -10,11 +10,12 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include "constants.h"
 #include "geodesic.h"
 #include "geosolve.h"
 
 using namespace geodesic;
-static const double R = 6371000.0;
+static const double R = constants::EARTH_RADIUS_M;
 
 static double rms(const std::vector<double>& x) { double s = 0; for (double v : x) s += v * v; return std::sqrt(s / x.size()); }
 static double rmsDiff(const std::vector<double>& x, const std::vector<double>& y) { double s = 0; for (size_t i = 0; i < x.size(); i++) s += (x[i] - y[i]) * (x[i] - y[i]); return std::sqrt(s / x.size()); }
@@ -88,6 +89,8 @@ int main(int argc, char** argv) {
     psi = f; for (int i = 0; i < N; i++) rhs2[i] = lap(g, f2, i, R);
     t0 = now(); S.solve(rhs2, 0.0, psi, 1e-7); double warmP = now() - t0;
     double perStep = 3 * (warmP + warmH);
-    printf("\nbudget: a year of half-hour steps, three stages, a Poisson and a Helmholtz each, at the warm cost: %.0f s\n", perStep * 48 * 365 / 1000.0);
+    printf("\nbudget: a year of half-hour steps, three stages, a Poisson and a Helmholtz each, at "
+           "the warm cost: %.0f s\n",
+           perStep * 48 * constants::DAYS_PER_YEAR_INT / 1000.0);
     return 0;
 }
