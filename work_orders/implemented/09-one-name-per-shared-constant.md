@@ -1,6 +1,6 @@
 # 09 — One name for each shared constant
 
-**Status:** taken by the night of 2026-10-02; passed, merged into `nightly/2026-10-02` as `5d84618`
+**Status:** implemented (2026-10-03): kept and merged into `main` as `6bafb81`
 
 ## Problem
 
@@ -122,5 +122,9 @@ the atmosphere's pi is full double; the shader's hut-cull radius squared, writte
 40602000 and commented "6371^2", is the true 40589641; `1.5707963f` is `PI_F/2`; the
 hut and farmstead angle hash uses `PI` for `3.14159`. For the game: huts and farmstead
 dots at close zoom.
+
+## Review
+
+**Keep**, 2026-10-03. Merged into `main` (`6bafb81`); no issue found on the branch or on `nightly`. Huts and farmstead dots at close zoom are still to be seen in the game.
 
 Review note for the night: [[Dev Log/Nightly/2026-10-02]].

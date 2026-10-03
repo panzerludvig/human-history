@@ -1,6 +1,6 @@
 # 15 — A probe that checks the shader against its CPU source
 
-**Status:** taken by the night of 2026-10-02; failed: the probe found two drifts the order assumed gone, and fixing them changes the picture Done when 4 holds fixed; not merged
+**Status:** planned (2026-10-03): failed on the night of 2026-10-02 and reworked: where the probe finds the shader drifted from the CPU, the shader follows the CPU, and the picture may change by those fixes
 
 ## Problem
 
@@ -21,6 +21,11 @@ Serves `standards/general.md` §Mirrored code ("a drift between them is a bug") 
   sample points would close it."
 - The mirror pairs are listed in order 06's Outcome
   (`work_orders/implemented/06-cpu-gpu-drift.md`), each marked at both sites since.
+- The night of 2026-10-02 built the probe and it found two drifts left after 06 (Run
+  section below): the shader's swamp rule is older than the CPU's
+  (`atmosphere::swampFromBalance`), so the globe draws more marsh than the simulation
+  has; and the shader stops its climate lookup at 86.4 degrees where the CPU reads on to
+  the pole, up to 1.9 C apart on Earth.
 
 ## Design
 
@@ -40,6 +45,12 @@ Serves `standards/general.md` §Mirrored code ("a drift between them is a bug") 
 How the probe reads the GPU side (a hidden GL context rendering to an offscreen target, or
 the game's argv harness with a debug output) is the implementer's choice.
 
+Decided 2026-10-03: **where the probe finds the shader drifted from the CPU, the shader
+follows the CPU** (`standards/general.md`: the CPU is the source of truth, a drift is a
+bug). That includes the swamp rule and the polar climate lookup found on 2026-10-02, and
+any further drift the probe finds. The picture may change by those fixes; the probe's
+own readout must change nothing.
+
 ## Outcome
 
 - A probe, with its own `build_*.bat` and its run line in its header comment, that compares
@@ -47,6 +58,8 @@ the game's argv harness with a debug output) is the implementer's choice.
   loud, naming the quantity, the point and both values, when a difference is beyond
   tolerance or a class disagrees away from a boundary.
 - The tolerances, with the measurement they came from, are written next to the probe.
+- Every drift the probe finds is fixed on the shader's side, so the probe passes on
+  `main`.
 - `Technical/Architecture.md` says the risk it named is now covered and how to run the
   check; `standards/general.md` §Mirrored code names the probe as the check a change to a
   mirrored rule runs.
@@ -67,12 +80,16 @@ A guide, not a limit: a new probe source and `build_*.bat`, a debug output in
    (the lapse rate from 6.5 to 7.0) makes the probe fail on the temperature comparison,
    and restoring it makes the probe pass. The Run section quotes both runs. The change is
    not committed.
-4. Game screenshots (with `HH_BENCH=5`) at the five views of order 06's Done when are byte-identical before and
-   after: a debug output, if added, changes nothing in normal drawing.
+4. The probe's readout changes nothing in normal drawing: with the readout added and no
+   rule changed, game screenshots (with `HH_BENCH=5`) at the five views of order 06's Done
+   when are byte-identical to `main`'s.
+5. The drift fixes are quoted, for the morning: for each fix, what changed on the shader's
+   side, and per view the share of pixels changed and the largest change.
 
 ## Depends on
 
-06: the probe starts from rules that agree, and its tolerances are measured there.
+06 and 09 (both implemented): the probe starts from the mirrored rules and the shared
+constants as they are on `main`.
 
 ## Run
 
@@ -133,5 +150,9 @@ standard says the CPU is the source of truth, but the order held the picture fix
 tolerances were measured on one GPU. The river margin's tolerance (0.28 km) is close to a
 river's 0.3 km half-width, so the river class is checked loosely. The ice ramp's
 in-between values and snow cover have no CPU twin and are not compared.
+
+## Review
+
+**Rework**, 2026-10-03. The probe works and found two real drifts. The developer's decision: the CPU is the source of truth, so the shader follows it on the swamp and the poles, and Done when 4 now holds only the probe's own readout to changing nothing. Back to `planned/`, to be implemented again from `main`, which now has 09's constants. The night's branch `wo/15-cpu-gpu-mirror-probe` (`7e704b8`, `f5029ab`) is kept until then, as a starting point the implementer may reuse.
 
 Review note for the night: [[Dev Log/Nightly/2026-10-02]].
