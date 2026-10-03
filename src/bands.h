@@ -4,6 +4,7 @@
 // reach, the march itself -- pace, water, hunger -- and the arrival: found
 // a settlement, join one, or die on the road.
 #pragma once
+#include "constants.h"
 #include "events.h"
 #include "claims.h"
 #include "farmland.h"
@@ -51,7 +52,7 @@ inline float moverCap(const population::Field& pf, int cell, float farmExp, floa
             std::min(movers * population::FARM_KM2_PER_PERSON, population::VILLAGE_FIELDS_KM2);
     if (husbExp > 0)
         food += pf.pastureMap[cell] * population::FORAGE_KM2 * population::HERD_PASTURE_K /
-                population::SUSTAIN_R * (0.3f + 0.7f * husbExp) * 0.85f;
+                population::SUSTAIN_R * (0.3f + 0.7f * husbExp) * population::HERD_SEASONAL_MEAN;
     // The water counts even to people with no gear -- anyone can take fish
     // from a bank -- and counts for much more to people who can weir it.
     food += pf.kFishMap[cell] * population::fishEff(fishExp);
@@ -107,10 +108,12 @@ inline int bestProspect(const population::Field& pf, const Seeker& sk, uint64_t&
     const int standCell = cellOf(from);
     bool skilled = farmExp > 0 || husbExp > 0 || fishExp > 0;
     float lat0 = std::asin(std::clamp(from.z, -1.0f, 1.0f));
-    float dLat = radiusKm / 6371.0f;
-    int y0 = std::max((int)(((lat0 - dLat) + 3.14159265f / 2) / 3.14159265f * population::H), 1);
-    int y1 = std::min((int)(((lat0 + dLat) + 3.14159265f / 2) / 3.14159265f * population::H) + 1,
-                      population::H - 2);
+    float dLat = radiusKm / constants::EARTH_RADIUS_KM_F;
+    int y0 =
+        std::max((int)(((lat0 - dLat) + constants::PI_F / 2) / constants::PI_F * population::H), 1);
+    int y1 =
+        std::min((int)(((lat0 + dLat) + constants::PI_F / 2) / constants::PI_F * population::H) + 1,
+                 population::H - 2);
     // Cheap scoring pass (chord distance, no spacing checks), then the
     // expensive spacing check only on the best few in score order.
     struct Cand {
@@ -134,7 +137,8 @@ inline int bestProspect(const population::Field& pf, const Seeker& sk, uint64_t&
             if (cap < settlers) continue;
             terrain::V3 n = cellCentre(cell);
             float dot = terrain::dot(from, n);
-            float d = 6371.0f * std::sqrt(std::max(2.0f - 2.0f * dot, 0.0f)); // chord ~ arc
+            float d = constants::EARTH_RADIUS_KM_F *
+                      std::sqrt(std::max(2.0f - 2.0f * dot, 0.0f)); // chord ~ arc
             if (d > radiusKm || cell == standCell) continue;
             if (sk.home && distKm(n, cellCentre(sk.home->cell)) < claimReach(*sk.home, n)) continue;
             float noise = ((float)technology::urand(rng) * 2.0f - 1.0f) * 0.6f * (d / radiusKm);
@@ -376,7 +380,7 @@ inline bool mergeBand(population::Field& pf, technology::WorldState& ws, const p
         if (b.tech[tc].practising && !t.tech[tc].practising) {
             t.tech[tc].practising = true;
             t.tech[tc].practiceT = b.tech[tc].practiceT;
-            t.nextTech[tc] = 1e18;
+            t.nextTech[tc] = constants::NEVER_DAY;
             if (tc == population::TECH_HUSBANDRY && t.herd <= 0) t.herd = technology::HERD_SEED;
             if (tc == population::TECH_FARMING)
                 technology::redraw(pf, ti, ws, population::TECH_GRANARY, now);
@@ -720,9 +724,9 @@ inline void maybeRelocateOrSplit(population::Field& pf, technology::WorldState& 
         s.P = 0;
         s.S = 0;
         s.herd = 0;
-        s.nextUpdate = 1e18;
-        for (int t = 0; t < population::NTECH; t++) s.nextTech[t] = 1e18;
-        s.nextContact = 1e18; // nobody is at home to meet
+        s.nextUpdate = constants::NEVER_DAY;
+        for (int t = 0; t < population::NTECH; t++) s.nextTech[t] = constants::NEVER_DAY;
+        s.nextContact = constants::NEVER_DAY; // nobody is at home to meet
         {
             char txt[96];
             snprintf(txt, sizeof txt, "%s abandoned their home and set out", s.name);

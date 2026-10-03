@@ -2,6 +2,7 @@
 // per technology decides when it first appears; need decides who gets it;
 // awareness and practice spread by contact. Rules in Design/Technology.md.
 #pragma once
+#include "constants.h"
 #include "population.h"
 #include "events.h"
 #include <algorithm>
@@ -12,14 +13,12 @@
 
 namespace technology {
 
-constexpr double YEAR = 365.0;
-constexpr double INF_T = 1e18;
 // Pinned in Design/Technology.md.
 constexpr double INVENT_MEAN_YEARS = 10000.0; // world mean while nobody knows
 constexpr double AWARE_MEAN_YEARS = 25.0;     // per knowing neighbour
 constexpr double PRACT_MEAN_YEARS = 100.0;    // per unit neighbour expertise at suitability 1
 constexpr float EXPERTISE_START = 0.2f;
-constexpr double EXPERTISE_TAU = 50.0 * YEAR; // practice matures toward 1
+constexpr double EXPERTISE_TAU = 50.0 * constants::DAYS_PER_YEAR; // practice matures toward 1
 // Farm yield now comes from built plots (population::TILLED_YIELD_PKM2 via
 // Settlement::farmK), not from a suitability multiplier.
 // Herds: living stock. Growth toward a pasture cap; a seed herd is bred from
@@ -27,7 +26,7 @@ constexpr double EXPERTISE_TAU = 50.0 * YEAR; // practice matures toward 1
 constexpr float HERD_SEED = 1.0f;             // bred from wild capture at practice start
 // Clocks whose rates drift are redrawn at this horizon; the exponential is
 // memoryless, so redrawing is exact for piecewise-constant rates.
-constexpr double RESAMPLE = 50.0 * YEAR;
+constexpr double RESAMPLE = 50.0 * constants::DAYS_PER_YEAR;
 // Need-driven discovery (farming, husbandry, granaries): desperation invents. One tough
 // winter changes nobody's lifestyle, so need ramps in only after the state
 // has held a year and saturates at four. Each unaware settlement contributes
@@ -36,7 +35,8 @@ constexpr double RESAMPLE = 50.0 * YEAR;
 // but a crowded hungry world is not instant. Expected mean times are pinned
 // in Design/Technology.md (calibration table) -- keep them in sync.
 constexpr double NEED_MEAN_YEARS = 2000.0;   // mean at total need weight 1
-constexpr double NEED_RESAMPLE = 5.0 * YEAR; // need drifts yearly: short horizon
+constexpr double NEED_RESAMPLE =
+    5.0 * constants::DAYS_PER_YEAR;          // need drifts yearly: short horizon
 constexpr float NEED_YEARS_ON = 1.0f;        // below this, no desperation
 constexpr float NEED_YEARS_SAT = 4.0f;       // full desperation
 // Husbandry is need-driven on the same hunger as farming, weighted by pasture
@@ -71,7 +71,9 @@ struct WorldState {
         virtual void contactEvent(int idx, double when) = 0;
     };
     uint64_t rng = 0;
-    double nextEvent[population::NTECH] = {INF_T, INF_T, INF_T, INF_T}; // fire or resample
+    double nextEvent[population::NTECH] = {constants::NEVER_DAY, constants::NEVER_DAY,
+                                           constants::NEVER_DAY,
+                                           constants::NEVER_DAY}; // fire or resample
     bool fires[population::NTECH] = {false, false, false, false};
     Sink* sink = nullptr;
 };
@@ -230,10 +232,12 @@ inline float needWeight(const population::Settlement& s, int tech, double now) {
     if (s.tech[tech].lostT >= 0)
         again += population::REDISCOVER_GAIN *
                  (float)std::exp(-(now - s.tech[tech].lostT) /
-                                 (population::REDISCOVER_TAU_YEARS * YEAR));
-    float years = tech == population::TECH_GRANARY
-                      ? s.granNeedYrs
-                      : (s.hungrySince >= 0 ? (float)((now - s.hungrySince) / YEAR) : 0.0f);
+                                 (population::REDISCOVER_TAU_YEARS * constants::DAYS_PER_YEAR));
+    float years =
+        tech == population::TECH_GRANARY
+            ? s.granNeedYrs
+            : (s.hungrySince >= 0 ? (float)((now - s.hungrySince) / constants::DAYS_PER_YEAR)
+                                  : 0.0f);
     float acute =
         std::clamp((years - NEED_YEARS_ON) / (NEED_YEARS_SAT - NEED_YEARS_ON), 0.0f, 1.0f);
     float scale = tech == population::TECH_HUSBANDRY ? HUSB_NEED_SCALE : 1.0f;
@@ -256,12 +260,19 @@ inline float adoptionNeed(const population::Settlement& s, int tech, double now)
 inline void redraw(population::Field& pf, int i, WorldState& ws, int tech, double now) {
     population::Settlement& s = pf.settlements[i];
     population::TechState& ts = s.tech[tech];
-    if (s.leaving || ts.practising) { s.nextTech[tech] = INF_T; return; }
+    if (s.leaving || ts.practising) {
+        s.nextTech[tech] = constants::NEVER_DAY;
+        return;
+    }
     if (!ts.aware) {
         int knowing = 0;
         for (int j : pf.neighbours[i]) knowing += pf.settlements[j].tech[tech].aware ? 1 : 0;
-        if (!knowing) { s.nextTech[tech] = INF_T; return; }
-        s.nextTech[tech] = now + expDraw(ws.rng, AWARE_MEAN_YEARS * YEAR / knowing);
+        if (!knowing) {
+            s.nextTech[tech] = constants::NEVER_DAY;
+            return;
+        }
+        s.nextTech[tech] =
+            now + expDraw(ws.rng, AWARE_MEAN_YEARS * constants::DAYS_PER_YEAR / knowing);
         s.techFires[tech] = true;
         if (ws.sink) ws.sink->techEvent(i, tech, s.nextTech[tech]);
     } else {
@@ -270,10 +281,13 @@ inline void redraw(population::Field& pf, int i, WorldState& ws, int tech, doubl
         // No teachers or no suitable ground parks at infinity (re-armed by
         // neighbour practice events); a contented zero need re-checks on the
         // short horizon, since contentment can end without a discrete event.
-        if (esum <= 0 || suitability(s, tech) <= 0) { s.nextTech[tech] = INF_T; return; }
-        double rate =
-            suitability(s, tech) * adoptionNeed(s, tech, now) * esum / (PRACT_MEAN_YEARS * YEAR);
-        double dt = rate > 0 ? expDraw(ws.rng, 1.0 / rate) : INF_T;
+        if (esum <= 0 || suitability(s, tech) <= 0) {
+            s.nextTech[tech] = constants::NEVER_DAY;
+            return;
+        }
+        double rate = suitability(s, tech) * adoptionNeed(s, tech, now) * esum /
+                      (PRACT_MEAN_YEARS * constants::DAYS_PER_YEAR);
+        double dt = rate > 0 ? expDraw(ws.rng, 1.0 / rate) : constants::NEVER_DAY;
         s.techFires[tech] = dt <= NEED_RESAMPLE;
         s.nextTech[tech] = now + std::min(dt, NEED_RESAMPLE);
         if (ws.sink) ws.sink->techEvent(i, tech, s.nextTech[tech]);
@@ -294,9 +308,12 @@ inline void scheduleInvention(population::Field& pf, WorldState& ws, int tech, d
             if (!s.tech[tech].aware) anyUnaware = true;
             wsum += needWeight(s, tech, now);
         }
-        if (!anyUnaware) { ws.nextEvent[tech] = INF_T; return; }
-        double rate = std::sqrt(wsum) / (NEED_MEAN_YEARS * YEAR);
-        double dt = rate > 0 ? expDraw(ws.rng, 1.0 / rate) : INF_T;
+        if (!anyUnaware) {
+            ws.nextEvent[tech] = constants::NEVER_DAY;
+            return;
+        }
+        double rate = std::sqrt(wsum) / (NEED_MEAN_YEARS * constants::DAYS_PER_YEAR);
+        double dt = rate > 0 ? expDraw(ws.rng, 1.0 / rate) : constants::NEVER_DAY;
         ws.fires[tech] = dt <= NEED_RESAMPLE;
         ws.nextEvent[tech] = now + std::min(dt, NEED_RESAMPLE);
         if (ws.sink) ws.sink->clockEvent(tech, ws.nextEvent[tech]);
@@ -308,8 +325,11 @@ inline void scheduleInvention(population::Field& pf, WorldState& ws, int tech, d
         total += s.P;
         if (!s.tech[tech].aware) unaware += s.P;
     }
-    double rate = total > 0 ? unaware / total / (INVENT_MEAN_YEARS * YEAR) : 0;
-    if (rate <= 0) { ws.nextEvent[tech] = INF_T; return; }
+    double rate = total > 0 ? unaware / total / (INVENT_MEAN_YEARS * constants::DAYS_PER_YEAR) : 0;
+    if (rate <= 0) {
+        ws.nextEvent[tech] = constants::NEVER_DAY;
+        return;
+    }
     double dt = expDraw(ws.rng, 1.0 / rate);
     ws.fires[tech] = dt <= RESAMPLE;
     ws.nextEvent[tech] = now + std::min(dt, RESAMPLE);
@@ -321,7 +341,7 @@ inline void startPractising(population::Field& pf, int i, WorldState& ws, int te
     s.tech[tech].aware = true;
     s.tech[tech].practising = true;
     s.tech[tech].practiceT = now;
-    s.nextTech[tech] = INF_T;
+    s.nextTech[tech] = constants::NEVER_DAY;
     if (tech == population::TECH_HUSBANDRY)
         s.herd = std::max(s.herd, HERD_SEED); // bred from capture
     // Taking up farming raises granary suitability ~7x: redraw that clock so
@@ -335,7 +355,7 @@ inline void startPractising(population::Field& pf, int i, WorldState& ws, int te
 // sides are redrawn.
 inline void rescheduleContact(population::Field& pf, int i, WorldState& ws) {
     population::scheduleContact(pf, i);
-    if (ws.sink && pf.settlements[i].nextContact < 1e17)
+    if (ws.sink && pf.settlements[i].nextContact < constants::NEVER_DAY)
         ws.sink->contactEvent(i, pf.settlements[i].nextContact);
 }
 
@@ -444,7 +464,7 @@ inline void init(population::Field& pf, WorldState& ws, uint32_t seed, double no
     // expertise. What varies from place to place is bows, not knowing how.
     for (population::Settlement& s : pf.settlements) {
         s.tech[population::TECH_ARCHERY] = {true, true, now};
-        s.nextTech[population::TECH_ARCHERY] = INF_T;
+        s.nextTech[population::TECH_ARCHERY] = constants::NEVER_DAY;
         // Fishing is old too -- weirs and nets are tens of thousands of years
         // older than any crop -- so it is not invented here either. Anyone
         // living by water already does it; everyone else has heard of it and
@@ -494,7 +514,8 @@ inline void decaySkills(population::Field& pf, technology::WorldState& ws, int s
         if (ts.practising || teacher) ts.lostT = now; // somebody in reach still knows
         if (!ts.practising) {
             // Knowledge outlives practice, but not by much.
-            if (ts.lostT >= 0 && now - ts.lostT > population::AWARE_FORGET_YEARS * 365.0) {
+            if (ts.lostT >= 0 &&
+                now - ts.lostT > population::AWARE_FORGET_YEARS * constants::DAYS_PER_YEAR) {
                 ts.aware = false;
                 technology::redraw(pf, si, ws, tech, now);
                 technology::scheduleInvention(pf, ws, tech, now); // they are in the pool again
@@ -522,7 +543,7 @@ inline void decaySkills(population::Field& pf, technology::WorldState& ws, int s
         // skill to lose yet, and their means may not exist until they build
         // it. Only staying at the floor for a generation and a half ends it.
         if (ts.strainT < 0) ts.strainT = now;
-        if (now - ts.strainT < population::SKILL_GRACE_YEARS * 365.0) continue;
+        if (now - ts.strainT < population::SKILL_GRACE_YEARS * constants::DAYS_PER_YEAR) continue;
         ts.practising = false;
         ts.strainT = -1;
         ts.lostT = now;

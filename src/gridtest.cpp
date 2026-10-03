@@ -5,12 +5,12 @@
 //
 //   cl /O2 /EHsc /std:c++17 src\gridtest.cpp /Fe:build\gridtest.exe
 #include <cstdio>
+#include "constants.h"
 #include "geodesic.h"
 
 using namespace geodesic;
 
-static const double R = 6371000.0;
-static const double PI = 3.14159265358979323846;
+static const double R = constants::EARTH_RADIUS_M;
 
 static int failures = 0;
 static void check(const char* what, double got, double want, double tol, const char* unit = "") {
@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
     printf("\nGEOMETRY\n");
     double A = 0;
     for (double a : g.area) A += a;
-    check("total area / 4pi", A / (4 * PI), 1.0, 1e-9);
+    check("total area / 4pi", A / (4 * constants::PI), 1.0, 1e-9);
 
     // A cell's outward normals weighted by edge length must close on zero,
     // or the gradient operator has a constant bias: grad(constant) != 0.
@@ -92,10 +92,10 @@ int main(int argc, char** argv) {
     // What a lat-lon grid of similar size does, for contrast.
     {
         int W = 192, H = 96;
-        double dyLL = PI * R / H;
-        double dxEq = 2 * PI * R / W;
-        double dxPole = dxEq * std::cos((0.5 / H - 0.5) * PI + PI); // top row
-        dxPole = dxEq * std::cos(((H - 0.5) / H - 0.5) * PI);
+        double dyLL = constants::PI * R / H;
+        double dxEq = 2 * constants::PI * R / W;
+        double dxPole = dxEq * std::cos((0.5 / H - 0.5) * constants::PI + constants::PI); // top row
+        dxPole = dxEq * std::cos(((H - 0.5) / H - 0.5) * constants::PI);
         printf("\n  for contrast, 192x96 lat-lon: %d cells, dx %.1f km at the equator,\n"
                "  %.2f km in the top row -- a ratio of %.0f to 1\n",
                W * H, dxEq / 1000, std::fabs(dxPole) / 1000, dxEq / std::fabs(dxPole));
@@ -198,7 +198,8 @@ int main(int argc, char** argv) {
     printf("  %-46s %9.1f m/s\n", "external gravity wave speed", c);
     printf("  %-46s %9.1f s\n", "stable step here (CFL=1 at shortest edge)", lo / c);
     {
-        double dxPole = (2 * PI * R / 192) * std::cos(((95.5) / 96 - 0.5) * PI);
+        double dxPole =
+            (2 * constants::PI * R / 192) * std::cos(((95.5) / 96 - 0.5) * constants::PI);
         printf("  %-46s %9.1f s   <- the grid we are leaving\n", "stable step on lat-lon at 87 deg",
                std::fabs(dxPole) / c);
     }

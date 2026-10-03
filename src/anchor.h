@@ -8,6 +8,7 @@
 // slope comes from screen derivatives. Technical/Globe Viewer.md describes the
 // shader side (P3 and Ground in shaders/globe.frag).
 #pragma once
+#include "constants.h"
 #include <cmath>
 #include "camera.h"
 #include "plates.h"
@@ -73,15 +74,15 @@ inline Anchor of(const camera::Camera& cam, const world::World& w) {
     }
 
     // Texel positions as plateAtTexel and earthAtTexel index them.
-    const double PI = camera::PI;
     double lon, lat;
     lonLat(g, lon, lat);
-    split((lon + PI) / (2 * PI) * plates::W - 0.5, a.plateHi[0], a.plateLo[0]);
-    split((lat + PI / 2) / PI * plates::H - 0.5, a.plateHi[1], a.plateLo[1]);
+    split((lon + constants::PI) / (2 * constants::PI) * plates::W - 0.5, a.plateHi[0],
+          a.plateLo[0]);
+    split((lat + constants::PI / 2) / constants::PI * plates::H - 0.5, a.plateHi[1], a.plateLo[1]);
     const terrain::Template& tp = terrain::TEMPLATE;
     if (tp.active) {
-        split((lon + PI) / (2 * PI) * tp.w - 0.5, a.earthHi[0], a.earthLo[0]);
-        split((lat + PI / 2) / PI * tp.h - 0.5, a.earthHi[1], a.earthLo[1]);
+        split((lon + constants::PI) / (2 * constants::PI) * tp.w - 0.5, a.earthHi[0], a.earthLo[0]);
+        split((lat + constants::PI / 2) / constants::PI * tp.h - 0.5, a.earthHi[1], a.earthLo[1]);
     }
     return a;
 }

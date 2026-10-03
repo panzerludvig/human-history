@@ -19,6 +19,7 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include "constants.h"
 #include "terrain.h"
 #include "hydrology.h"
 #include "population.h"
@@ -301,7 +302,13 @@ static void onCommand(int id) {
         break;
     }
     case menus::ID_TIME_GO: {
-        static const double stepDays[] = {1.0 / 1440.0, 1.0 / 24.0, 1.0, 30.0, 365.0, 3650.0, 36500.0};
+        static const double stepDays[] = {1.0 / 1440.0,
+                                          1.0 / 24.0,
+                                          1.0,
+                                          30.0,
+                                          constants::DAYS_PER_YEAR,
+                                          10 * constants::DAYS_PER_YEAR,
+                                          100 * constants::DAYS_PER_YEAR};
         int sel =
             (int)SendMessageA(menus::control(app.menu, menus::ID_TIME_STEP), CB_GETCURSEL, 0, 0);
         if (sel >= 0 && sel < 7) advanceDays(stepDays[sel]);
@@ -371,8 +378,8 @@ static void goToEvent(const population::Event& e) {
     if (!found) return;
     app.cam.lat = std::asin(std::clamp(at.z, -1.0f, 1.0f));
     app.cam.lon = std::atan2(at.y, at.x);
-    if (app.cam.altitude > 900.0 / camera::EARTH_RADIUS_KM)
-        app.cam.altitude = 900.0 / camera::EARTH_RADIUS_KM;
+    if (app.cam.altitude > 900.0 / constants::EARTH_RADIUS_KM)
+        app.cam.altitude = 900.0 / constants::EARTH_RADIUS_KM;
     app.cam.clampAltitude();
 }
 
@@ -475,7 +482,8 @@ static std::string simDate() {
     long long mins = (long long)std::llround(app.world.simTime * 1440.0);
     int minute = (int)(mins % 60), hour = (int)(mins / 60 % 24);
     int total = (int)(mins / 1440);
-    int year = total / 365 + 1, doy = total % 365, month = 0;
+    int year = total / constants::DAYS_PER_YEAR_INT + 1, doy = total % constants::DAYS_PER_YEAR_INT,
+        month = 0;
     while (doy >= ML[month]) { doy -= ML[month]; month++; }
     char b[40];
     snprintf(b, sizeof b, "%04d-%02d-%02d %02d:%02d", year, month + 1, doy + 1, hour, minute);
@@ -625,6 +633,11 @@ static std::string globeConstants() {
     addFloat("WALK_KMPP", (float)overlay::WALK_KMPP);
     addFloat("ICE_FORMING_T", sim::ICE_FORMING_T);
     addFloat("FROZEN_T", sim::FROZEN_T);
+    addFloat("PI", constants::PI_F);
+    addFloat("EARTH_RADIUS_KM", constants::EARTH_RADIUS_KM_F);
+    addFloat("EARTH_RADIUS_M", (float)constants::EARTH_RADIUS_M);
+    addFloat("LAPSE_K_PER_KM", constants::LAPSE_K_PER_KM_F);
+    addFloat("DAYS_PER_YEAR", constants::DAYS_PER_YEAR_F);
     return s;
 }
 
@@ -671,13 +684,13 @@ static void argvView() {
                         : d == "climate"    ? 5
                                             : 0;
     }
-    app.cam.lat = atof(argv[1]) * camera::PI / 180;
-    app.cam.lon = atof(argv[2]) * camera::PI / 180;
-    if (argc >= 4) app.cam.altitude = atof(argv[3]) / camera::EARTH_RADIUS_KM;
+    app.cam.lat = atof(argv[1]) * constants::PI / 180;
+    app.cam.lon = atof(argv[2]) * constants::PI / 180;
+    if (argc >= 4) app.cam.altitude = atof(argv[3]) / constants::EARTH_RADIUS_KM;
     app.cam.clampAltitude();
     setScreen(menus::Screen::InGame);
     if (argc >= 9) {
-        advanceDays(atof(argv[8]) * 365.0); // fast-forward years
+        advanceDays(atof(argv[8]) * constants::DAYS_PER_YEAR); // fast-forward years
         int gran = 0, building = 0, fstead = 0;
         for (const population::Settlement& s : app.world.pop.settlements) {
             gran += (int)(s.granaries + 0.5f);
@@ -917,12 +930,12 @@ int main(int argc, char** argv) {
             camera::Vec3 p = c.position(), f = c.forward(), rt = c.right(), u = c.up();
             // Finest noise octave should be around two pixels wide on screen.
             double kmpp = c.kmPerPixel();
-            int octaves = (int)std::ceil(std::log2(camera::EARTH_RADIUS_KM / (2.0 * kmpp)));
+            int octaves = (int)std::ceil(std::log2(constants::EARTH_RADIUS_KM / (2.0 * kmpp)));
             octaves = std::clamp(octaves, 4, 16);
             app.octaves = octaves;
 
             glUniform3f(uCamPos, (float)p.x, (float)p.y, (float)p.z);
-            glUniform1f(uDoy, (float)fmod(app.world.simTime, 365.0));
+            glUniform1f(uDoy, (float)fmod(app.world.simTime, constants::DAYS_PER_YEAR));
             glUniform1f(uClock, (float)fmod(app.world.simTime, 4096.0));
             {
                 // Awareness zones for entities with open detail panels.

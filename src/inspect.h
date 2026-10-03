@@ -4,6 +4,7 @@
 // window, so the same words could go to a probe's stderr. Technical/Globe
 // Viewer.md §Tooltip and §Selection panels say what each line shows and why.
 #pragma once
+#include "constants.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -85,15 +86,16 @@ inline void describePoint(const world::World& wd, const camera::Camera& cam, int
         float tSeason = sim::seasonalT(wd.clim, nf, std::max(h, 0.0f), wd.simTime);
         float amp = atmosphere::seasonalAt(wd.clim.diurnal, atmosphere::climFuzz(nf), wd.simTime);
         double tod = fmod(wd.simTime, 1.0);
-        double hLoc = fmod(lon * (12.0 / camera::PI) + 24.0 * tod + 48.0, 24.0);
+        double hLoc = fmod(lon * (12.0 / constants::PI) + 24.0 * tod + 48.0, 24.0);
         tempNow = tSeason + 0.5f * amp * (float)atmosphere::diurnalPhase(hLoc);
     }
     char hm[32]; // a depth or height, formatted
     // Climatology at the cursor, season-interpolated: shown for sea, lake, and land.
     char climTxt[48] = "";
     if (!wd.clim.rainMmDay.empty()) {
-        int ax = (int)(((lon + camera::PI) / (2 * camera::PI)) * atmosphere::W) % atmosphere::W;
-        int ay = std::clamp((int)(((lat + camera::PI / 2) / camera::PI) * atmosphere::H), 0,
+        int ax =
+            (int)(((lon + constants::PI) / (2 * constants::PI)) * atmosphere::W) % atmosphere::W;
+        int ay = std::clamp((int)(((lat + constants::PI / 2) / constants::PI) * atmosphere::H), 0,
                             atmosphere::H - 1);
         const atmosphere::SeasonBlend sb = atmosphere::seasonBlendAt(wd.simTime);
         double f = sb.f;
@@ -113,8 +115,8 @@ inline void describePoint(const world::World& wd, const camera::Camera& cam, int
                  iceWord(sim::seasonalT(wd.clim, nf, 0.0f, wd.simTime)), hm, tempNow, climTxt);
         return;
     }
-    int cx = (int)std::floor((lon + camera::PI) / (2 * camera::PI) * hydrology::W),
-        cy = (int)std::floor((lat + camera::PI / 2) / camera::PI * hydrology::H);
+    int cx = (int)std::floor((lon + constants::PI) / (2 * constants::PI) * hydrology::W),
+        cy = (int)std::floor((lat + constants::PI / 2) / constants::PI * hydrology::H);
     cx = hydrology::wrapX(cx);
     cy = std::clamp(cy, 0, hydrology::H - 1);
     // A building under the cursor names itself: same marker positions the
@@ -129,10 +131,10 @@ inline void describePoint(const world::World& wd, const camera::Camera& cam, int
                 char rb[64];
                 if (r.name[0])
                     snprintf(rb, sizeof rb, "Ruins of %s, abandoned year %d  |  ", r.name,
-                             (int)(r.abandoned / 365.0) + 1);
+                             (int)(r.abandoned / constants::DAYS_PER_YEAR) + 1);
                 else
                     snprintf(rb, sizeof rb, "Ruins, abandoned year %d  |  ",
-                             (int)(r.abandoned / 365.0) + 1);
+                             (int)(r.abandoned / constants::DAYS_PER_YEAR) + 1);
                 snprintf(building, sizeof building, "%s", rb);
                 break;
             }
@@ -340,8 +342,8 @@ inline std::string peopleText(const world::World& wd, const population::Settleme
 inline std::string envText(const world::World& wd, const population::Settlement& st) {
     double now = wd.simTime;
     terrain::V3 n = sim::cellCentre(st.cell);
-    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
-    float lon = std::atan2(n.y, n.x) * 180.0f / 3.14159265f;
+    float lat = std::asin(std::clamp(n.z, -1.0f, 1.0f)) * 180.0f / constants::PI_F;
+    float lon = std::atan2(n.y, n.x) * 180.0f / constants::PI_F;
     float awareKm = population::settlementAwareKm(
         now - st.founded, population::prominenceM(wd.hydro, wd.clim, st.cell));
     char b[128];
@@ -349,7 +351,7 @@ inline std::string envText(const world::World& wd, const population::Settlement&
     snprintf(b, sizeof b, "%.1f%c  %.1f%c\n", std::fabs(lat), lat >= 0 ? 'N' : 'S', std::fabs(lon),
              lon >= 0 ? 'E' : 'W');
     out += b;
-    snprintf(b, sizeof b, "Settled year %d\n", (int)(st.founded / 365.0) + 1);
+    snprintf(b, sizeof b, "Settled year %d\n", (int)(st.founded / constants::DAYS_PER_YEAR) + 1);
     out += b;
     snprintf(b, sizeof b, "Land condition: %d%%\n", (int)std::lround(st.R * 100));
     out += b;
@@ -409,7 +411,8 @@ inline std::string envText(const world::World& wd, const population::Settlement&
              known == 1 ? "" : "s");
     out += b;
     if (st.scarceSince >= 0) {
-        snprintf(b, sizeof b, "Scarce since year %d%s\n", (int)(st.scarceSince / 365.0) + 1,
+        snprintf(b, sizeof b, "Scarce since year %d%s\n",
+                 (int)(st.scarceSince / constants::DAYS_PER_YEAR) + 1,
                  st.noProspect ? " -- nowhere to go" : "");
         out += b;
     }
@@ -428,7 +431,7 @@ inline std::string historyText(const world::World& wd, const population::Settlem
             out += "  ...\n";
             break;
         }
-        snprintf(b, sizeof b, "%d: %s\n", (int)(e.t / 365.0) + 1, e.text);
+        snprintf(b, sizeof b, "%d: %s\n", (int)(e.t / constants::DAYS_PER_YEAR) + 1, e.text);
         out += b;
         if (e.lossHere > 0 || e.lossThem > 0) {
             // Whose dead are whose depends on which side of it you are.
@@ -457,16 +460,17 @@ inline std::string techDetailText(const world::World& wd, const population::Sett
     if (ts.practising) {
         snprintf(b, sizeof b, "Expertise %d%% since year %d\n(matures toward 100%% over ~50 yr)\n",
                  (int)std::lround(technology::expertise(ts, now) * 100),
-                 (int)(ts.practiceT / 365.0) + 1);
+                 (int)(ts.practiceT / constants::DAYS_PER_YEAR) + 1);
         out += b;
         return out;
     }
     if (!ts.aware) {
         if (technology::needDriven(t)) {
-            float years =
-                t == population::TECH_FARMING
-                    ? (st.hungrySince >= 0 ? (float)((now - st.hungrySince) / 365.0) : 0.0f)
-                    : st.granNeedYrs;
+            float years = t == population::TECH_FARMING
+                              ? (st.hungrySince >= 0
+                                     ? (float)((now - st.hungrySince) / constants::DAYS_PER_YEAR)
+                                     : 0.0f)
+                              : st.granNeedYrs;
             float acute = std::clamp((years - technology::NEED_YEARS_ON) /
                                          (technology::NEED_YEARS_SAT - technology::NEED_YEARS_ON),
                                      0.0f, 1.0f);
